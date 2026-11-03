@@ -29,7 +29,7 @@ IMU_BURST_DEFAULT = 100
 IMU_BURST_MAX = 1000
 TRACK_AXES = ("pan", "tilt")
 GUARDED_KEYS = ("socket", "host_baud")
-_TOKEN = re.compile(r"^[A-Za-z0-9_]+$")
+_TOKEN = re.compile(r"[A-Za-z0-9_]+")
 
 
 @dataclass
@@ -188,12 +188,23 @@ async def track(request: web.Request) -> web.Response:
 async def jog(request: web.Request) -> web.Response:
     ctx = request.app[CTX]
     values = expect_axes(await _body(request), AXES, "scalar")
-    await send_motion(ctx, "JOG " + fmt_axes(values))
+    _guard_motion(ctx)
+    was_armed = ctx.deadman.armed
+    moving = [ax for ax, rate in values.items() if rate != 0]
+    for ax in moving:  # arm before the send: once written, the Pico may be jogging
+        ctx.deadman.touch(ax)
+    try:
+        await _command(ctx, "JOG " + fmt_axes(values))
+    except web.HTTPGatewayTimeout:
+        raise  # the JOG may have reached the Pico; leave the dead-man armed
+    except web.HTTPException:
+        for ax in moving:
+            if ax not in was_armed:
+                ctx.deadman.clear(ax)
+        raise
     for ax, rate in values.items():
         if rate == 0:
             ctx.deadman.clear(ax)
-        else:
-            ctx.deadman.touch(ax)
     return _ok()
 
 
@@ -271,13 +282,13 @@ async def stop(request: web.Request) -> web.Response:
 
 async def estop(request: web.Request) -> web.Response:
     ctx = request.app[CTX]
-    try:
-        await _command(ctx, "ESTOP")
-    finally:  # latch even if the Pico was unreachable: motion stays refused either way
-        ctx.deadman.clear()
-        ctx.state.set_estop(True)
-        ctx.state.publish_event("estop")
-        log.warning("E-STOP latched")
+    # Latch before the round trip: ESTOP may queue behind an in-flight command, and motion
+    # requests arriving meanwhile must be refused, not queued to go out after it.
+    ctx.state.set_estop(True)
+    ctx.deadman.clear()
+    ctx.state.publish_event("estop")
+    log.warning("E-STOP latched")
+    await _command(ctx, "ESTOP")
     return _ok()
 
 
@@ -296,9 +307,11 @@ async def enable(request: web.Request) -> web.Response:
     on = body.get("on")
     if not isinstance(on, bool):
         raise _error(web.HTTPBadRequest, "on: expected true or false")
-    await _command(ctx, f"ENABLE {int(on)}")
-    if not on:
-        ctx.ref.note_enable_off()
+    try:
+        await _command(ctx, f"ENABLE {int(on)}")
+    finally:  # a failed or timed-out ENABLE 0 may still have disabled the drivers
+        if not on:
+            ctx.ref.note_enable_off()
     return _ok()
 
 
@@ -314,14 +327,14 @@ async def set_config(request: web.Request) -> web.Response:
     _expect_keys(body, ("scope", "key", "value", "save"))
     scope, key, save = body.get("scope"), body.get("key"), body.get("save", False)
     for name, token in (("scope", scope), ("key", key)):
-        if not isinstance(token, str) or not _TOKEN.match(token):
+        if not isinstance(token, str) or not _TOKEN.fullmatch(token):
             raise _error(web.HTTPBadRequest, f"{name}: expected a [A-Za-z0-9_]+ name")
     if "value" not in body:
         raise _error(web.HTTPBadRequest, "value: required")
     _number(body["value"], "value")
     if not isinstance(save, bool):
         raise _error(web.HTTPBadRequest, "save: expected true or false")
-    if (key in GUARDED_KEYS or scope == "global") and request.query.get("force") != "1":
+    if (key.lower() in GUARDED_KEYS or scope.lower() == "global") and request.query.get("force") != "1":
         raise _error(web.HTTPForbidden, "guarded setting; add ?force=1")
     await send_motion(ctx, f"CFG {scope} {key} {body['value']!r}")
     if save:
@@ -429,12 +442,21 @@ async def _cancel_tasks(app: web.Application) -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _envelope(exc: web.HTTPException) -> web.Response:
+    """aiohttp's own errors (404, 405, 413, ...) as the JSON envelope, status and Allow kept."""
+    headers = {"Allow": exc.headers["Allow"]} if "Allow" in exc.headers else None
+    return web.json_response({"ok": False, "error": exc.text or exc.reason},
+                             status=exc.status, headers=headers)
+
+
 @web.middleware
 async def _json_errors(request: web.Request, handler: Callable) -> web.StreamResponse:
     try:
         return await handler(request)
-    except web.HTTPException:
-        raise
+    except web.HTTPException as exc:
+        if exc.status < 400 or exc.content_type == "application/json":
+            raise
+        return _envelope(exc)
     except ProtocolError as exc:
         log.warning("bad reply from pico on %s: %s", request.path, exc)
         raise _error(web.HTTPBadGateway, f"bad reply from pico: {exc}") from exc

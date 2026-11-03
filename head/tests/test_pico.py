@@ -37,6 +37,16 @@ async def test_timeout_when_no_terminal_line():
     await link.close()
 
 
+async def test_command_refuses_embedded_newlines():
+    fake = FakeSerial(); link, _ = await make_link(fake)
+    for line in ("STOP\nESTOP", "STOP\r", "CFG global\n x 1"):
+        with pytest.raises(PicoError) as e:
+            await link.command(line)
+        assert e.value.reason == "line contains a newline"
+    assert fake.sent == []
+    await link.close()
+
+
 async def test_async_lines_route_to_callbacks_not_replies():
     fake = FakeSerial(); link, seen = await make_link(fake)
     fake.emit_status(); fake.emit_raw(b"*E homed tilt\n")

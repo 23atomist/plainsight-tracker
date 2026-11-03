@@ -1,5 +1,6 @@
 """HTTP and WebSocket API over the real aiohttp app, PicoLink, and FakeSerial."""
 import asyncio
+import io
 import time
 
 import pytest
@@ -7,7 +8,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from plainsight_head import __version__
-from plainsight_head.api import make_app
+from plainsight_head.api import make_app, pico_stop_axes
+from plainsight_head.deadman import JogDeadman
 from plainsight_head.protocol import AXES
 
 WAIT_S = 2.0
@@ -267,6 +269,13 @@ async def test_config_get_set_guard_and_save(client, ctx, ws):
                  {"scope": "pan", "key": "host_baud", "value": 9600}]:
         data = await post(client, "/api/config", body, 403)
         assert data == {"ok": False, "error": "guarded setting; add ?force=1"}
+    for body in [{"scope": "global\n", "key": "track_timeout_ms", "value": 900},
+                 {"scope": "pan", "key": "socket\n", "value": 1},
+                 {"scope": "GLOBAL", "key": "track_timeout_ms", "value": 900},
+                 {"scope": "pan", "key": "Host_Baud", "value": 9600}]:
+        resp = await client.post("/api/config", json=body)
+        assert resp.status in (400, 403), body
+        assert (await resp.json())["ok"] is False
     for body in [{"scope": "pan", "key": "vmax\nESTOP", "value": 1},
                  {"scope": "pan", "key": "vmax", "value": float("nan")},
                  {"scope": "pan", "key": "vmax"}]:
@@ -330,3 +339,58 @@ async def test_ws_slow_client_drops_oldest_without_blocking_others(client, ctx, 
     finally:
         await fast.close()
         await slow.close()
+
+
+async def test_estop_latches_before_its_round_trip(client, ctx):
+    ctx.fake.reply_override["DRV"] = ""  # the in-flight command holds the link until it times out
+    drivers = asyncio.create_task(client.get("/api/drivers"))
+    await wait_for(lambda: "DRV" in ctx.fake.sent, "DRV to be sent")
+    estop = asyncio.create_task(client.post("/api/estop"))
+    await wait_for(lambda: ctx.state.estop, "the latch to be set while ESTOP waits")
+    assert "ESTOP" not in ctx.fake.sent  # still queued behind DRV
+    await post(client, "/api/goto", {"pan": 1}, 423)
+    assert "ESTOP" not in ctx.fake.sent
+    assert (await drivers).status == 504
+    assert (await estop).status == 200
+    assert ctx.fake.sent[-2:] == ["DRV", "ESTOP"]
+    assert not [line for line in ctx.fake.sent if line.startswith("MOVE")]
+
+
+async def test_jog_timeout_leaves_deadman_armed(client, ctx):
+    await ctx.deadman.close()  # outlive the 2 s command timeout so expiry cannot pre-empt it
+    ctx.deadman = JogDeadman(2500, pico_stop_axes(ctx.link))
+    await ctx.deadman.start()
+    ctx.fake.reply_override["JOG"] = ""
+    jog = asyncio.create_task(client.post("/api/jog", json={"pan": 2}))
+    await wait_for(lambda: "JOG pan 2.00000" in ctx.fake.sent, "JOG to be sent")
+    assert ctx.deadman.armed == {"pan"}  # armed before the reply
+    assert (await jog).status == 504
+    assert ctx.deadman.armed == {"pan"} and "STOP pan" not in ctx.fake.sent
+    await wait_for(lambda: "STOP pan" in ctx.fake.sent, "dead-man STOP pan after a timed-out JOG")
+
+
+async def test_jog_refused_disarms_only_new_axes(client, ctx):
+    await post(client, "/api/jog", {"pan": 2})
+    ctx.fake.reply_override["JOG"] = "err bad args"
+    await post(client, "/api/jog", {"pan": 3, "tilt": 1}, 400)
+    assert ctx.deadman.armed == {"pan"}  # pan's earlier jog is still running
+
+
+async def test_errors_use_json_envelope(client):
+    resp = await client.get("/nope")
+    assert resp.status == 404
+    assert (await resp.json())["ok"] is False
+    resp = await client.get("/api/goto")
+    assert resp.status == 405 and resp.headers["Allow"] == "POST"
+    assert (await resp.json())["ok"] is False
+    resp = await client.post("/api/goto", data=io.BytesIO(b"x" * (1024 ** 2 + 1)),
+                             headers={"Content-Type": "application/json"})
+    assert resp.status == 413
+    assert (await resp.json())["ok"] is False
+
+
+async def test_enable_off_timeout_still_clears_ref(client, ctx):
+    await post(client, "/api/setpos", {"pan": 1})
+    ctx.fake.reply_override["ENABLE"] = ""
+    await post(client, "/api/enable", {"on": False}, 504)
+    assert ctx.state.ref.source == "none"

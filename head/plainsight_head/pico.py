@@ -246,6 +246,8 @@ class PicoLink:
 
     # --- commands -----------------------------------------------------------
     async def command(self, line: str, timeout_s: float = 2.0) -> list[str]:
+        if "\n" in line or "\r" in line:  # one command per line; never let a caller inject a second
+            raise PicoError("line contains a newline")
         if not self.connected:
             raise PicoError("link down")
         async with self._cmd_lock:
