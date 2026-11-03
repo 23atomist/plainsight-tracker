@@ -92,3 +92,68 @@ async def test_start_twice_and_close_before_start_are_noops():
     await d.start()
     await d.close()
     await d.close()
+
+
+async def _expire_into_blocked_stop(clk, gate, calls, entered):
+    async def stop(axes):
+        calls.append(list(axes))
+        entered.set()
+        await gate.wait()
+
+    d = JogDeadman(100, stop, time_fn=clk.now, poll_s=0.01)
+    await d.start()
+    return d
+
+
+async def test_retouch_during_awaited_stop_keeps_axis_armed():
+    clk, gate, entered, calls = FakeClock(), asyncio.Event(), asyncio.Event(), []
+    d = await _expire_into_blocked_stop(clk, gate, calls, entered)
+    d.touch("pan")
+    clk.advance(1.0)
+    await asyncio.wait_for(entered.wait(), 1)
+    clk.advance(0.001)
+    d.touch("pan")
+    gate.set()
+    await asyncio.sleep(0.05)
+    assert "pan" in d.armed and calls == [["pan"]]
+    await d.close()
+
+
+async def test_clear_during_awaited_stop_leaves_nothing_armed():
+    clk, gate, entered, calls = FakeClock(), asyncio.Event(), asyncio.Event(), []
+    d = await _expire_into_blocked_stop(clk, gate, calls, entered)
+    d.touch("pan")
+    clk.advance(1.0)
+    await asyncio.wait_for(entered.wait(), 1)
+    d.clear()
+    gate.set()
+    await asyncio.sleep(0.05)
+    assert d.armed == set() and calls == [["pan"]]
+    await d.close()
+
+
+async def test_close_during_in_flight_stop_is_clean_and_axis_stays_armed():
+    clk, gate, entered, calls = FakeClock(), asyncio.Event(), asyncio.Event(), []
+    d = await _expire_into_blocked_stop(clk, gate, calls, entered)
+    d.touch("pan")
+    clk.advance(1.0)
+    await asyncio.wait_for(entered.wait(), 1)
+    await d.close()
+    assert d.armed == {"pan"}
+    assert d._task is None
+
+
+async def test_two_axes_expiring_together_make_one_call():
+    clk, calls = FakeClock(), []
+
+    async def stop(axes):
+        calls.append(sorted(axes))
+
+    d = JogDeadman(100, stop, time_fn=clk.now, poll_s=0.01)
+    await d.start()
+    d.touch("pan")
+    d.touch("tilt")
+    clk.advance(1.0)
+    await asyncio.sleep(0.05)
+    assert calls == [["pan", "tilt"]] and d.armed == set()
+    await d.close()
