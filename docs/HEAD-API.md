@@ -72,7 +72,7 @@ Tick with the Pico link up (schema: [tick.json](head-api/schemas/tick.json)):
   "imu": {"ok": true, "heading": 124.0, "pitch": 31.5, "roll": -0.4,
           "cal": {"sys": 3, "gyr": 3, "acc": 3, "mag": 2}, "tempC": 28},
   "tiltDisagreeDeg": 0.3,
-  "ref": {"pan": "imu", "persisted": true, "ageS": 812.4},
+  "ref": {"pan": "imu", "persisted": true, "ageS": 812.4, "frameId": "3f9c2a1b7d4e6f80"},
   "link": {"pico": true, "imu": true}
 }
 ```
@@ -88,7 +88,7 @@ Tick with the Pico link down and the IMU still reading:
   "imu": {"ok": true, "heading": 124.0, "pitch": 31.5, "roll": -0.4,
           "cal": {"sys": 3, "gyr": 3, "acc": 3, "mag": 2}, "tempC": 28},
   "tiltDisagreeDeg": null,
-  "ref": {"pan": "imu", "persisted": true, "ageS": 812.9},
+  "ref": {"pan": "imu", "persisted": true, "ageS": 812.9, "frameId": "3f9c2a1b7d4e6f80"},
   "link": {"pico": false, "imu": true}
 }
 ```
@@ -117,6 +117,7 @@ Tick fields:
 | `ref.pan` | `none imu host` | See the frame contract. |
 | `ref.persisted` | boolean | The current pan reference is stored on the state volume. |
 | `ref.ageS` | number or null | Seconds since the reference was set, one decimal. `null` if never set. |
+| `ref.frameId` | string or null | Names pan's frame (16 hex digits). A new id is minted whenever pan gets a new zero (`POST /api/setpos` with `pan`, the IMU north reference). Restoring `pan-reference.json`, at boot or after a Pico reboot, and keeping a still-homed Pico's position bring back the **same** id. So a host can key its calibration to it: same id, same frame. `null` while `ref.pan` is `none`. |
 | `link.pico`, `link.imu` | boolean | Link health. |
 
 `GET /api/state` returns the same tick object (schema: tick.json).
@@ -184,7 +185,7 @@ empty. The schema lists the names the plainsight-ptz firmware sends.
 | `estop_cleared` | `null`. The latch was cleared. |
 | `config` | `{"scope": string, "key": string, "value": number}`. A setting was written through `POST /api/config`. |
 | `pico_link` | `{"up": boolean}`. The Pico serial link went down (`false`) or came up (`true`). |
-| `pan_reference` | The pan reference changed. Two shapes, below. |
+| `pan_reference` | The pan reference changed. Two shapes, below; a rename carries `frameId`. |
 | `pan_reference_failed` | `{"reason": string, "source": "none" or "imu" or "host"}`. An attempt to set the reference failed. `source` is the current reference, unchanged by the failure. |
 
 ```json event
@@ -206,7 +207,7 @@ empty. The schema lists the names the plainsight-ptz firmware sends.
 `pan_reference` follows spec 6.8:
 
 - **Renamed** (rule 1, known delta): `{"source": "imu" or "host", "pan": n,
-  "previous": m}`. Sent by every `SETPOS pan` the head makes: `POST
+  "previous": m, "frameId": id}`. Sent by every `SETPOS pan` the head makes: `POST
   /api/setpos` (`host`), the IMU north reference at boot or by `POST
   /api/reference` (`imu`), and restoring the persisted position at boot or
   after a Pico reboot (the source stored in the file). `m` and `n` name the
@@ -216,20 +217,25 @@ empty. The schema lists the names the plainsight-ptz firmware sends.
   Pico reboot, where only the persisted position is known). A restore of the
   persisted position adds `"reason": "restored"`: it is the frame the host
   already had coming back, not a new reference. Other renames carry no
-  `reason`. The IMU north value is the heading's equivalent (`+ 360k`) nearest
+  `reason`. `frameId` is the frame in force afterwards (see `ref.frameId` in
+  the tick). A rename mints a new one; a restore carries the stored one. A
+  `pan-reference.json` written before frame ids existed is restored once with a
+  newly minted id, still tagged `restored`, and that id is stored for every
+  later restore. On that first restore only, the host sees a new id for an
+  unchanged frame. The IMU north value is the heading's equivalent (`+ 360k`) nearest
   the Pico's current pan counter, so it never moves the counter, and the soft
   limits, a full turn across the ±180 seam.
 - **Dropped** (rule 2, unknown origin): `{"source": "none", "reason":
   "pan unhomed" or "enable off"}`. Pan lost its homed flag (the Pico rebooted),
   or `POST /api/enable` turned the drivers off. Sent only when a reference was
-  set.
+  set. There is no `frameId`; `ref.frameId` becomes `null`.
 
 ```json event
-{"type": "event", "t": 1762150003000, "name": "pan_reference", "axis": null, "detail": {"source": "imu", "pan": 123.4, "previous": 121.9}}
+{"type": "event", "t": 1762150003000, "name": "pan_reference", "axis": null, "detail": {"source": "imu", "pan": 123.4, "previous": 121.9, "frameId": "3f9c2a1b7d4e6f80"}}
 ```
 
 ```json event
-{"type": "event", "t": 1762150003050, "name": "pan_reference", "axis": null, "detail": {"source": "host", "pan": 12.5, "previous": null, "reason": "restored"}}
+{"type": "event", "t": 1762150003050, "name": "pan_reference", "axis": null, "detail": {"source": "host", "pan": 12.5, "previous": null, "frameId": "a07e5d2c91b3f466", "reason": "restored"}}
 ```
 
 ```json event
@@ -516,12 +522,14 @@ The code wins. Where it differs from section 4 of the design spec:
   case-insensitive.
 - 404, 405 and 413 use the JSON error envelope too.
 - While the Pico link is down, a tick without `axes` is published at 2 Hz.
-- `pan_reference` events carry `{"source", "pan", "previous"}` or
+- `pan_reference` events carry `{"source", "pan", "previous", "frameId"}`
+  (plus `"reason": "restored"` for a file restore) or
   `{"source": "none", "reason"}`; failed attempts are a separate
   `pan_reference_failed` event.
 - The `config` event carries `{"scope", "key", "value"}`.
 - `estop` and `estop_cleared` events carry no detail.
 - `GET /healthz` always returns 200; read `pico` and `imu` for link health.
+- The tick's `ref` carries `frameId`, the id of pan's frame.
 
 ## Schemas
 

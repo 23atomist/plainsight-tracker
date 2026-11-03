@@ -121,7 +121,8 @@
       "required": [
         "pan",
         "persisted",
-        "ageS"
+        "ageS",
+        "frameId"
       ],
       "properties": {
         "pan": {
@@ -139,6 +140,13 @@
             "number",
             "null"
           ]
+        },
+        "frameId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Id of pan's frame: minted when a new zero is set (host setpos, IMU north), carried unchanged through restores of pan-reference.json; null while ref.pan is none."
         }
       }
     },

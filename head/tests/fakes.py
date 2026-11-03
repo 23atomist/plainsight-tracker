@@ -16,6 +16,19 @@ from plainsight_head.protocol import AXES
 from plainsight_head.state import HeadState
 
 
+class _AnyFrameId:
+    """Equals any minted pan frame id (16 lowercase hex digits); for exact-dict assertions."""
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str) and len(other) == 16 and all(c in "0123456789abcdef" for c in other)
+
+    def __repr__(self) -> str:
+        return "<any frame id>"
+
+
+FRAME_ID = _AnyFrameId()
+
+
 class FakeClock:
     def __init__(self, start: float = 0.0) -> None:
         self._now = start

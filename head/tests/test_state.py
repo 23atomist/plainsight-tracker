@@ -18,7 +18,7 @@ def test_tick_shape_and_publish():
     assert set(t) == {"type","t","seq","axes","enabled","moving","estop","imu","tiltDisagreeDeg","ref","link"}
     assert t["t"] == 1762150000123 and t["seq"] == 1 and t["axes"]["pan"]["pos"] == 12.0 and t["axes"]["pan"]["mode"] == "P"
     assert t["imu"]["cal"] == {"sys":3,"gyr":3,"acc":3,"mag":2} and t["link"] == {"pico": True, "imu": True}
-    assert t["ref"] == {"pan": "none", "persisted": False, "ageS": None}
+    assert t["ref"] == {"pan": "none", "persisted": False, "ageS": None, "frameId": None}
 
 
 def test_tilt_disagree_uses_axis_sign_and_offset():

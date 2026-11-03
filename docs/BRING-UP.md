@@ -83,6 +83,25 @@ First boot log (the `pico CFG` lines are abridged):
 - All four axes report `endstop: true`. Pan, zoom and focus have no switch
   (pulled-up inputs), so only tilt's flag means anything.
 
+### Pico settings
+
+- [x] The gear ratios match the printed head (`the-pan-v4` `config.scad`):
+  pan ring 76T / pinion 12T = `gear 6.3333`, tilt sector 120T / 12T =
+  `gear 10`. Set in session 2 with `save: true`, replacing 6.44 / 10.7:
+
+```bash
+curl -s -XPOST http://192.168.4.100:8780/api/config -H 'Content-Type: application/json' \
+  -d '{"scope": "pan", "key": "gear", "value": 6.3333, "save": true}'
+curl -s -XPOST http://192.168.4.100:8780/api/config -H 'Content-Type: application/json' \
+  -d '{"scope": "tilt", "key": "gear", "value": 10, "save": true}'
+curl -s -XPOST http://192.168.4.100:8780/api/home -H 'Content-Type: application/json' \
+  -d '{"axes": ["tilt"]}'   # a gear change clears homed; re-home (about 20 s)
+```
+
+  These two values now live in Pico flash. **If the board is ever reset with
+  `DEFAULTS` (or reflashed with default settings), re-apply both and re-home
+  tilt.** Check them in the boot log's `pico CFG pan` / `pico CFG tilt` lines.
+
 ## 3. Telemetry and direction
 
 - [x] Telemetry: `/ws` sends 10 ticks/s (the `seq` step is 10 per second).
@@ -213,13 +232,105 @@ track/jog request logs, boot reference tilt 2°"):
   once per 10 s per name, with a count of the repeats in between. The access
   log for `/api/track` and `/api/jog` is at DEBUG; other routes stay at INFO.
 
-Hardware, still for the owner:
+Hardware:
 
-- **Suspected pan stall at about 7° into the 2 deg/s bench** (anomaly 1). Check
-  for a cable or mount bind near +7° clockwise of the start orientation, and
-  check the low-speed StealthChop / 0.6 A run current. Then re-run the pan
-  bench with the IMU heading as the witness.
-- **The IMU reports 3 to 9 % more tilt than the Pico** (anomaly 3). Either the
-  tilt `gear` (10.7) is wrong or the IMU is not square on its mount. Measure
-  the tilt gear ratio, or check the mount, before `HEAD_IMU_TILT_*` is
-  trusted for the `tiltDisagreeDeg` check.
+- **RESOLVED: suspected pan stall at about 7° into the 2 deg/s bench**
+  (anomaly 1). Session 2 (below) showed it was a compass artefact, not a
+  stall. With the owner watching, pan swept smoothly both ways and returned to
+  its start, and the hardware pan TRACK bench passed. The drivetrain is fine.
+- **RESOLVED (gear ratio): the IMU reported 3 to 9 % more tilt than the Pico**
+  (anomaly 3). The Pico had `tilt gear 10.7`, but the CAD gives 120T / 12T =
+  10.0, so tilt over-rotated by about 7 %. Pan was also off: 6.44 against
+  76T / 12T = 6.3333. Both are fixed in Pico flash (see
+  [Pico settings](#pico-settings) and session 2 below). The IMU still reads a
+  few % low (28.6° for 30°). That is the sensor (acc calibration 0, roll only
+  approximately the tilt axis), not the gears. Possible refinements:
+  - re-fit `HEAD_IMU_PITCH_OFFSET_DEG` to -2.06 (the roll read at tilt 0);
+  - the tilt cross-check has no scale term, so a scale error is not modelled.
+- **Open, for the owner: `tiltDisagreeDeg` read -1.2 at tilt 2 after the
+  session-2 tilt sweep** (it was about 0 before), while the IMU acc
+  calibration had fallen back to 0. The leading explanation is IMU drift, not
+  lost steps. After the gear fix it read 0.36 / -1.02 / 0.30 at tilt
+  0 / 30 / 2. Keep watching it once the IMU has some accelerometer calibration.
+
+## First light, session 2 (2026-11-03 afternoon, owner present)
+
+### Deploy and boot
+
+- Deployed build 06a1f22 to the Pi at 192.168.4.100
+  (`docker compose up -d --build`).
+- Boot homed tilt and moved it to the 2° reference tilt.
+- The compass reference timed out as expected (mag cal 0), so `ref.pan` is
+  `none`.
+
+### Pan mechanics, with the owner watching
+
+- `goto pan 10`: compass 315.3 -> 323.9, that is 8.6° for 10°
+  (magnetometer uncalibrated).
+- `goto pan 60` then `goto pan 0`: pan swept smoothly both ways and returned
+  to the start.
+- Mid-sweep, the compass heading **froze at 330° for about 6 s**, then ended
+  30° off (315 -> 285). The compass is unreliable, not the mechanics.
+
+**Verdict:** the session-1 "stall" was a compass artefact; the drivetrain is
+fine.
+
+**Cables:** they route through the centre of the head. The owner states that
+several full pan turns are safe, but not unlimited: "10-20 turns" before it
+becomes a problem. The ±180 soft limits stay for now; the cabling leaves
+headroom beyond them.
+
+### TRACK benches on hardware: all PASS
+
+| Bench | Result |
+|---|---|
+| Pan 2°/s, 30 s | max 0.417°, rms 0.145°, p95 0.230° (301 ticks) |
+| Stop test | vel 0 after 1.210 s (limit 2.0) |
+| Tilt 1°/s, 30 s | max 0.248°, rms 0.074°, p95 0.116° |
+
+### Tilt check after the sweep
+
+After the tilt sweep, `tiltDisagreeDeg` read -1.2 at tilt 2 (it was about 0
+before), and the IMU acc calibration was back at 0. IMU drift, not lost steps,
+is the leading explanation. This stays under Follow-ups, together with the
+3 to 9 % tilt scale discrepancy.
+
+### Pan north
+
+The BNO055 mag/acc calibration cannot be done on a mounted sensor, because the
+head cannot be turned through a figure-8. So pan north will come from the
+host's landmark sightings (`set_position` / calibration), not from the compass.
+Once a reference exists, `HEAD_PAN_RESTORE=persisted` is the path that keeps
+it.
+
+### Clock
+
+The Pi's clock is NTP-synchronised and correct (2026-11-03 MST). The earlier
+remark in the session that it was "two days behind" was wrong.
+
+### Gear ratios corrected from the CAD
+
+The head's design files (`hardware/`,
+`config.scad` and its README) give the printed gearing:
+
+| Axis | Teeth | Ratio | Pico had |
+|---|---|---|---|
+| pan | ring 76T / pinion 12T | 6.3333 | 6.44 |
+| tilt | sector 120T / pinion 12T | 10.0 | 10.7 |
+
+With 10.7, tilt over-rotated by about 7 %. That explains the "IMU reads 3 to
+9 % more tilt" item. Both ratios were fixed live with `POST /api/config` and
+`save: true` (`pan gear 6.3333`, `tilt gear 10`), followed by `HOME tilt` to
+resync. Homing took about 20 s.
+
+Verification against the IMU after the fix:
+
+| Tilt (Pico) | IMU roll | `tiltDisagreeDeg` |
+|---|---|---|
+| 0 | -2.06 | 0.36 |
+| 30 | -30.69 | -1.02 |
+| 2 | -4.00 | 0.30 |
+
+The IMU saw 28.6° for a 30° move (-4.6 %). Its accelerometer calibration is 0,
+and its roll axis is only approximately the tilt axis. So a few % of scale error
+is the sensor, not the gears; the tooth counts from the CAD are authoritative.
