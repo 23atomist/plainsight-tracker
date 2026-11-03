@@ -49,7 +49,6 @@ import type { Config } from "../src/shared/config.js";
 const RAD = Math.PI / 180;
 const W = 1920, H = 1080;
 const F_TRUE = focalPxFromFov(W, 55);
-const STEPS_PER_DEG = 444.444;
 const textOf = (r: any) => r.content.map((c: any) => c.text).join("");
 
 interface Mount { kx: 1 | -1; ky: 1 | -1; label: string }
@@ -129,14 +128,14 @@ afterEach(async () => { dev?.close(); dev = null; await mock?.stop(); mock = nul
 async function calibrateThroughTheRealTool(m: Mount) {
   mock = new FakeHead(); await mock.start({ port: PORT });
   const startPan = 12, startTilt = 25;
-  mock.setPosition(startPan * STEPS_PER_DEG, startTilt * STEPS_PER_DEG);
+  mock.setPosition(startPan, startTilt);
   const cfg = loadConfig(undefined, {
     TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, TB3_CAMERA_SOURCE: "v4l2",
   });
   dev = new Device(cfg); dev.start();
   const t0 = Date.now();
   while (!dev.getState().connected && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 25));
-  while (Math.abs(dev.getState().panSteps - startPan * STEPS_PER_DEG) > 1 && Date.now() - t0 < 3000) {
+  while (Math.abs(dev.getState().panDeg - startPan) > 0.0025 && Date.now() - t0 < 3000) {
     await new Promise((r) => setTimeout(r, 25));
   }
 
@@ -150,7 +149,7 @@ async function calibrateThroughTheRealTool(m: Mount) {
   const detector = {
     detect: async (): Promise<DetectResponse> => {
       const st = deviceRef.current!.getState();
-      const p = project(m, targetPan, targetTilt, st.panSteps / STEPS_PER_DEG, st.tiltSteps / STEPS_PER_DEG);
+      const p = project(m, targetPan, targetTilt, st.panDeg, st.tiltDeg);
       return { detections: [{ dxPx: p.dxPx, dyPx: p.dyPx, conf: 0.9 }], widthPx: W, heightPx: H, inferMs: 1 };
     },
   };

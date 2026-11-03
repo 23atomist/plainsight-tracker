@@ -6,8 +6,6 @@ import { TrackingSession } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
 import { wrapDeg180 } from "../shared/track/control.js";
 import { applySign, checkPanTilt } from "../shared/angles.js";
-// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
-import { stepsToDeg } from "../shared/legacy-transitional.js";
 import { effectiveLimits, TaughtEdges } from "../shared/limits-store.js";
 import { moveToUserAngle } from "./move.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
@@ -190,7 +188,7 @@ function angularErrorToPixel(
 // IMPORTANT 5 (round 1) / HIGH 1 (round 3): gated on
 // session.status().state === "tracking", NOT session.isActive() (which is
 // also true in "waiting"/"acquiring" -- track/session.ts:128). Every early
-// return in TrackingSession.tick() (not_calibrated, program_engaged,
+// return in TrackingSession.tick() (not_calibrated, estop,
 // telemetry_stale, target_stale) sets state to "waiting" and returns BEFORE
 // recordAim() runs, freezing lastStatus at its pre-dropout value --
 // isActive() alone would let a dead target's frozen aim keep gating in a
@@ -547,8 +545,8 @@ export function registerVisionTools(
       const windowMs = sample_window_ms ?? 4000;
 
       const cur = device.getState();
-      const startPanDeg = applySign(stepsToDeg(cur.panSteps), cfg.panSign);
-      const startTiltDeg = applySign(stepsToDeg(cur.tiltSteps), cfg.tiltSign);
+      const startPanDeg = applySign(cur.panDeg, cfg.panSign);
+      const startTiltDeg = applySign(cur.tiltDeg, cfg.tiltSign);
       const limits = effectiveLimits(
         { panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax },
         limitsProvider(),

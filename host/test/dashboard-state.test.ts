@@ -5,11 +5,21 @@ const ok = <T>(value: T) => ({ ok: true as const, value });
 const err = (error: string) => ({ ok: false as const, error });
 const SVC: ServicesState = { readsb: "active", tb3mcp: "active", tb3agent: "inactive", llama: "inactive" };
 
+const DEVICE_STATUS = {
+  connected: true, pan_deg: 10, tilt_deg: 20, moving: false, estop: false, pan_ref: { source: "imu" as const },
+  tilt_disagree_deg: 0.2, link: { pico: true, imu: true }, stale: false, last_update_age_ms: 100,
+};
+const HEAD_DIRECT = {
+  connected: true, panDeg: 10, tiltDeg: 20, moving: false, estop: false,
+  ref: { pan: "host" as const, persisted: false, ageS: 5 },
+  imu: { ok: true, heading: 90, pitch: 1, roll: 2, cal: { sys: 3, gyr: 3, acc: 3, mag: 3 }, tempC: 25 },
+  tiltDisagreeDeg: 0.4, link: { pico: true, imu: false },
+};
+
 function inputs(over: Partial<SourceInputs> = {}): SourceInputs {
   return {
-    deviceStatus: ok({ connected: true, pan_deg: 10, tilt_deg: 20, moving: false, battery_v: 12.1, stale: false, last_update_age_ms: 100 }),
-    rigDirect: ok({ connected: true, moving: false, batteryV: 12.1, panSteps: 4444, tiltSteps: 8888,
-      imu: { ok: true, pitchDeg: 1, rollDeg: 2, tempC: 25, pressHpa: 1008 }, joyLatched: false }),
+    deviceStatus: ok(DEVICE_STATUS),
+    rigDirect: ok(HEAD_DIRECT),
     tracking: ok({ state: "stopped", label: null, target_azimuth_deg: null, target_elevation_deg: null,
       target_range_m: null, pointing_error_deg: null, pan_limited: false, tilt_limited: false,
       offset_pan_deg: 0, offset_tilt_deg: 0 }),
@@ -44,6 +54,31 @@ describe("mergeState mode derivation", () => {
         target_range_m: 1, pointing_error_deg: 1, pan_limited: false, tilt_limited: false,
         offset_pan_deg: 0, offset_tilt_deg: 0 }) }), 1000);
     expect(s.mode).toBe("autonomous");
+  });
+});
+
+describe("mergeState rig: the head's state", () => {
+  it("prefers the daemon's get_status and carries estop/panRef/tiltDisagreeDeg/link; no battery", () => {
+    const s = mergeState(inputs(), 1000);
+    expect(s.rig).toEqual({
+      connected: true, panDeg: 10, tiltDeg: 20, moving: false, telemetryAgeMs: 100,
+      estop: false, panRef: "imu", tiltDisagreeDeg: 0.2, link: { pico: true, imu: true },
+      imu: HEAD_DIRECT.imu,
+    });
+  });
+  it("falls back to the direct read when the daemon is down", () => {
+    const s = mergeState(inputs({ deviceStatus: err("daemon down") }), 1000);
+    expect(s.rig.panRef).toBe("host");
+    expect(s.rig.tiltDisagreeDeg).toBe(0.4);
+    expect(s.rig.link).toEqual({ pico: true, imu: false });
+  });
+  it("reports E-STOP when either source sees the latch", () => {
+    expect(mergeState(inputs({ rigDirect: ok({ ...HEAD_DIRECT, estop: true }) }), 1000).rig.estop).toBe(true);
+    expect(mergeState(inputs({ deviceStatus: ok({ ...DEVICE_STATUS, estop: true }) }), 1000).rig.estop).toBe(true);
+  });
+  it("all-null when neither source is up", () => {
+    const s = mergeState(inputs({ deviceStatus: err("x"), rigDirect: err("y") }), 1000);
+    expect(s.rig).toMatchObject({ estop: false, panRef: null, tiltDisagreeDeg: null, link: null, imu: null });
   });
 });
 

@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Mat3 } from "../src/shared/geo/vec3.js";
 import { TrackingSession, type Scheduler } from "../src/shared/track/session.js";
+import type { DeviceState } from "../src/shared/types.js";
+import type { HeadTrackCmd } from "../src/shared/head-types.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
 import { loadConfig, type Config } from "../src/shared/config.js";
-import { STEPS_PER_DEG } from "../src/shared/angles.js";
 import { MAX_OFFSET_DEG } from "../src/shared/track/offset.js";
 import { reachablePanTilt } from "../src/mcp/geo-tools.js";
 import { targetAimAt, controlRate } from "../src/shared/track/control.js";
@@ -25,21 +26,25 @@ function manualScheduler(): Scheduler & { fire(): void } {
 }
 
 class FakeDevice {
-  panSteps = 0; tiltSteps = 0; moving = false; programEngaged = false;
+  panDeg = 0; tiltDeg = 0; moving = false; estop = false;
   lastUpdateMs = 1_000_000;
-  jogVec: { x: number; y: number; aux: number } | null = null;
+  // Every track() call, in order (the head's TRACK; Task 5 servos through it).
+  tracks: HeadTrackCmd[] = [];
+  jogVec: { panDps: number; tiltDps: number; ttlMs: number } | null = null;
   cleared = 0;
   gotos: { pan: number; tilt: number }[] = [];
   gotoDeferreds: { resolve: () => void; reject: (e: Error) => void }[] = [];
-  getState() {
+  getState(): DeviceState {
     return {
-      connected: true, panSteps: this.panSteps, tiltSteps: this.tiltSteps, auxSteps: 0,
-      moving: this.moving, programEngaged: this.programEngaged, batteryV: 12,
-      staIp: "1.2.3.4", lastUpdateMs: this.lastUpdateMs,
+      connected: true, panDeg: this.panDeg, tiltDeg: this.tiltDeg, zoomDeg: 0, focusDeg: 0,
+      moving: this.moving, enabled: true, estop: this.estop, tiltDisagreeDeg: null,
+      ref: { pan: "imu", persisted: true, ageS: 0 }, link: { pico: true, imu: true },
+      lastUpdateMs: this.lastUpdateMs,
     };
   }
-  setJogVector(x: number, y: number, aux: number) { this.jogVec = { x, y, aux }; }
+  setJogVector(panDps: number, tiltDps: number, ttlMs: number) { this.jogVec = { panDps, tiltDps, ttlMs }; }
   clearJog() { this.jogVec = null; this.cleared++; }
+  async track(cmd: HeadTrackCmd) { this.tracks.push(cmd); }
   async gotoAngle(pan: number, tilt: number) {
     this.gotos.push({ pan, tilt });
     return new Promise<void>((resolve, reject) => { this.gotoDeferreds.push({ resolve, reject }); });
@@ -233,7 +238,7 @@ describe("TrackingSession aim-offset — safety: cannot bypass pan/tilt limits",
     s.nudgeOffset(2, 0); // a small, legal correction
     // Force a reacquire via a large TRUE pointing error (unrelated to the
     // offset): rig physically far from where it should be.
-    dev.panSteps = 90 * STEPS_PER_DEG;
+    dev.panDeg = 90;
     const before = dev.gotos.length;
     sched.fire();
     expect(s.status().state).toBe("acquiring");

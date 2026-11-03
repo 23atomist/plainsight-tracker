@@ -16,33 +16,28 @@ afterEach(async () => { dev?.close(); dev = null; if (mock) { await mock.stop();
 
 describe("DeviceState.imu ingestion", () => {
   it("populates imu from the WS tick", async () => {
-    mock = new FakeHead(); await mock.start({ port: PORT });
+    mock = new FakeHead();
+    mock.model.imu = {
+      ok: true, heading: 271.5, pitch: 1.5, roll: -2.0, cal: { sys: 3, gyr: 3, acc: 2, mag: 1 }, tempC: 25.4,
+    };
+    await mock.start({ port: PORT });
     const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
     dev = new Device(cfg); dev.start();
     await waitFor(() => dev!.getState().imu !== undefined);
-    const imu = dev.getState().imu;
-    expect(imu).toBeDefined();
-    expect(imu!.ok).toBe(true);
-    expect(imu!.pitchDeg).toBeCloseTo(1.5, 6);
-    expect(imu!.rollDeg).toBeCloseTo(-2.0, 6);
-    expect(imu!.tempC).toBeCloseTo(25.4, 6);
-    expect(imu!.pressHpa).toBeCloseTo(1013.1, 6);
+    expect(dev.getState().imu).toEqual({
+      ok: true, heading: 271.5, pitch: 1.5, roll: -2.0, cal: { sys: 3, gyr: 3, acc: 2, mag: 1 }, tempC: 25.4,
+    });
   });
 
-  // Regression guard: real firmware once emitted imu.ok as a NUMBER (1/0)
-  // rather than a JSON boolean, which a strict `=== true` parse would silently
-  // turn into `false` on every hardware tick. The daemon now tolerates a
-  // numeric 1 as well; lock that in against the mock mirroring the regressed
-  // wire shape.
-  it("treats a numeric wire ok:1 as true (firmware regression guard)", async () => {
+  it("an IMU that is not ok reaches the state as ok:false with null readings", async () => {
     mock = new FakeHead();
-    mock.imuOkAsNumber = true;
+    mock.model.imu = { ok: false, heading: null, pitch: null, roll: null, cal: null, tempC: null };
     await mock.start({ port: PORT });
     const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
     dev = new Device(cfg); dev.start();
     await waitFor(() => dev!.getState().imu !== undefined);
     const imu = dev.getState().imu;
-    expect(imu).toBeDefined();
-    expect(imu!.ok).toBe(true);
+    expect(imu?.ok).toBe(false);
+    expect(imu?.pitch).toBeNull();
   });
 });

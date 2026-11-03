@@ -29,12 +29,11 @@ import { pixelToAngularError, focalPxFromFov } from "../src/shared/vision/geomet
 
 const textOf = (r: any) => r.content.map((c: any) => c.text).join("");
 
-const STEPS_PER_DEG = 444.444;
-
 function bareDeviceState(over: Partial<DeviceState> = {}): DeviceState {
   return {
-    connected: true, panSteps: 0, tiltSteps: 0, auxSteps: 0,
-    moving: false, programEngaged: false, batteryV: 0, staIp: "", lastUpdateMs: 0,
+    connected: true, panDeg: 0, tiltDeg: 0, zoomDeg: 0, focusDeg: 0,
+    moving: false, enabled: true, estop: false, tiltDisagreeDeg: null,
+    ref: { pan: "imu", persisted: true, ageS: 0 }, link: { pico: true, imu: true }, lastUpdateMs: 0,
     ...over,
   };
 }
@@ -103,7 +102,7 @@ describe("recordPostureSample", () => {
     const postures = new PostureHistory();
     const pastMs = Date.now() - 5000; // well before "now"
     const dev = bareDeviceState({
-      panSteps: 12 * STEPS_PER_DEG, tiltSteps: 3 * STEPS_PER_DEG, lastUpdateMs: pastMs,
+      panDeg: 12, tiltDeg: 3, lastUpdateMs: pastMs,
     });
 
     recordPostureSample(postures, dev, cfg);
@@ -124,7 +123,7 @@ describe("recordPostureSample", () => {
     const cfg = loadConfig(undefined, { TB3_PAN_SIGN: "-1", TB3_TILT_SIGN: "-1" });
     const postures = new PostureHistory();
     const t = Date.now() - 1000;
-    const dev = bareDeviceState({ panSteps: 10 * STEPS_PER_DEG, tiltSteps: 4 * STEPS_PER_DEG, lastUpdateMs: t });
+    const dev = bareDeviceState({ panDeg: 10, tiltDeg: 4, lastUpdateMs: t });
 
     recordPostureSample(postures, dev, cfg);
 
@@ -424,7 +423,7 @@ describe("buildPredictPixel", () => {
 
   // -------------------------------------------------------------------
   // HIGH 1 (fix round 3): "waiting" is the state EVERY early return in
-  // TrackingSession.tick() sets (not_calibrated, program_engaged,
+  // TrackingSession.tick() sets (not_calibrated, estop,
   // telemetry_stale, target_stale) BEFORE recordAim() runs -- so
   // session.isActive() (state !== "stopped") is TRUE throughout a dropout,
   // even though lastStatus is frozen at its pre-dropout value. This is the
@@ -558,7 +557,7 @@ async function calibHarness(
   givenDetector?: { detect: (jpeg: string, minConf: number) => Promise<DetectResponse | null> },
 ) {
   calibMock = new FakeHead(); await calibMock.start({ port: CALIB_PORT });
-  calibMock.setPosition(10 * STEPS_PER_DEG, 5 * STEPS_PER_DEG);
+  calibMock.setPosition(10, 5);
   const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${CALIB_PORT}`, ...envOver });
   calibDev = new Device(cfg); calibDev.start();
   const t0 = Date.now();
@@ -567,9 +566,9 @@ async function calibHarness(
   }
   // Wait for an actual telemetry tick carrying the seeded position, not just
   // the WS handshake -- `connected` flips on 'open', which can race the
-  // first 50ms tick, and this test relies on device.getState().panSteps
+  // first 50ms tick, and this test relies on device.getState().panDeg
   // already reflecting setPosition() before calibrate_vision_scale reads it.
-  while (Math.abs(calibDev.getState().panSteps - 10 * STEPS_PER_DEG) > 1 && Date.now() - t0 < 3000) {
+  while (Math.abs(calibDev.getState().panDeg - 10) > 0.0025 && Date.now() - t0 < 3000) {
     await new Promise((r) => setTimeout(r, 25));
   }
   const dir = mkdtempSync(join(tmpdir(), "tb3-vcal-"));
@@ -654,8 +653,8 @@ describe("calibrate_vision_scale — precondition ordering (IMPORTANT 1 / IMPORT
     // so by the time callTool resolves the rig must be back where it
     // started (10deg pan) -- NOT left at the stepped 15deg (the bug the
     // reviewer proved: "the rig was left at the stepped position").
-    expect(mock!.lastGoto?.pan_deg).toBeCloseTo(10, 1);
-    const finalPanDeg = device.getState().panSteps / STEPS_PER_DEG;
+    expect(mock!.lastGoto?.pan).toBeCloseTo(10, 1);
+    const finalPanDeg = device.getState().panDeg;
     expect(finalPanDeg).toBeCloseTo(10, 1);
   });
 
@@ -780,7 +779,7 @@ function makeLiveDeviceFakes(opts: {
     latest: () => {
       const now = Date.now();
       const st = deviceRef.current!.getState();
-      history.push({ t: now, panDeg: st.panSteps / STEPS_PER_DEG, tiltDeg: st.tiltSteps / STEPS_PER_DEG });
+      history.push({ t: now, panDeg: st.panDeg, tiltDeg: st.tiltDeg });
       const lat = exposureLatencyMs ? exposureLatencyMs() : 0;
       return { jpegBase64: "Zm9v", arrivedMs: now, exposureMs: now - lat };
     },

@@ -1,35 +1,74 @@
 import { describe, it, expect } from "vitest";
-import { parseRigStatus, parseServiceState } from "../src/dashboard/parse.js";
+import { parseHeadState, parseServiceState } from "../src/dashboard/parse.js";
 
-const SAMPLE = {
-  pos: { pan: 44444, tilt: -8888, aux: 0 }, moving: 1, joy_latched: false,
-  program_engaged: false, battery_v: 12.3, uptime_ms: 5000, heap: 170000,
-  wifi: { ap_ip: "10.31.31.1", sta_ip: "192.168.4.56", clients: 1 },
-  imu: { ok: true, pitch: 1.5, roll: -2.0, tempC: 25.0, pressHpa: 1008.0 },
+// The GET /api/state body: the tick object (docs/HEAD-API.md, Telemetry).
+const TICK = {
+  type: "tick", t: 1762150000123, seq: 41877,
+  axes: {
+    pan: { pos: 123.4, vel: 0.8, tgt: 123.9, mode: "T", homed: true, endstop: false, driver: true },
+    tilt: { pos: 31.2, vel: 0.1, tgt: 31.3, mode: "T", homed: true, endstop: false, driver: true },
+    zoom: { pos: 0, vel: 0, tgt: 0, mode: "I", homed: false, endstop: false, driver: true },
+    focus: { pos: 0, vel: 0, tgt: 0, mode: "I", homed: false, endstop: false, driver: true },
+  },
+  enabled: true, moving: true, estop: false,
+  imu: { ok: true, heading: 124.0, pitch: 31.5, roll: -0.4, cal: { sys: 3, gyr: 3, acc: 3, mag: 2 }, tempC: 28 },
+  tiltDisagreeDeg: 0.3,
+  ref: { pan: "imu", persisted: true, ageS: 812.4 },
+  link: { pico: true, imu: true },
 };
 
-describe("parseRigStatus", () => {
-  it("parses full telemetry (steps kept raw, imu present)", () => {
-    const r = parseRigStatus(SAMPLE);
+// The same tick with the Pico link down: no motion telemetry.
+const { axes: _axes, enabled: _enabled, moving: _moving, ...NO_AXES_REST } = TICK;
+const NO_AXES = { ...NO_AXES_REST, link: { pico: false, imu: true } };
+
+describe("parseHeadState", () => {
+  it("parses a full tick into degrees (device frame)", () => {
+    const r = parseHeadState(TICK);
+    expect(r).toEqual({
+      connected: true, panDeg: 123.4, tiltDeg: 31.2, moving: true, estop: false,
+      ref: { pan: "imu", persisted: true, ageS: 812.4 },
+      imu: TICK.imu,
+      tiltDisagreeDeg: 0.3,
+      link: { pico: true, imu: true },
+    });
+  });
+
+  it("carries the E-STOP latch", () => {
+    expect(parseHeadState({ ...TICK, estop: true }).estop).toBe(true);
+  });
+
+  it("a tick without axes is connected, with null angles and motion", () => {
+    const r = parseHeadState(NO_AXES);
     expect(r.connected).toBe(true);
-    expect(r.moving).toBe(true);           // 1 → true
-    expect(r.batteryV).toBe(12.3);
-    expect(r.panSteps).toBe(44444);
-    expect(r.tiltSteps).toBe(-8888);
+    expect(r.panDeg).toBeNull();
+    expect(r.tiltDeg).toBeNull();
+    expect(r.moving).toBeNull();
     expect(r.imu?.ok).toBe(true);
-    expect(r.imu?.pitchDeg).toBe(1.5);
-    expect(r.joyLatched).toBe(false);
+    expect(r.link).toEqual({ pico: false, imu: true });
   });
-  it("imu absent → imu null, still connected", () => {
-    const r = parseRigStatus({ pos: { pan: 0, tilt: 0, aux: 0 }, moving: 0, battery_v: 12 });
-    expect(r.connected).toBe(true);
-    expect(r.moving).toBe(false);
-    expect(r.imu).toBeNull();
+
+  it("garbage, a non-tick, or a tick that breaks the schema → not connected, never throws", () => {
+    for (const raw of [null, "nope", {}, { ...TICK, type: "event" }, { ...TICK, estop: "no" }, { ...TICK, extra: 1 }]) {
+      const r = parseHeadState(raw);
+      expect(r.connected).toBe(false);
+      expect(r.panDeg).toBeNull();
+      expect(r.ref).toBeNull();
+      expect(r.imu).toBeNull();
+      expect(r.link).toBeNull();
+    }
   });
-  it("garbage → not connected, all null, never throws", () => {
-    expect(parseRigStatus(null).connected).toBe(false);
-    expect(parseRigStatus("nope").panSteps).toBeNull();
-    expect(parseRigStatus({}).connected).toBe(false);   // no pos → not a real status
+
+  it("an ESP32 /api/status body is not a head state", () => {
+    expect(parseHeadState({ pos: { pan: 0, tilt: 0, aux: 0 }, moving: 0 }).connected).toBe(false);
+  });
+
+  it("returns copies, not references into the parsed body", () => {
+    const raw = structuredClone(TICK);
+    const r = parseHeadState(raw);
+    raw.ref.pan = "none";
+    raw.imu.cal.mag = 0;
+    expect(r.ref?.pan).toBe("imu");
+    expect(r.imu?.cal?.mag).toBe(2);
   });
 });
 

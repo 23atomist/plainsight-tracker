@@ -34,7 +34,10 @@ afterEach(async () => {
 // to be the exact inverse of the mock's deadband+cubic curve. If either one's
 // deadband/span/plateau ever changes without the other, this goes red before
 // the (much slower, much fuzzier) closed-loop simulation would even notice.
-describe("mock jog model matches the control law's inverse", () => {
+// Task 5: the ESP32 joystick deflection curve is gone (the head takes deg/s),
+// and with it MOCK_JOG_MAX_DPS/mockJogRate; Task 5 deletes rateToDeflection
+// and replaces these two cases with the TRACK-driven simulation.
+describe.skip("mock jog model matches the control law's inverse", () => {
   // The round-trip below uses MOCK_JOG_MAX_DPS on BOTH sides, so it cannot see
   // the mock's plateau drifting away from the real rig's. 19.0 deg/s is a
   // hardware measurement (jog-probe.mjs, 2026-07-16), not a tunable: if these
@@ -137,6 +140,6 @@ describe("closed-loop tracking simulation", () => {
     await sleep(1500);
     expect(session.status().state).toBe("waiting");
     expect(session.status().reason).toBe("target_stale");
-    expect(mock.lastJog).toEqual({ x: 0, y: 0, aux: 0 });
+    expect(mock.lastJog).toEqual({ pan: 0, tilt: 0 });
   }, 15000);
 });

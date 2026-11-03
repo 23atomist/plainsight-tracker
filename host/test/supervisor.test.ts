@@ -119,7 +119,7 @@ describe("SunSupervisor", () => {
     const nowMs = Date.UTC(2026, 6, 17, 19, 30);
     const { cfg, store } = await harness(25, nowMs);
     const { sched } = manualScheduler();
-    mock!.setPosition(175 * 444.444, 77 * 444.444);
+    mock!.setPosition(175, 77);
     await new Promise((r) => setTimeout(r, 200));
     const session = new TrackingSession(dev!, cfg, store);
     const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
@@ -132,7 +132,7 @@ describe("SunSupervisor", () => {
     sup.tickForTest();
     expect(sup.status().state).toBe("parking");
     // Make the goto arrive: move the rig to the park target.
-    mock!.setPosition(175 * 444.444, -20 * 444.444);
+    mock!.setPosition(175, -20);
     await new Promise((r) => setTimeout(r, 400)); // waitForArrival resolves + .then runs
     sup.tickForTest(); // parkStep advanced on arrival → parked
     expect(sup.status().state).toBe("parked");
@@ -146,7 +146,7 @@ describe("SunSupervisor", () => {
     const { cfg, store } = await harness(25, nowMs);
     const { sched } = manualScheduler();
     // Aim the boresight AT the sun (identity R → pan=az≈175°, tilt=el≈77.6°).
-    mock!.setPosition(175 * 444.444, 77 * 444.444);
+    mock!.setPosition(175, 77);
     await new Promise((r) => setTimeout(r, 200));
     const session = new TrackingSession(dev!, cfg, store);
     const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
@@ -207,7 +207,7 @@ describe("SunSupervisor", () => {
     const nowMs = Date.UTC(2026, 6, 17, 19, 30);
     const { cfg, store } = await harness(25, nowMs);
     const { sched } = manualScheduler();
-    mock!.setPosition(175 * 444.444, 77 * 444.444);
+    mock!.setPosition(175, 77);
     await new Promise((r) => setTimeout(r, 200));
     const session = new TrackingSession(dev!, cfg, store);
     const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
@@ -235,9 +235,9 @@ describe("SunSupervisor", () => {
     const nowMs = Date.UTC(2026, 6, 17, 19, 30);
     const { cfg, store } = await harness(25, nowMs);
     const { sched } = manualScheduler();
-    mock!.setPosition(175 * 444.444, 77 * 444.444);
+    mock!.setPosition(175, 77);
     await new Promise((r) => setTimeout(r, 200));
-    mock!.setProgramEngaged(true); // tb3_goto_safe() is now permanently false
+    mock!.failNext("/api/goto", 409, 1000); // every goto is now rejected
     const session = new TrackingSession(dev!, cfg, store);
     const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
     sup.start();
@@ -289,7 +289,7 @@ describe("idle park", () => {
     const sup = new SunSupervisor(dev!, cfg, store, session, () => NIGHT_MS, sched);
     const r = await sup.parkIdle();
     expect(r).toEqual({ parked: true, reason: "parked" });
-    expect(mock!.lastGoto?.tilt_deg).toBeCloseTo(cfg.idleParkTiltDeg, 1);
+    expect(mock!.lastGoto?.tilt).toBeCloseTo(cfg.idleParkTiltDeg, 1);
   });
 
   // C3: deleting the guard line in parkIdle() must fail THIS test. Ticking
@@ -305,7 +305,7 @@ describe("idle park", () => {
     const nowMs = Date.UTC(2026, 6, 17, 19, 30);
     const { cfg, store } = await harness(25, nowMs);
     const { sched } = manualScheduler();
-    mock!.setPosition(175 * 444.444, 77 * 444.444);
+    mock!.setPosition(175, 77);
     await new Promise((r) => setTimeout(r, 200));
     const session = new TrackingSession(dev!, cfg, store);
     const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
@@ -313,7 +313,7 @@ describe("idle park", () => {
     expect(sup.isSunLocked()).toBe(true);
     await new Promise((r) => setTimeout(r, 100)); // let the park goto's fetch reach the mock
     // Drive it to arrival, exactly like "flies a direct park" above.
-    mock!.setPosition(175 * 444.444, -20 * 444.444);
+    mock!.setPosition(175, -20);
     await new Promise((r) => setTimeout(r, 400));
     sup.tickForTest();
     expect(sup.status().state).toBe("parked"); // idle, not mid-flight -- the real test condition
@@ -374,7 +374,7 @@ describe("idle park", () => {
 
     const first = await sup.parkIdle();
     expect(first.parked).toBe(true);
-    expect(mock!.lastGoto?.tilt_deg).toBeCloseTo(cfg.idleParkTiltDeg, 1);
+    expect(mock!.lastGoto?.tilt).toBeCloseTo(cfg.idleParkTiltDeg, 1);
 
     // A tracking pass moves the rig away from the idle pose (a ~level target
     // due north of RIG -- far from idleParkTiltDeg's 45°).
@@ -386,7 +386,7 @@ describe("idle park", () => {
 
     // Confirm the premise: the rig genuinely left the idle tilt (otherwise
     // this test would pass for the wrong reason).
-    const midTiltDeg = dev!.getState().tiltSteps / 444.444;
+    const midTiltDeg = dev!.getState().tiltDeg;
     expect(Math.abs(midTiltDeg - cfg.idleParkTiltDeg)).toBeGreaterThan(1);
 
     // Pre-fix: idleParked was still `true` from the very first call and
@@ -397,7 +397,7 @@ describe("idle park", () => {
     const second = await sup.parkIdle();
     expect(second.parked).toBe(true);
     expect(mock!.gotoCount).toBeGreaterThan(before);
-    expect(mock!.lastGoto?.tilt_deg).toBeCloseTo(cfg.idleParkTiltDeg, 1);
+    expect(mock!.lastGoto?.tilt).toBeCloseTo(cfg.idleParkTiltDeg, 1);
   });
 
   // C2 regression: parkIdle() used to command a bare tilt sweep with no path
@@ -415,7 +415,7 @@ describe("idle park", () => {
     const { cfg, store } = await harness(25, nowMs);
     const sunAz = sunAzEl(RIG, nowMs).azDeg;
     const { sched } = manualScheduler();
-    mock!.setPosition(sunAz * 444.444, 0); // pan aimed at the sun's azimuth, level
+    mock!.setPosition(sunAz, 0); // pan aimed at the sun's azimuth, level
     await new Promise((r) => setTimeout(r, 200));
     const session = new TrackingSession(dev!, cfg, store);
     const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
@@ -433,8 +433,8 @@ describe("idle park", () => {
     const R = store.getOrientation()!;
     const sEnu = sunEnu(RIG, nowMs);
     const final = dev!.getState();
-    const finalPanDeg = final.panSteps / 444.444;
-    const finalTiltDeg = final.tiltSteps / 444.444;
+    const finalPanDeg = final.panDeg;
+    const finalTiltDeg = final.tiltDeg;
     const sepDeg = angleBetweenDeg(boresightEnu(R, finalPanDeg, finalTiltDeg, [0, 1, 0], 1), sEnu);
     expect(sepDeg).toBeGreaterThanOrEqual(cfg.sunConeDeg);
     // And it actually reached the idle tilt via the detour, not a
@@ -443,22 +443,34 @@ describe("idle park", () => {
   });
 
   // Round-2 review finding: the waypoint loop awaited each leg to completion
-  // without re-checking locked/session.isActive()/programEngaged in between,
+  // without re-checking locked/session.isActive()/estop in between,
   // so a multi-second multi-leg detour (like the pan-detour above) could fly
   // its remaining legs on top of a since-started sun park -- desyncing the
   // guard's state model (it believes "parked" at parkTiltDeg while the rig
   // is actually mid-flight to idleParkTiltDeg; tick() returns early for the
   // entire "parked" state, so it never notices). Reuses the exact pan-detour
   // fixture above (guaranteed 2 waypoints) and interrupts between leg 1 and
-  // leg 2 with a REAL tracking session start -- the honest way to flip
-  // session.isActive() true mid-flight, no test-only seam needed.
+  // leg 2 with a real tracking session start (motion calls stubbed, see
+  // below) -- the honest way to flip session.isActive() true mid-flight.
   it("aborts mid-flight if an abort condition changes between legs, and never flies the remaining waypoints", async () => {
     const nowMs = Date.UTC(2026, 6, 17, 16, 30);
     const { cfg, store } = await harness(25, nowMs);
     const sunAz = sunAzEl(RIG, nowMs).azDeg;
-    mock!.setPosition(sunAz * 444.444, 0);
+    mock!.setPosition(sunAz, 0);
     await new Promise((r) => setTimeout(r, 200));
-    const session = new TrackingSession(dev!, cfg, store);
+    // The session reads the real telemetry but its motion calls go nowhere.
+    // On the head a zero jog stops the axis (docs/HEAD-API.md, POST /api/jog),
+    // so a real session's first stopMotion()/clearJog() -- it sends one on
+    // every waiting tick -- would halt leg 1 itself and parkIdle would sit out
+    // its arrival timeout instead of reaching the between-legs check under
+    // test. The goto never settles, so the session stays "acquiring".
+    const sessionDevice = {
+      getState: () => dev!.getState(),
+      gotoAngle: () => new Promise<void>(() => {}),
+      waitForArrival: () => new Promise<never>(() => {}),
+      setJogVector: () => {}, clearJog: () => {}, track: async () => {}, stop: async () => {},
+    };
+    const session = new TrackingSession(sessionDevice as never, cfg, store);
     const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs);
 
     const parkPromise = sup.parkIdle();
@@ -481,7 +493,7 @@ describe("idle park", () => {
     expect(r).toEqual({ parked: false, reason: "aborted_mid_flight: tracking_active" });
     // Leg 2 (the tilt-up leg) must NEVER have been issued.
     expect(mock!.gotoCount).toBe(1);
-    const finalTiltDeg = dev!.getState().tiltSteps / 444.444;
+    const finalTiltDeg = dev!.getState().tiltDeg;
     expect(finalTiltDeg).not.toBeCloseTo(cfg.idleParkTiltDeg, 0);
 
     session.stop();
@@ -508,11 +520,11 @@ describe("idle park", () => {
     const { sched } = manualScheduler();
     const session = new TrackingSession(dev!, cfg, store);
     const sup = new SunSupervisor(dev!, cfg, store, session, () => NIGHT_MS, sched);
-    // Force a 409 the same way an idle park racing stop()'s ~450ms
-    // deceleration would in the field: motors still moving, NOT E-STOP/
-    // program-engaged (that has its own distinct guard/reason, "estop").
-    dev!.setJogVector(50, 0, 0, 500);
-    await new Promise((r) => setTimeout(r, 100)); // let the mock start moving
+    // Force a plain goto rejection -- NOT E-STOP (that has its own distinct
+    // guard/reason, "estop"). The head accepts a goto while moving, so the
+    // ESP32-era trigger (a goto racing stop()'s deceleration) no longer exists;
+    // any refused goto must still surface the same way.
+    mock!.failNext("/api/goto", 409);
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const r = await sup.parkIdle();
@@ -521,7 +533,6 @@ describe("idle park", () => {
       expect(errSpy).toHaveBeenCalled();
     } finally {
       errSpy.mockRestore();
-      dev!.clearJog();
     }
   });
 });

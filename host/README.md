@@ -192,7 +192,7 @@ A `waiting` status carries a `reason`:
 | `below_tilt_limit` / `pan_limit` | the target is outside the configured soft limits |
 | `target_stale` | no *accepted* fix newer than the coast budget (`trackMaxTargetAgeMs`, default 12s) — send `update_target` |
 | `telemetry_stale` | the *rig* has gone quiet for `trackStaleTelemetryMs`; a real fault — check the link |
-| `program_engaged` | a built-in program is running; tracking yields to it |
+| `estop` | the head's E-STOP is latched (`get_status.estop`); tracking holds until it is cleared |
 | `not_calibrated` | no solved layer-2 orientation |
 | `device_busy` | the rig refused the acquire goto (HTTP 409) because it was still moving or a program was engaged. **Routine and self-healing** — the rig accepts a goto only once stopped, and it needs ~450ms to decelerate out of a jog, plus up to 200ms before the daemon even sees `moving` go false (the rig's telemetry is 5Hz — see Accuracy, below). Expect this in passing on a catch-up; it clears itself within roughly **650ms, about 6-7 ticks** at the default 10Hz tick rate — not "a tick or two". |
 | `goto_failed` | the acquire goto failed for a real reason — arrival timeout, transport error, or a device rejection that wasn't a 409 |
@@ -380,10 +380,6 @@ Real-hardware error should therefore be expected to run higher than the simulati
 **No accuracy claim has been validated on the physical rig.** If
 tracking looks off, check layer-2 calibration quality first, then tune `trackKp`, and confirm
 `maxJogDps` still matches the rig (re-run the jog probe if the hardware has changed).
-
-## Probe Scripts
-
-- `node scripts/imu-probe.mjs <IP> [n] [label]` — pulls a raw IMU burst from `GET /api/imu` and prints per-axis accel/gyro/mag statistics (noise floor, gyro bias, mag stability). Run at rest vs during a jog (label the runs) to characterize vibration coupling and magnetometer usability. Requires `npm run build`.
 
 ## Sun position and the shadow test
 

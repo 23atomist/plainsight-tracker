@@ -38,7 +38,6 @@ import type { DetectResponse } from "../src/shared/vision/detector-client.js";
 const RAD = Math.PI / 180;
 const W = 1920, H = 1080;
 const F = focalPxFromFov(W, 55);
-const SPD = 444.444;
 const textOf = (r: any) => r.content.map((c: any) => c.text).join("");
 
 // failWaitNumber selects which chronological waitForArrival() call throws.
@@ -54,14 +53,14 @@ async function runStubbedCalibration(failWaitNumber: number) {
   let waits = 0;
   const stub = {
     getState: () => ({
-      connected: true, panSteps: panDeg * SPD, tiltSteps: tiltDeg * SPD, auxSteps: 0,
-      moving: false, programEngaged: false, batteryV: 12, staIp: "", lastUpdateMs: Date.now(),
+      connected: true, panDeg, tiltDeg, zoomDeg: 0, focusDeg: 0,
+      moving: false, enabled: true, estop: false, lastUpdateMs: Date.now(),
     }),
     gotoAngle: async (p: number, t: number) => { gotos.push({ pan: p, tilt: t }); panDeg = p; tiltDeg = t; },
     waitForArrival: async () => {
       waits++;
       if (waits === failWaitNumber) throw new Error("timed out waiting for arrival");
-      return { panSteps: panDeg * SPD, tiltSteps: tiltDeg * SPD };
+      return { panDeg, tiltDeg };
     },
   } as unknown as Device;
 
@@ -146,14 +145,14 @@ describe("a step accepted then failing to arrive still restores the rig", () => 
     let panDeg = startPan, tiltDeg = startTilt;
     const stub = {
       getState: () => ({
-        connected: true, panSteps: panDeg * SPD, tiltSteps: tiltDeg * SPD, auxSteps: 0,
-        moving: false, programEngaged: false, batteryV: 12, staIp: "", lastUpdateMs: Date.now(),
+        connected: true, panDeg, tiltDeg, zoomDeg: 0, focusDeg: 0,
+        moving: false, enabled: true, estop: false, lastUpdateMs: Date.now(),
       }),
       gotoAngle: async (p: number, t: number) => { panDeg = p; tiltDeg = t; },
       waitForArrival: async () => {
         waits++;
         if (waits <= 2) throw new Error("timed out waiting for arrival");
-        return { panSteps: panDeg * SPD, tiltSteps: tiltDeg * SPD };
+        return { panDeg, tiltDeg };
       },
     } as unknown as Device;
     const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2" });
@@ -238,8 +237,8 @@ describe("a step accepted then failing to arrive still restores the rig", () => 
     let panDeg = startPan, tiltDeg = startTilt;
     const stub = {
       getState: () => ({
-        connected: true, panSteps: panDeg * SPD, tiltSteps: tiltDeg * SPD, auxSteps: 0,
-        moving: false, programEngaged: false, batteryV: 12, staIp: "", lastUpdateMs: Date.now(),
+        connected: true, panDeg, tiltDeg, zoomDeg: 0, focusDeg: 0,
+        moving: false, enabled: true, estop: false, lastUpdateMs: Date.now(),
       }),
       gotoAngle: async (p: number, t: number) => { panDeg = p; tiltDeg = t; },
       waitForArrival: async () => {
@@ -247,7 +246,7 @@ describe("a step accepted then failing to arrive still restores the rig", () => 
         // #1 pan step succeeds; #2 pan's own restore (right before the
         // !panResult check) throws.
         if (waits === 2) throw new Error("timed out waiting for arrival");
-        return { panSteps: panDeg * SPD, tiltSteps: tiltDeg * SPD };
+        return { panDeg, tiltDeg };
       },
     } as unknown as Device;
     const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2" });

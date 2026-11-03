@@ -112,7 +112,7 @@ describe("set_north_zero", () => {
     // no /api/imu endpoint -- same convention as geo-tools.test.ts's gravity
     // path tests).
     const g = field.sweep[3];
-    mock!.setPosition(g.pan * 444.444, g.tilt * 444.444);
+    mock!.setPosition(g.pan, g.tilt);
     await new Promise((r) => setTimeout(r, 200));
     vi.spyOn(dev!, "getGravity").mockResolvedValue(normalize([g.ax, g.ay, g.az] as Vec3));
 
@@ -134,10 +134,8 @@ describe("set_north_zero", () => {
     expect(cal.provisional).toBe(true);
 
     // The geometry itself: the declared posture points at azimuth 0. Uses the
-    // ACTUAL settled pan/tilt (device state), not the fixture's exact values
-    // -- the mock quantizes position to integer steps (~1/444 deg), so the
-    // posture set_north_zero solved against is only equal to the fixture up
-    // to that quantization.
+    // ACTUAL settled pan/tilt (device state) -- the posture set_north_zero
+    // solved against -- rather than the fixture values.
     const settled = currentUserPanTilt(dev!, cfg);
     const R = store.getOrientation()!;
     const boresight = boresightToEnu(R, [0, 1, 0], cfg.geoPanSign, settled.panDeg, settled.tiltDeg);

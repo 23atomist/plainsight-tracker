@@ -1,4 +1,5 @@
-import { RigDirect, ServiceState } from "./parse.js";
+import { HeadDirect, ServiceState } from "./parse.js";
+import type { HeadImu, HeadLink, HeadRef } from "../shared/head-types.js";
 import type { CameraStatus } from "./camera/index.js";
 import type { Config } from "../shared/config.js";
 import type { CaptureStatus } from "../shared/capture/controller.js";
@@ -17,9 +18,12 @@ export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export interface ServicesState { readsb: ServiceState; tb3mcp: ServiceState; tb3agent: ServiceState; llama: ServiceState; }
 
+// The fields of the MCP get_status tool this dashboard consumes (user frame).
 export interface DeviceStatus {
   connected: boolean; pan_deg: number; tilt_deg: number; moving: boolean;
-  battery_v: number; stale: boolean; last_update_age_ms: number | null;
+  estop: boolean; pan_ref: { source: HeadRef["pan"] };
+  tilt_disagree_deg: number | null; link: HeadLink;
+  stale: boolean; last_update_age_ms: number | null;
 }
 export interface TrackingRaw {
   state: string; label: string | null;
@@ -159,8 +163,10 @@ export interface DashboardState {
   services: ServicesState;
   rig: {
     connected: boolean; panDeg: number | null; tiltDeg: number | null; moving: boolean;
-    batteryV: number | null; telemetryAgeMs: number | null;
-    imu: RigDirect["imu"];
+    telemetryAgeMs: number | null;
+    estop: boolean; panRef: HeadRef["pan"] | null;
+    tiltDisagreeDeg: number | null; link: HeadLink | null;
+    imu: HeadImu | null;
   };
   mode: Mode;
   tracking: {
@@ -236,7 +242,7 @@ export interface DashboardState {
 
 export interface SourceInputs {
   deviceStatus: Result<DeviceStatus>;
-  rigDirect: Result<RigDirect>;
+  rigDirect: Result<HeadDirect>;
   tracking: Result<TrackingRaw>;
   tracked: Result<TrackedRaw>;
   calibration: Result<CalibrationRaw>;
@@ -324,8 +330,14 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
       panDeg: dev ? dev.pan_deg : null,
       tiltDeg: dev ? dev.tilt_deg : null,
       moving: dev?.moving ?? rd?.moving ?? false,
-      batteryV: dev?.battery_v ?? rd?.batteryV ?? null,
       telemetryAgeMs: dev?.last_update_age_ms ?? null,
+      // Either source reporting the latch is enough: the direct read still
+      // works with the MCP daemon down, and the daemon may have seen a tick the
+      // direct poll missed.
+      estop: (dev?.estop ?? false) || (rd?.estop ?? false),
+      panRef: dev?.pan_ref.source ?? rd?.ref?.pan ?? null,
+      tiltDisagreeDeg: dev?.tilt_disagree_deg ?? rd?.tiltDisagreeDeg ?? null,
+      link: dev?.link ?? rd?.link ?? null,
       imu: rd?.imu ?? null,
     },
     mode,

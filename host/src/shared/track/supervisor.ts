@@ -8,8 +8,6 @@ import { boresightEnu, limitHorizonMs } from "./control.js";
 import { Vec3 } from "../geo/vec3.js";
 import { moveToUserAngle } from "../../mcp/move.js";
 import { applySign } from "../angles.js";
-// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
-import { stepsToDeg } from "../legacy-transitional.js";
 import { TaughtEdges, effectiveLimits } from "../limits-store.js";
 
 export type SunState = "disabled" | "monitoring" | "parking" | "parked" | "fault";
@@ -188,8 +186,8 @@ export class SunSupervisor {
     const R = this.store.getOrientation();
     if (!R) return null;
     const d = this.device.getState();
-    const panDeg = applySign(stepsToDeg(d.panSteps), this.cfg.panSign);
-    const tiltDeg = applySign(stepsToDeg(d.tiltSteps), this.cfg.tiltSign);
+    const panDeg = applySign(d.panDeg, this.cfg.panSign);
+    const tiltDeg = applySign(d.tiltDeg, this.cfg.tiltSign);
     return { panDeg, tiltDeg, enu: boresightEnu(R, panDeg, tiltDeg, this.cHead(), this.cfg.geoPanSign) };
   }
 
@@ -317,7 +315,7 @@ export class SunSupervisor {
     // snapshot, not a live read of the device -- that is exactly why
     // parkIdle()'s own staleness check exists, rather than trusting this
     // snapshot no matter how old it is.
-    if (this.device.getState().programEngaged) return "estop";
+    if (this.device.getState().estop) return "estop";
     // `locked` is true for the entire parking/parked/fault span (set by
     // setLocked at the exact instant tick() commits to a sun park), so this
     // one check covers all three without needing to know the guard's
@@ -370,8 +368,8 @@ export class SunSupervisor {
     // feature's job). The detour pan was itself sun-path-validated by
     // planPark, so parking there is safe, just worth writing down rather
     // than discovering later.
-    const panDeg = applySign(stepsToDeg(d.panSteps), this.cfg.panSign);
-    const curTiltDeg = applySign(stepsToDeg(d.tiltSteps), this.cfg.tiltSign);
+    const panDeg = applySign(d.panDeg, this.cfg.panSign);
+    const curTiltDeg = applySign(d.tiltDeg, this.cfg.tiltSign);
     const lim = this.limits();
     const targetTiltDeg = Math.min(lim.tiltMax, Math.max(lim.tiltMin, this.idleParkTiltDeg));
 
@@ -409,7 +407,7 @@ export class SunSupervisor {
       //
       // A pan-detour is multiple seconds of real motion (each leg is
       // individually awaited to arrival), during which the sun guard's own
-      // tick() keeps running on its own timer -- locked/session/programEngaged
+      // tick() keeps running on its own timer -- locked/session/estop
       // can all change mid-flight. Re-check before EVERY leg, not just once
       // at entry: flying a later leg on top of a since-started sun park would
       // desync the guard's state model (it believes it commanded a park to

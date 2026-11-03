@@ -326,7 +326,7 @@ export class Cockpit {
 
     const imu = r.imu;
     if (imu && imu.ok) {
-      if (el.rigImuPitchRoll) el.rigImuPitchRoll.textContent = fmtPair(imu.pitchDeg, imu.rollDeg, "°");
+      if (el.rigImuPitchRoll) el.rigImuPitchRoll.textContent = fmtPair(imu.pitch, imu.roll, "°");
       if (el.rigImuTP) {
         const temp = imu.tempC === null || imu.tempC === undefined ? "—" : `${fmt(imu.tempC)}°C`;
         const press = imu.pressHpa === null || imu.pressHpa === undefined ? "—" : `${fmt(imu.pressHpa, 0)} hPa`;

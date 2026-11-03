@@ -65,7 +65,6 @@ import { focalPxFromFov } from "../src/shared/vision/geometry.js";
 const RAD = Math.PI / 180;
 const W = 1920, H = 1080;
 const F = focalPxFromFov(W, 55);
-const STEPS_PER_DEG = 444.444;
 const RIG = { lat: 45, lon: 10, height: 0 };
 const TARGET = { lat: 45 + 10 / 111.32, lon: 10, height: 0 };
 const IDENTITY = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
@@ -154,8 +153,8 @@ function serveDetector(mount: Mount, deviceRef: { current: MainHandle["device"] 
       req.on("data", (c) => { body += c; });
       req.on("end", () => {
         const st = deviceRef.current!.getState();
-        const boresightPan = st.panSteps / STEPS_PER_DEG;
-        const boresightTilt = st.tiltSteps / STEPS_PER_DEG;
+        const boresightPan = st.panDeg;
+        const boresightTilt = st.tiltDeg;
         const s = sessionRef.current!.status();
         const aimPan = s.targetPanDeg ?? boresightPan;
         const aimTilt = s.targetTiltDeg ?? boresightTilt;

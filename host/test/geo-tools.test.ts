@@ -90,7 +90,7 @@ describe("geo tools — state/query", () => {
 
   it("set_rig_location then sight_landmark captures current pan/tilt", async () => {
     const { client } = await harness();
-    mock!.setPosition(20 * 444.444, 5 * 444.444); // pan=20°, tilt=5°
+    mock!.setPosition(20, 5); // pan=20°, tilt=5°
     await new Promise((r) => setTimeout(r, 200));
 
     await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
@@ -212,11 +212,11 @@ describe("geo tools — solve + point", () => {
   async function calibrate(client: any, mock: FakeHead) {
     await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
     // Sighting A: aim pan=0,tilt=2 at a landmark to the north-ish
-    mock.setPosition(0 * 444.444, 2 * 444.444);
+    mock.setPosition(0, 2);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "sight_landmark", arguments: { lat: 46, lon: 10, height_m: 100, label: "N" } });
     // Sighting B: aim pan=80,tilt=1 at a landmark to the east-ish
-    mock.setPosition(80 * 444.444, 1 * 444.444);
+    mock.setPosition(80, 1);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "sight_landmark", arguments: { lat: 45, lon: 11.4, height_m: 100, label: "E" } });
   }
@@ -324,7 +324,7 @@ describe("geo tools — solve + point", () => {
     await new Promise((r) => setTimeout(r, 200));
     // Sight a "landmark" at the exact rig location — zero range, degenerate direction.
     await client.callTool({ name: "sight_landmark", arguments: { lat: 45, lon: 10, height_m: 100, label: "self" } });
-    mock!.setPosition(80 * 444.444, 1 * 444.444);
+    mock!.setPosition(80, 1);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "sight_landmark", arguments: { lat: 45, lon: 11.4, height_m: 100, label: "E" } });
     const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
@@ -364,7 +364,7 @@ describe("geo tools — height_m sane-band validation", () => {
 
 describe("geo tools — sign-frame round trip (regression)", () => {
   // The highest-risk correctness path in this feature: sight_landmark
-  // captures device pan/tilt in *user* frame as applySign(stepsToDeg(steps),
+  // captures device pan/tilt in *user* frame as applySign(panDeg,
   // sign); point_at inverts back to user-frame pan/tilt and moveToUserAngle
   // re-applies the sign to reach device frame. With panSign=+1/tiltSign=+1
   // (the default used elsewhere in this file) user frame == device frame, so
@@ -379,13 +379,13 @@ describe("geo tools — sign-frame round trip (regression)", () => {
     // north-ish. With both signs flipped, the *user*-frame pan/tilt that
     // sight_landmark actually records is the negation of these device angles.
     const devicePanA = 15, deviceTiltA = 2;
-    mock!.setPosition(devicePanA * 444.444, deviceTiltA * 444.444);
+    mock!.setPosition(devicePanA, deviceTiltA);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "sight_landmark", arguments: { lat: 46, lon: 10, height_m: 100, label: "A" } });
 
     // Sighting B: aim at a well-separated landmark to the east-ish.
     const devicePanB = 95, deviceTiltB = 1;
-    mock!.setPosition(devicePanB * 444.444, deviceTiltB * 444.444);
+    mock!.setPosition(devicePanB, deviceTiltB);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "sight_landmark", arguments: { lat: 45, lon: 11.4, height_m: 100, label: "B" } });
 
@@ -404,11 +404,10 @@ describe("geo tools — sign-frame round trip (regression)", () => {
     });
     expect(res.isError ?? false).toBe(false);
     expect(mock!.lastGoto).not.toBeNull();
-    // The mock broadcasts position rounded to the nearest integer step (see
-    // pushTick in mock-tb3.ts), so the sighted angle round-trips through
-    // ~0.001° of step-quantization noise rather than landing bit-exact.
-    expect(mock!.lastGoto!.pan_deg).toBeCloseTo(devicePanA, 2);
-    expect(mock!.lastGoto!.tilt_deg).toBeCloseTo(deviceTiltA, 2);
+    // A tolerance, not bit-exact: the sighted angle round-trips through the
+    // orientation solve and point_at's inverse.
+    expect(mock!.lastGoto!.pan).toBeCloseTo(devicePanA, 2);
+    expect(mock!.lastGoto!.tilt).toBeCloseTo(deviceTiltA, 2);
 
     // Cross-check via the tool's own reported (user-frame) pan/tilt, applying
     // the sign back out to device frame — should agree with lastGoto.
@@ -434,7 +433,7 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
       arguments: { lat: field.rig.lat, lon: field.rig.lon, height_m: field.rig.height },
     });
     for (const s of field.sightings) {
-      mock!.setPosition(s.panDeg * 444.444, s.tiltDeg * 444.444);
+      mock!.setPosition(s.panDeg, s.tiltDeg);
       await new Promise((r) => setTimeout(r, 200));
       await client.callTool({
         name: "sight_landmark",
@@ -445,7 +444,7 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
 
   function stubGravityAt(sweepIdx: number) {
     const g = field.sweep[sweepIdx];
-    mock!.setPosition(g.pan * 444.444, g.tilt * 444.444);
+    mock!.setPosition(g.pan, g.tilt);
     return { g, ready: new Promise((r) => setTimeout(r, 200)) };
   }
 
@@ -495,7 +494,7 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
       arguments: { lat: field.rig.lat, lon: field.rig.lon, height_m: field.rig.height },
     });
     for (const s of sightings) {
-      mock!.setPosition(s.panDeg * 444.444, s.tiltDeg * 444.444);
+      mock!.setPosition(s.panDeg, s.tiltDeg);
       await new Promise((r) => setTimeout(r, 200));
       await client.callTool({
         name: "sight_landmark",
@@ -603,11 +602,11 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
       arguments: { lat: field.rig.lat, lon: field.rig.lon, height_m: field.rig.height },
     });
     const [A, B] = field.sightings;
-    mock!.setPosition(A.panDeg * 444.444, A.tiltDeg * 444.444);
+    mock!.setPosition(A.panDeg, A.tiltDeg);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "sight_landmark", arguments: { lat: A.lat, lon: A.lon, height_m: A.height, label: A.label } });
     // Mis-aim B: sight it 30° off in pan from where it actually is.
-    mock!.setPosition((B.panDeg + 30) * 444.444, B.tiltDeg * 444.444);
+    mock!.setPosition(B.panDeg + 30, B.tiltDeg);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "sight_landmark", arguments: { lat: B.lat, lon: B.lon, height_m: B.height, label: B.label } });
 
@@ -640,7 +639,7 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
     // would silently pair a stale posture with the gravity sample and
     // persist a wrong R/c_head.
     vi.spyOn(dev!, "getGravity").mockImplementation(async () => {
-      mock!.setPosition((g.pan + 10) * 444.444, g.tilt * 444.444);
+      mock!.setPosition(g.pan + 10, g.tilt);
       await new Promise((r) => setTimeout(r, 150));
       return normalize([g.ax, g.ay, g.az] as Vec3);
     });
@@ -729,7 +728,7 @@ describe("geo tools — sight_aircraft", () => {
 
   it("records a sighting at the CURRENT pan/tilt, labeled with the callsign, with moved_m/position_age_sec reported", async () => {
     const { client, store } = await harness({}, [rawAircraft({ seen_pos: 2 })]);
-    mock!.setPosition(20 * 444.444, 5 * 444.444); // pan=20°, tilt=5°
+    mock!.setPosition(20, 5); // pan=20°, tilt=5°
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
 
@@ -799,11 +798,11 @@ describe("geo tools — sight_aircraft", () => {
       rawAircraft({ hex: "a1b2c3", lat: 46, lon: 10, alt_geom: 30000 }),
       rawAircraft({ hex: "d4e5f6", lat: 45, lon: 11.4, alt_geom: 30000 }),
     ]);
-    mock!.setPosition(0 * 444.444, 2 * 444.444);
+    mock!.setPosition(0, 2);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
     await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
-    mock!.setPosition(80 * 444.444, 1 * 444.444);
+    mock!.setPosition(80, 1);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "sight_aircraft", arguments: { hex: "d4e5f6" } });
 

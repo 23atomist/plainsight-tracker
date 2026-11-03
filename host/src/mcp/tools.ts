@@ -3,8 +3,6 @@ import { z } from "zod";
 import { Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
 import { applySign } from "../shared/angles.js";
-// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
-import { stepsToDeg } from "../shared/legacy-transitional.js";
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
@@ -60,20 +58,32 @@ export function registerTools(
 
   server.registerTool(
     "get_status",
-    { description: "Read the TB3's current position (degrees), motion, battery, program, and connectivity.", inputSchema: {} },
+    {
+      description: "Read the head's current position (degrees, user frame), motion, E-STOP latch, pan reference, IMU, and link state.",
+      inputSchema: {},
+    },
     async () => {
       const s = device.getState();
       const lastUpdateAgeMs = s.lastUpdateMs === 0 ? null : Date.now() - s.lastUpdateMs;
       const stale = !s.connected || (s.lastUpdateMs !== 0 && Date.now() - s.lastUpdateMs > 2000);
       return text(JSON.stringify({
         connected: s.connected,
-        pan_deg: Number(applySign(stepsToDeg(s.panSteps), cfg.panSign).toFixed(3)),
-        tilt_deg: Number(applySign(stepsToDeg(s.tiltSteps), cfg.tiltSign).toFixed(3)),
-        aux_steps: Math.round(s.auxSteps),
+        pan_deg: Number(applySign(s.panDeg, cfg.panSign).toFixed(3)),
+        tilt_deg: Number(applySign(s.tiltDeg, cfg.tiltSign).toFixed(3)),
+        zoom_deg: Number(s.zoomDeg.toFixed(3)),
+        focus_deg: Number(s.focusDeg.toFixed(3)),
         moving: s.moving,
-        program_engaged: s.programEngaged,
-        battery_v: s.batteryV,
-        sta_ip: s.staIp,
+        enabled: s.enabled,
+        estop: s.estop,
+        pan_ref: { source: s.ref.pan, persisted: s.ref.persisted, age_s: s.ref.ageS },
+        tilt_disagree_deg: s.tiltDisagreeDeg,
+        link: { pico: s.link.pico, imu: s.link.imu },
+        imu: s.imu
+          ? {
+            ok: s.imu.ok, heading_deg: s.imu.heading, pitch_deg: s.imu.pitch, roll_deg: s.imu.roll,
+            cal: s.imu.cal ? { ...s.imu.cal } : null, temp_c: s.imu.tempC,
+          }
+          : null,
         last_update_age_ms: lastUpdateAgeMs,
         stale,
       }, null, 2));

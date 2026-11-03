@@ -13,7 +13,7 @@ import type { Ruleset } from "../shared/policy/rules.js";
 // Each schema below is intentionally non-strict (no `.strict()`): the tool
 // handlers (src/tools.ts, track-tools.ts, geo-tools.ts, adsb-tools.ts,
 // sun-tools.ts) emit extra fields this dashboard doesn't consume (e.g.
-// aux_steps, program_engaged, sta_ip on get_status; reason/target_pan_deg/etc.
+// zoom_deg, focus_deg, imu on get_status; reason/target_pan_deg/etc.
 // on get_tracking_status; required_slew_dps on scan_aircraft rows). Zod's
 // default z.object().parse() strips unknown keys
 // rather than rejecting them, so growing those tool outputs never breaks this
@@ -24,7 +24,10 @@ const DeviceStatusZ = z.object({
   pan_deg: z.number(),
   tilt_deg: z.number(),
   moving: z.boolean(),
-  battery_v: z.number(),
+  estop: z.boolean(),
+  pan_ref: z.object({ source: z.enum(["none", "imu", "host"]) }),
+  tilt_disagree_deg: z.number().nullable(),
+  link: z.object({ pico: z.boolean(), imu: z.boolean() }),
   stale: z.boolean(),
   last_update_age_ms: z.number().nullable(),
 });

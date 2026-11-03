@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Mat3 } from "../src/shared/geo/vec3.js";
 import { TrackingSession, COAST_ENTER_MS, type Scheduler } from "../src/shared/track/session.js";
+import type { DeviceState } from "../src/shared/types.js";
+import type { HeadTrackCmd } from "../src/shared/head-types.js";
 import { DeviceHttpError } from "../src/shared/device.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
 import { loadConfig, type Config } from "../src/shared/config.js";
-import { STEPS_PER_DEG } from "../src/shared/angles.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,9 +43,11 @@ interface Deferred {
 }
 
 class FakeDevice {
-  panSteps = 0; tiltSteps = 0; moving = false; programEngaged = false;
+  panDeg = 0; tiltDeg = 0; moving = false; estop = false;
   lastUpdateMs = 1_000_000;
-  jogVec: { x: number; y: number; aux: number } | null = null;
+  // Every track() call, in order (the head's TRACK; Task 5 servos through it).
+  tracks: HeadTrackCmd[] = [];
+  jogVec: { panDps: number; tiltDps: number; ttlMs: number } | null = null;
   cleared = 0;
   gotos: { pan: number; tilt: number }[] = [];
   // Each gotoAngle() call parks a deferred here instead of resolving
@@ -57,15 +60,17 @@ class FakeDevice {
   // moveToUserAngle only wraps the latter, so the two arrive at the session's
   // .catch() in genuinely different shapes.
   arrivalError: Error | null = null;
-  getState() {
+  getState(): DeviceState {
     return {
-      connected: true, panSteps: this.panSteps, tiltSteps: this.tiltSteps, auxSteps: 0,
-      moving: this.moving, programEngaged: this.programEngaged, batteryV: 12,
-      staIp: "1.2.3.4", lastUpdateMs: this.lastUpdateMs,
+      connected: true, panDeg: this.panDeg, tiltDeg: this.tiltDeg, zoomDeg: 0, focusDeg: 0,
+      moving: this.moving, enabled: true, estop: this.estop, tiltDisagreeDeg: null,
+      ref: { pan: "imu", persisted: true, ageS: 0 }, link: { pico: true, imu: true },
+      lastUpdateMs: this.lastUpdateMs,
     };
   }
-  setJogVector(x: number, y: number, aux: number) { this.jogVec = { x, y, aux }; }
+  setJogVector(panDps: number, tiltDps: number, ttlMs: number) { this.jogVec = { panDps, tiltDps, ttlMs }; }
   clearJog() { this.jogVec = null; this.cleared++; }
+  async track(cmd: HeadTrackCmd) { this.tracks.push(cmd); }
   async gotoAngle(pan: number, tilt: number) {
     this.gotos.push({ pan, tilt });
     return new Promise<void>((resolve, reject) => {
@@ -150,10 +155,10 @@ describe("TrackingSession safety gates", () => {
 
   it("commands a jog vector while tracking", () => {
     const s = tracking();
-    dev.panSteps = 5 * STEPS_PER_DEG;   // 5 deg of error
+    dev.panDeg = 5;   // 5 deg of error
     sched.fire();
     expect(dev.jogVec).not.toBeNull();
-    expect(dev.jogVec!.x).toBeLessThan(0);   // drive back toward pan 0
+    expect(dev.jogVec!.panDps).toBeLessThan(0);   // drive back toward pan 0
   });
 
   it("stops and waits on stale telemetry", () => {
@@ -175,12 +180,12 @@ describe("TrackingSession safety gates", () => {
     expect(dev.jogVec).toBeNull();
   });
 
-  it("yields when a built-in program is engaged", () => {
+  it("yields while the head's E-STOP is latched", () => {
     const s = tracking();
-    dev.programEngaged = true;
+    dev.estop = true;
     sched.fire();
     expect(s.status().state).toBe("waiting");
-    expect(s.status().reason).toBe("program_engaged");
+    expect(s.status().reason).toBe("estop");
     expect(dev.jogVec).toBeNull();
   });
 
@@ -208,11 +213,11 @@ describe("TrackingSession safety gates", () => {
 
   it("auto-reacquires when a waiting target becomes reachable again", () => {
     const s = tracking();
-    dev.programEngaged = true;
+    dev.estop = true;
     sched.fire();
     expect(s.status().state).toBe("waiting");
 
-    dev.programEngaged = false;
+    dev.estop = false;
     dev.lastUpdateMs = clockMs;
     s.updateTarget(NORTH, null);   // refresh the fix
     const before = dev.gotos.length;
@@ -223,7 +228,7 @@ describe("TrackingSession safety gates", () => {
 
   it("drops back to acquiring when the pointing error is large", () => {
     const s = tracking();
-    dev.panSteps = 90 * STEPS_PER_DEG;    // 90 deg off target
+    dev.panDeg = 90;    // 90 deg off target
     const before = dev.gotos.length;
     sched.fire();
     expect(s.status().state).toBe("acquiring");
@@ -233,7 +238,7 @@ describe("TrackingSession safety gates", () => {
 
   it("reports pointing error in status", () => {
     const s = tracking();
-    dev.panSteps = 3 * STEPS_PER_DEG;
+    dev.panDeg = 3;
     sched.fire();
     expect(s.status().pointingErrorDeg).toBeCloseTo(3, 0);
   });
@@ -280,11 +285,11 @@ describe("TrackingSession goto cancellation (generation stamp)", () => {
     expect(s.status().state).toBe("acquiring");
     expect(dev.stopCalls).toBe(0);
 
-    dev.programEngaged = true;
+    dev.estop = true;
     sched.fire();
 
     expect(s.status().state).toBe("waiting");
-    expect(s.status().reason).toBe("program_engaged");
+    expect(s.status().reason).toBe("estop");
     expect(dev.stopCalls).toBe(1);
   });
 
@@ -295,7 +300,7 @@ describe("TrackingSession goto cancellation (generation stamp)", () => {
     await flush();
     expect(s.status().state).toBe("tracking");
 
-    dev.programEngaged = true;
+    dev.estop = true;
     sched.fire();
 
     expect(s.status().state).toBe("waiting");
@@ -312,7 +317,7 @@ describe("TrackingSession reacquire vs. the rig's deceleration", () => {
     const s = newSession();
     s.start(NORTH, [0, 0, 0], null);
     s.forceStateForTest("tracking");
-    dev.panSteps = 90 * STEPS_PER_DEG;   // 90 deg off: well past trackReacquireDeg
+    dev.panDeg = 90;   // 90 deg off: well past trackReacquireDeg
     return s;
   }
 
@@ -422,7 +427,7 @@ describe("TrackingSession limit guard visibility", () => {
     const s = new TrackingSession(dev as never, aggressiveCfg, store, () => clockMs, sched);
     s.start(bearingTarget(179), [0, 0, 0], null);
     s.forceStateForTest("tracking");
-    dev.panSteps = 170 * STEPS_PER_DEG;
+    dev.panDeg = 170;
     dev.lastUpdateMs = clockMs - 200;   // realistic 5Hz telemetry lag, not stale
 
     sched.fire();
@@ -442,7 +447,7 @@ describe("TrackingSession limit guard visibility", () => {
     const s = new TrackingSession(dev as never, aggressiveCfg, store, () => clockMs, sched);
     s.start(bearingTarget(179), [0, 0, 0], null);
     s.forceStateForTest("tracking");
-    dev.panSteps = 170 * STEPS_PER_DEG;
+    dev.panDeg = 170;
     dev.lastUpdateMs = clockMs - 200;
     sched.fire();
     expect(s.status().panLimited).toBe(true);
@@ -481,7 +486,7 @@ describe("TrackingSession limit guard visibility", () => {
     let sawStandingCommand = false;
 
     for (let i = 0; i < 60; i++) {
-      dev.panSteps = panDeg * STEPS_PER_DEG;
+      dev.panDeg = panDeg;
       dev.lastUpdateMs = clockMs - 200;   // realistic 5Hz telemetry lag
       sched.fire();
       const cmd = s.status().commandedPanDps ?? 0;
@@ -592,7 +597,7 @@ describe("TrackingSession rate slew", () => {
     // negative -- see "commands a jog vector" above). 5deg stays under
     // trackReacquireDeg so the servo branch runs; the slew must shave the
     // 5 deg/s jump down to the per-tick budget.
-    dev.panSteps = 5 * STEPS_PER_DEG;
+    dev.panDeg = 5;
     sched.fire();
     const cmd = s.status().commandedPanDps!;
     expect(cmd).toBeCloseTo(-cfg.trackRateSlewDps / cfg.trackTickHz, 6);
@@ -610,7 +615,7 @@ describe("TrackingSession rate slew", () => {
     const s = newSession();
     s.start(NORTH, [0, 0, 0], null);
     s.forceStateForTest("tracking");
-    dev.panSteps = 3 * STEPS_PER_DEG;
+    dev.panDeg = 3;
     sched.fire();
     // No previous command existed (fresh acquire): full demand (-3 deg/s)
     // immediately, which is what keeps catch-ups snappy.

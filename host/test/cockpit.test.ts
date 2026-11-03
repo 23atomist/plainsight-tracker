@@ -159,7 +159,7 @@ function makeCockpit() {
 const baseState = {
   mode: "idle",
   services: { readsb: "active", tb3mcp: "active", tb3agent: "inactive", llama: "unknown" },
-  rig: { connected: true, panDeg: 12.5, tiltDeg: -3, moving: false, batteryV: 12.1, telemetryAgeMs: 40, imu: null },
+  rig: { connected: true, panDeg: 12.5, tiltDeg: -3, moving: false, telemetryAgeMs: 40, estop: false, panRef: "imu", tiltDisagreeDeg: null, link: { pico: true, imu: true }, imu: null },
   tracking: { state: "stopped", hex: null, callsign: null, targetAzDeg: null, targetElDeg: null, targetRangeM: null, pointingErrorDeg: null, panLimited: false, tiltLimited: false },
   adsb: { rawCount: 3, aircraft: [] as unknown[] },
   calibration: { calibrated: false, provisional: false },

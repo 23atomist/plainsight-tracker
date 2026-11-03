@@ -77,7 +77,7 @@ afterEach(async () => {
 describe("server", () => {
   it("serves MCP over streamable HTTP and returns tool results", async () => {
     mock = new FakeHead(); await mock.start({ port: DEV_PORT });
-    mock.setPosition(45 * 444.444, 0);
+    mock.setPosition(45, 0);
     const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT) });
     dev = new Device(cfg); dev.start();
     await new Promise((r) => setTimeout(r, 300));

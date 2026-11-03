@@ -11,7 +11,6 @@ import { loadConfig } from "../src/shared/config.js";
 import { LimitsStore } from "../src/shared/limits-store.js";
 import { registerLimitsTools, applyTeachLimit } from "../src/mcp/limits-tools.js";
 
-const STEPS_PER_DEG = 444.444;
 const PORT = 8799;
 let mock: FakeHead | null = null;
 let dev: Device | null = null;
@@ -95,7 +94,7 @@ describe("applyTeachLimit (the teach_limit core)", () => {
 describe("MCP limits tools", () => {
   it("teach_limit captures the current position for the named edge", async () => {
     const { client, store: s } = await harness();
-    mock!.setPosition(30 * STEPS_PER_DEG, -10 * STEPS_PER_DEG);
+    mock!.setPosition(30, -10);
     await new Promise((r) => setTimeout(r, 200));
     const res = await client.callTool({ name: "teach_limit", arguments: { edge: "pan_max" } });
     const parsed = JSON.parse(textOf(res));
@@ -106,7 +105,7 @@ describe("MCP limits tools", () => {
 
   it("teach_limit on tilt_min reads the tilt axis, not pan", async () => {
     const { client, store: s } = await harness();
-    mock!.setPosition(0, -15 * STEPS_PER_DEG);
+    mock!.setPosition(0, -15);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "teach_limit", arguments: { edge: "tilt_min" } });
     expect(s.get().tiltMin).toBeCloseTo(-15, 0);
@@ -117,7 +116,7 @@ describe("MCP limits tools", () => {
     // tiltMax configured to 10 -- well inside where the mock can actually sit,
     // so we can drive the rig past it and observe the clamp.
     const { client } = await harness({ TB3_TILT_MAX: "10" });
-    mock!.setPosition(0, 45 * STEPS_PER_DEG);
+    mock!.setPosition(0, 45);
     await new Promise((r) => setTimeout(r, 200));
     const res = await client.callTool({ name: "teach_limit", arguments: { edge: "tilt_max" } });
     const parsed = JSON.parse(textOf(res));

@@ -10,8 +10,6 @@ import { loadConfig, type Config } from "../shared/config.js";
 import { Device } from "../shared/device.js";
 import { DeviceState } from "../shared/types.js";
 import { applySign } from "../shared/angles.js";
-// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
-import { stepsToDeg } from "../shared/legacy-transitional.js";
 import { registerTools } from "./tools.js";
 import { registerGeoTools } from "./geo-tools.js";
 import { registerImuTools } from "./imu-tools.js";
@@ -116,8 +114,8 @@ export function recordPostureSample(postures: PostureHistory, dev: DeviceState, 
   if (dev.lastUpdateMs === 0) return; // never connected -- no real posture yet
   postures.record(
     dev.lastUpdateMs,
-    applySign(stepsToDeg(dev.panSteps), cfg.panSign),
-    applySign(stepsToDeg(dev.tiltSteps), cfg.tiltSign),
+    applySign(dev.panDeg, cfg.panSign),
+    applySign(dev.tiltDeg, cfg.tiltSign),
   );
 }
 
@@ -137,7 +135,7 @@ export function recordPostureSample(postures: PostureHistory, dev: DeviceState, 
 // FIX ROUND 3 / HIGH 1: gated on session.status().state === "tracking", NOT
 // session.isActive() (state !== "stopped" -- see track/session.ts:128).
 // isActive() is also true in "waiting" and "acquiring", and EVERY early
-// return in TrackingSession.tick() (not_calibrated, program_engaged,
+// return in TrackingSession.tick() (not_calibrated, estop,
 // telemetry_stale, target_stale) sets state to "waiting" and returns BEFORE
 // recordAim() runs -- freezing lastStatus at whatever it held before the
 // dropout. Gating the write on isActive() alone meant recordTargetSample kept

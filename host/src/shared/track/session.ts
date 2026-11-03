@@ -4,8 +4,6 @@ import { Device, DeviceHttpError } from "../device.js";
 import { Config } from "../config.js";
 import { CalibrationStore } from "../calibration.js";
 import { applySign } from "../angles.js";
-// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
-import { stepsToDeg } from "../legacy-transitional.js";
 import { moveToUserAngle } from "../../mcp/move.js";
 import { reachablePanTilt } from "../../mcp/geo-tools.js";
 import { EstimatorState, emptyEstimator, withFix, lastFixMs } from "./estimator.js";
@@ -21,7 +19,7 @@ import { TaughtEdges, effectiveLimits } from "../limits-store.js";
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
   | "below_tilt_limit" | "pan_limit" | "target_stale"
-  | "telemetry_stale" | "program_engaged" | "not_calibrated"
+  | "telemetry_stale" | "estop" | "not_calibrated"
   | "device_busy" | "goto_failed" | "outside_sector"
   // Distinct from below_tilt_limit on purpose: that one means the rig
   // physically cannot reach the target, this one means the operator has
@@ -312,8 +310,8 @@ export class TrackingSession {
   private rigPanTilt(): { panDeg: number; tiltDeg: number } {
     const d = this.device.getState();
     return {
-      panDeg: applySign(stepsToDeg(d.panSteps), this.cfg.panSign),
-      tiltDeg: applySign(stepsToDeg(d.tiltSteps), this.cfg.tiltSign),
+      panDeg: applySign(d.panDeg, this.cfg.panSign),
+      tiltDeg: applySign(d.tiltDeg, this.cfg.tiltSign),
     };
   }
 
@@ -383,7 +381,7 @@ export class TrackingSession {
     const dev = this.device.getState();
     const R = this.store.getOrientation();
     if (!R) { this.wait("not_calibrated"); return; }
-    if (dev.programEngaged) { this.wait("program_engaged"); return; }
+    if (dev.estop) { this.wait("estop"); return; }
     if (dev.lastUpdateMs === 0 || t - dev.lastUpdateMs > this.cfg.trackStaleTelemetryMs) {
       this.wait("telemetry_stale"); return;
     }

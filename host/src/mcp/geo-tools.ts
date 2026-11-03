@@ -3,8 +3,6 @@ import { z } from "zod";
 import { Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
 import { applySign } from "../shared/angles.js";
-// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
-import { stepsToDeg } from "../shared/legacy-transitional.js";
 import { CalibrationStore } from "../shared/calibration.js";
 import { Geodetic, enuDirection, azElRange, geodeticToEcef } from "../shared/geo/wgs84.js";
 import { solveOrientation, separationDeg, resolvePanInRange } from "../shared/geo/orientation.js";
@@ -50,8 +48,8 @@ function rangeM(a: Geodetic, b: Geodetic): number {
 export function currentUserPanTilt(device: Device, cfg: Config): { panDeg: number; tiltDeg: number; moving: boolean } {
   const s = device.getState();
   return {
-    panDeg: applySign(stepsToDeg(s.panSteps), cfg.panSign),
-    tiltDeg: applySign(stepsToDeg(s.tiltSteps), cfg.tiltSign),
+    panDeg: applySign(s.panDeg, cfg.panSign),
+    tiltDeg: applySign(s.tiltDeg, cfg.tiltSign),
     moving: s.moving,
   };
 }

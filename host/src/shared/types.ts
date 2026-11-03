@@ -1,5 +1,4 @@
 import type { HeadAxis, HeadAxisName, HeadImu, HeadLink, HeadRef } from "./head-types.js";
-import type { LegacyDeviceStateFields } from "./legacy-transitional.js";
 
 /**
  * The host's cached view of the head, built from `/ws` ticks. Angles are the
@@ -13,7 +12,7 @@ import type { LegacyDeviceStateFields } from "./legacy-transitional.js";
  * so `lastUpdateMs`) frozen, so every staleness check keeps working instead of
  * servoing on angles nobody is measuring. `connected` is the WebSocket state.
  */
-export interface DeviceState extends LegacyDeviceStateFields {
+export interface DeviceState {
   connected: boolean;
   panDeg: number;
   tiltDeg: number;

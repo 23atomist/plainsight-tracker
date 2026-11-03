@@ -6,7 +6,6 @@ import {
   HeadAxisConfig, HeadAxisConfigResponseZ, HeadEvent, HeadEventZ, HeadImuBurstZ, HeadRef,
   HeadTick, HeadTickZ, HeadTrackCmd, PanReferenceDetailZ,
 } from "./head-types.js";
-import { legacyDeviceStateFields } from "./legacy-transitional.js";
 import { Vec3, normalize } from "./geo/vec3.js";
 
 const ARRIVAL_TOL_DEG = 0.25;
@@ -60,9 +59,6 @@ export class DeviceHttpError extends Error {
 type FetchFn = typeof fetch;
 type WsFactory = (url: string) => WebSocket;
 
-/** The fields of DeviceState the head owns (the legacy step fields are derived). */
-type HeadState = Omit<DeviceState, keyof ReturnType<typeof legacyDeviceStateFields>>;
-
 /**
  * The one module that talks to the head (docs/HEAD-API.md). Commands are HTTP;
  * `/ws` is read-only telemetry (ticks and events). Single host, reconnect
@@ -74,7 +70,7 @@ export class Device {
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private closed = false;
-  private state: HeadState = {
+  private state: DeviceState = {
     connected: false, panDeg: 0, tiltDeg: 0, zoomDeg: 0, focusDeg: 0,
     moving: false, enabled: false, estop: false, tiltDisagreeDeg: null,
     ref: { pan: "none", persisted: false, ageS: null },
@@ -199,7 +195,6 @@ export class Device {
       ref: { ...s.ref },
       link: { ...s.link },
       ...(s.imu ? { imu: { ...s.imu } } : {}),
-      ...legacyDeviceStateFields(s),
     };
   }
 
@@ -583,22 +578,22 @@ export class Device {
 
   // --- removed ESP32 features --------------------------------------------------
 
-  /** @deprecated TRANSITIONAL — removed in Task 4 (the head has no programs) */
+  /** @deprecated TRANSITIONAL — removed in Task 6 with the list_programs/select_program tools (the head has no programs) */
   async listPrograms(): Promise<{ current: number; names: string[]; selectable: boolean }> {
     throw new Error("removed: the head has no programs");
   }
 
-  /** @deprecated TRANSITIONAL — removed in Task 4 (the head has no programs) */
+  /** @deprecated TRANSITIONAL — removed in Task 6 with the list_programs/select_program tools (the head has no programs) */
   async selectProgram(_index: number, _commit: boolean): Promise<void> {
     throw new Error("removed: the head has no programs");
   }
 
-  /** @deprecated TRANSITIONAL — removed in Task 4 (the head has no camera trigger) */
+  /** @deprecated TRANSITIONAL — removed in Task 6 with the trigger_camera tool (the head has no camera trigger) */
   async triggerCamera(_action: "shoot" | "focus", _ms: number): Promise<void> {
     throw new Error("removed: the head has no camera trigger");
   }
 
-  /** @deprecated TRANSITIONAL — removed in Task 4 (use setPos({pan}) / home()) */
+  /** @deprecated TRANSITIONAL — removed in Task 6 with the set_home tool (use setPos({pan}) / home()) */
   async setHome(): Promise<void> {
     throw new Error("removed: use setPos({ pan }) or home()");
   }

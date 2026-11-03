@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Mat3 } from "../src/shared/geo/vec3.js";
 import { TrackingSession, type TrackState } from "../src/shared/track/session.js";
+import type { DeviceState } from "../src/shared/types.js";
+import type { HeadTrackCmd } from "../src/shared/head-types.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
 import { loadConfig, type Config } from "../src/shared/config.js";
 import { mkdtempSync } from "node:fs";
@@ -28,17 +30,21 @@ const NORTH = { lat: 45 + 10 / 111.32, lon: 10, height: 0 };
 // these tests only assert on the synchronous setState() notification fired
 // before the goto is dispatched, so the goto's outcome is irrelevant here.
 class FakeDevice {
-  panSteps = 0; tiltSteps = 0; moving = false; programEngaged = false;
+  panDeg = 0; tiltDeg = 0; moving = false; estop = false;
   lastUpdateMs = 1_000_000;
-  getState() {
+  // Every track() call, in order (the head's TRACK; Task 5 servos through it).
+  tracks: HeadTrackCmd[] = [];
+  getState(): DeviceState {
     return {
-      connected: true, panSteps: this.panSteps, tiltSteps: this.tiltSteps, auxSteps: 0,
-      moving: this.moving, programEngaged: this.programEngaged, batteryV: 12,
-      staIp: "1.2.3.4", lastUpdateMs: this.lastUpdateMs,
+      connected: true, panDeg: this.panDeg, tiltDeg: this.tiltDeg, zoomDeg: 0, focusDeg: 0,
+      moving: this.moving, enabled: true, estop: this.estop, tiltDisagreeDeg: null,
+      ref: { pan: "imu", persisted: true, ageS: 0 }, link: { pico: true, imu: true },
+      lastUpdateMs: this.lastUpdateMs,
     };
   }
   setJogVector() {}
   clearJog() {}
+  async track(cmd: HeadTrackCmd) { this.tracks.push(cmd); }
   async gotoAngle() { return new Promise<void>(() => { /* never resolves; unused here */ }); }
   async waitForArrival() { return this.getState(); }
   async stop() {}

@@ -1,50 +1,45 @@
-export interface RigImu {
-  ok: boolean;
-  pitchDeg: number | null; rollDeg: number | null;
-  tempC: number | null; pressHpa: number | null;
-}
-export interface RigDirect {
+import { HeadTickZ, type HeadImu, type HeadLink, type HeadRef } from "../shared/head-types.js";
+
+/**
+ * The dashboard's direct read of the head (`GET /api/state`, the tick
+ * object), independent of the MCP daemon. Angles are the raw head values
+ * (device frame, degrees). Every field is null when the head is unreachable or
+ * the body does not validate as a tick; `panDeg`/`tiltDeg`/`moving` are also
+ * null on a tick without `axes` (the Pico link is down: no motion telemetry).
+ */
+export interface HeadDirect {
   connected: boolean;
-  moving: boolean;
-  batteryV: number | null;
-  panSteps: number | null;
-  tiltSteps: number | null;
-  imu: RigImu | null;
-  joyLatched: boolean;
+  panDeg: number | null;
+  tiltDeg: number | null;
+  moving: boolean | null;
+  estop: boolean;
+  ref: HeadRef | null;
+  imu: HeadImu | null;
+  tiltDisagreeDeg: number | null;
+  link: HeadLink | null;
 }
 export type ServiceState = "active" | "inactive" | "failed" | "unknown";
 
-function numOrNull(v: unknown): number | null {
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
-}
+const DISCONNECTED: HeadDirect = {
+  connected: false, panDeg: null, tiltDeg: null, moving: null, estop: false,
+  ref: null, imu: null, tiltDisagreeDeg: null, link: null,
+};
 
-export function parseRigStatus(raw: unknown): RigDirect {
-  const empty: RigDirect = {
-    connected: false, moving: false, batteryV: null,
-    panSteps: null, tiltSteps: null, imu: null, joyLatched: false,
-  };
-  if (typeof raw !== "object" || raw === null) return empty;
-  const r = raw as Record<string, unknown>;
-  const pos = (typeof r.pos === "object" && r.pos !== null) ? r.pos as Record<string, unknown> : null;
-  if (!pos) return empty;   // no position block → not a real /api/status body
-
-  let imu: RigImu | null = null;
-  if (typeof r.imu === "object" && r.imu !== null) {
-    const i = r.imu as Record<string, unknown>;
-    imu = {
-      ok: i.ok === true || i.ok === 1,
-      pitchDeg: numOrNull(i.pitch), rollDeg: numOrNull(i.roll),
-      tempC: numOrNull(i.tempC), pressHpa: numOrNull(i.pressHpa),
-    };
-  }
+/** Never throws: anything that is not a valid tick reads as "not connected". */
+export function parseHeadState(raw: unknown): HeadDirect {
+  const r = HeadTickZ.safeParse(raw);
+  if (!r.success) return { ...DISCONNECTED };
+  const t = r.data;
   return {
     connected: true,
-    moving: r.moving === true || r.moving === 1,
-    batteryV: numOrNull(r.battery_v),
-    panSteps: numOrNull(pos.pan),
-    tiltSteps: numOrNull(pos.tilt),
-    imu,
-    joyLatched: r.joy_latched === true,
+    panDeg: t.axes ? t.axes.pan.pos : null,
+    tiltDeg: t.axes ? t.axes.tilt.pos : null,
+    moving: t.axes ? (t.moving ?? null) : null,
+    estop: t.estop,
+    ref: { ...t.ref },
+    imu: { ...t.imu, cal: t.imu.cal ? { ...t.imu.cal } : null },
+    tiltDisagreeDeg: t.tiltDisagreeDeg,
+    link: { ...t.link },
   };
 }
 
