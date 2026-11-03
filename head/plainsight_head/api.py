@@ -454,10 +454,17 @@ async def _json_errors(request: web.Request, handler: Callable) -> web.StreamRes
 
 
 class AccessLog(AbstractAccessLogger):
-    """aiohttp's access log, but the 2..10 Hz streaming routes log at DEBUG (SD-card volume)."""
+    """aiohttp's access log: failures (>= 400) at WARNING on every route, so guard rejections
+    (423, 503) stay visible; successful 2..10 Hz streaming requests at DEBUG (SD-card volume);
+    other successes at INFO."""
 
     def log(self, request: web.BaseRequest, response: web.StreamResponse, time: float) -> None:
-        level = logging.DEBUG if request.path in QUIET_ROUTES else logging.INFO
+        if response.status >= 400:
+            level = logging.WARNING
+        elif request.path in QUIET_ROUTES:
+            level = logging.DEBUG
+        else:
+            level = logging.INFO
         if self.logger.isEnabledFor(level):
             self.logger.log(level, "%s %s %s %d %.1f ms", request.remote, request.method,
                             request.path_qs, response.status, time * 1000)

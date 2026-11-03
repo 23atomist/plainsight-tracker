@@ -581,3 +581,12 @@ async def test_streaming_track_and_jog_requests_log_nothing_at_info(tmp_path, ca
         await rig.get("/api/state")  # other routes keep their INFO access line
         assert any(r.name == "aiohttp.access" and "/api/state" in r.getMessage()
                    and r.levelno == logging.INFO for r in caplog.records[mark:])
+
+        assert (await post_json(rig, "/api/estop"))[0] == 200
+        mark = len(caplog.records)
+        for i in range(20):  # refused frames must stay visible, not sink to DEBUG
+            assert (await post_json(rig, "/api/track", {"pan": {"pos": 0.0, "vel": 0.0}}))[0] == 423
+        refused = [r for r in caplog.records[mark:] if r.name == "aiohttp.access"
+                   and r.levelno == logging.WARNING and "/api/track" in r.getMessage()
+                   and " 423 " in r.getMessage()]
+        assert len(refused) == 20
