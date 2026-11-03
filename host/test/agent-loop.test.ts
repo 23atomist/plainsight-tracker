@@ -17,7 +17,7 @@ function client(over: Partial<RigMcpClient> = {}): { c: RigMcpClient; calls: str
   const c: RigMcpClient = {
     scanAircraft: async () => [brief("aaa"), brief("bbb")],
     getTracked: async () => ({ hex: null }),
-    getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null }),
+    getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: true }),
     track: async (h) => { calls.push(`track:${h}`); },
     stop: async () => { calls.push("stop"); },
     parkIdle: async () => { calls.push("parkIdle"); return { parked: true, reason: "parked" }; },
@@ -30,6 +30,32 @@ function deps(c: RigMcpClient, choose: (i: ChooseInput) => Promise<Decision>, no
 }
 
 describe("runOnce", () => {
+  // Spec 6.8 rule 2: with pan's origin unknown the daemon refuses all
+  // automated motion; the agent must not even ask the model, let alone track,
+  // stop or idle-park.
+  it("keeps without asking the LLM when the rig's pan is unreferenced", async () => {
+    const { c, calls } = client({
+      getTracked: async () => ({ hex: "aaa" }),
+      getStatus: async () => ({ state: "waiting", label: "x", pointingErrorDeg: null, panReferenced: false }),
+    });
+    const choose = vi.fn(async () => ({ action: "track" as const, hex: "bbb", reason: "" }));
+    const out = await runOnce(deps(c, choose), { lastSwitchMs: 5 });
+    expect(choose).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    expect(out.action).toEqual({ kind: "keep", reason: "pan_unreferenced" });
+    expect(out.state.lastSwitchMs).toBe(5);
+  });
+
+  it("does not idle-park an unreferenced rig even with nothing to track", async () => {
+    const { c, calls } = client({
+      scanAircraft: async () => [],
+      getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: false }),
+    });
+    const out = await runOnce(deps(c, async () => ({ action: "keep", reason: "" })), { lastSwitchMs: 0 });
+    expect(calls).toEqual([]);
+    expect(out.action).toEqual({ kind: "keep", reason: "pan_unreferenced" });
+  });
+
   it("tracks the LLM's pick and stamps the switch time", async () => {
     const { c, calls } = client();
     const out = await runOnce(deps(c, async () => ({ action: "track", hex: "bbb", reason: "" })), { lastSwitchMs: 0 });

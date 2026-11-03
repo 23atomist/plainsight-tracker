@@ -2,7 +2,9 @@ import { Decision } from "./llm.js";
 
 export type Action =
   | { kind: "track"; hex: string }
-  | { kind: "keep" }
+  // `reason` is set only when the loop stood down on a rig-state gate before
+  // consulting the model (e.g. "pan_unreferenced"); an ordinary keep has none.
+  | { kind: "keep"; reason?: string }
   | { kind: "stop" };
 
 export interface DecideInput {

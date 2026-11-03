@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { z } from "zod";
-import type { RigMcpClient } from "./loop.js";
+import type { RigMcpClient, RigStatus } from "./loop.js";
 import type { AircraftBrief } from "./llm.js";
 
 const ScanRow = z.object({
@@ -18,7 +18,17 @@ const ScanRow = z.object({
 });
 const ScanBody = z.object({ aircraft: z.array(ScanRow) });
 const TrackedBody = z.object({ hex: z.string().nullable() });
-const StatusBody = z.object({ state: z.string(), label: z.string().nullable(), pointing_error_deg: z.number().nullable() });
+// pan_referenced is REQUIRED: a status that does not say the rig is
+// referenced must never be read as permission to move it (fail closed).
+const StatusBody = z.object({
+  state: z.string(), label: z.string().nullable(), pointing_error_deg: z.number().nullable(),
+  pan_referenced: z.boolean(),
+});
+
+export function parseTrackingStatus(text: string): RigStatus {
+  const b = StatusBody.parse(JSON.parse(text));
+  return { state: b.state, label: b.label, pointingErrorDeg: b.pointing_error_deg, panReferenced: b.pan_referenced };
+}
 const ParkIdleBody = z.object({ parked: z.boolean(), reason: z.string() });
 
 // Narrow a CallToolResult to its text content, throwing on an error result so
@@ -99,9 +109,8 @@ export class McpRigClient implements RigMcpClient {
   async getTracked(): Promise<{ hex: string | null }> {
     return { hex: TrackedBody.parse(JSON.parse(await this.call("get_tracked_aircraft", {}))).hex };
   }
-  async getStatus(): Promise<{ state: string; label: string | null; pointingErrorDeg: number | null }> {
-    const b = StatusBody.parse(JSON.parse(await this.call("get_tracking_status", {})));
-    return { state: b.state, label: b.label, pointingErrorDeg: b.pointing_error_deg };
+  async getStatus(): Promise<RigStatus> {
+    return parseTrackingStatus(await this.call("get_tracking_status", {}));
   }
   async track(hex: string): Promise<void> { await this.call("track_aircraft", { hex }); }
   async stop(): Promise<void> { await this.call("stop_tracking", {}); }

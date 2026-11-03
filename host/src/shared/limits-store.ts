@@ -97,6 +97,26 @@ export class LimitsStore {
     this.save();
   }
 
+  // The head renamed pan (spec 6.8 rule 1; see mcp/reference-shift.ts): the
+  // pose a taught pan edge was captured at now reads `old + deltaDeg`. The
+  // edges are positions on the Pico's CONTINUOUS pan counter -- a cable
+  // limits this axis -- so they move by the counter's own (unwrapped) shift
+  // and are never folded into (-180, 180]: folding would flip an edge near
+  // +180 to the far side of the travel and invert the range. An edge pushed
+  // past the config ceiling is harmless: effectiveLimits() clamps to the
+  // ceiling, which is where the head's own limit stops the axis anyway.
+  // Tilt is referenced by its endstop, not by pan's zero, and is untouched.
+  shiftPan(deltaDeg: number): void {
+    if (deltaDeg === 0) return;
+    const { panMin, panMax } = this.limits;
+    this.limits = {
+      ...this.limits,
+      ...(panMin !== undefined ? { panMin: panMin + deltaDeg } : {}),
+      ...(panMax !== undefined ? { panMax: panMax + deltaDeg } : {}),
+    };
+    this.save();
+  }
+
   // A re-zero of the step origin leaves every taught edge captured against
   // the OLD zero, meaningless (possibly dangerously so — a "tighter" limit
   // under the old origin could sit anywhere under the new one), so it must be

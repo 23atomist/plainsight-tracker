@@ -30,6 +30,7 @@ import { RangeStore } from "../shared/range-store.js";
 import { registerRangeTools } from "./range-tools.js";
 import { LimitsStore } from "../shared/limits-store.js";
 import { registerLimitsTools } from "./limits-tools.js";
+import { wireReferenceShift } from "./reference-shift.js";
 import { PolicyStore } from "../shared/policy-store.js";
 import type { Ruleset } from "../shared/policy/rules.js";
 import { MediaMtxClient } from "../shared/mediamtx/client.js";
@@ -537,6 +538,11 @@ export async function main(): Promise<MainHandle> {
   const limitsStore = new LimitsStore(limitsFile);
   limitsStore.load();
   console.error(`taught travel limits file: ${limitsFile} (taught: ${JSON.stringify(limitsStore.get())})`);
+  // Spec 6.8 rule 1: keep the calibration and the taught pan limits on the
+  // same physical poses across a head-side pan rename. The sector (true-north
+  // bearings), floor (elevation) and aim trim (relative) need no shift -- see
+  // reference-shift.ts.
+  wireReferenceShift(device, cfg.panSign, { calibration: store, limits: limitsStore });
   const policyFile = join(cfg.stateDir, "policy.json");
   const policyStore = new PolicyStore(policyFile);
   policyStore.load();

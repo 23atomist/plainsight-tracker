@@ -5,7 +5,7 @@ import { TrackingSession } from "../shared/track/session.js";
 import { velocityFromSpeedHeading } from "../shared/track/estimator.js";
 import { heightSchema } from "./geo-tools.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
-import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
+import { text, errText, SUN_LOCKED_MSG, PAN_UNREFERENCED_MSG } from "./tool-helpers.js";
 import { AimTrimStore } from "../shared/aim-trim-store.js";
 
 const latSchema = z.number().finite().min(-90).max(90).describe("target latitude, degrees");
@@ -51,6 +51,7 @@ export function registerTrackTools(
     },
     async ({ lat, lon, height_m, speed_mps, heading_deg, climb_mps, label }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      if (!session.panReferenced()) return errText(PAN_UNREFERENCED_MSG);
       const err = session.start(
         { lat, lon, height: height_m },
         velocityFromArgs(speed_mps, heading_deg, climb_mps),
@@ -270,5 +271,7 @@ function statusBody(session: TrackingSession) {
     coasting: s.coasting,
     offset_pan_deg: round(s.offsetPanDeg, 3),
     offset_tilt_deg: round(s.offsetTiltDeg, 3),
+    // The agent reads this to stand down without consulting its model.
+    pan_referenced: session.panReferenced(),
   };
 }

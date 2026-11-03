@@ -26,7 +26,17 @@ export type WaitReason =
   // physically cannot reach the target, this one means the operator has
   // forbidden tracking that low (see track/floor.ts). Collapsing them would
   // make "why is it holding?" unanswerable at exactly the moment it matters.
-  | "below_min_elevation";
+  | "below_min_elevation"
+  // The head lost pan's origin (ref.pan "none": Pico reboot, ENABLE 0) --
+  // spec 6.8 rule 2. Every pan the session would compute is against a zero
+  // that no longer exists, so it holds without moving until a reference is
+  // back (set_position / reference_pan, or the head's own restore).
+  | "pan_unreferenced";
+
+/** True when the head reports pan's origin as unknown (ref.pan "none"). */
+export function isPanUnreferenced(s: DeviceState): boolean {
+  return s.ref.pan === "none";
+}
 
 export interface TrackStatus {
   state: TrackState;
@@ -276,6 +286,11 @@ export class TrackingSession {
   // ~1.7deg error, and "clear" must not hand the operator that.
   clearOffset(): void { this.offset = this.trimBaseline(); }
 
+  /** False while the head reports pan's origin unknown (spec 6.8 rule 2). */
+  panReferenced(): boolean {
+    return !isPanUnreferenced(this.device.getState());
+  }
+
   status(): TrackStatus {
     const dev = this.device.getState();
     const fixMs = lastFixMs(this.est);
@@ -451,6 +466,10 @@ export class TrackingSession {
     if (dev.lastUpdateMs === 0 || t - dev.lastUpdateMs > this.cfg.trackStaleTelemetryMs) {
       this.wait("telemetry_stale"); return;
     }
+    // A rig-state gate, not a policy predicate (policy is per-aircraft): with
+    // pan's zero unknown no aim is meaningful. After telemetry_stale on
+    // purpose -- a stale snapshot's ref is as untrustworthy as its pan.
+    if (isPanUnreferenced(dev)) { this.wait("pan_unreferenced"); return; }
     const fixMs = lastFixMs(this.est);
     if (fixMs === null || t - fixMs > this.cfg.trackMaxTargetAgeMs) { this.wait("target_stale"); return; }
 
@@ -605,6 +624,10 @@ export class TrackingSession {
   private beginAcquire(): void {
     const R = this.store.getOrientation();
     if (!R) { this.wait("not_calibrated"); return; }
+    // start() -> beginAcquire() slews before tick()'s gate ever runs (same
+    // reasoning as the sector/floor checks below), so the unreferenced gate
+    // must be here too or the first acquire would fly blind.
+    if (isPanUnreferenced(this.device.getState())) { this.wait("pan_unreferenced"); return; }
     const aim = targetAimAt(this.est, R, this.now() + this.cfg.trackLeadMs, this.cHead(), this.cfg.geoPanSign, this.limits());
     if (!aim) { this.wait("target_stale"); return; }
     // Azimuth-sector filter: refuse to dispatch the initial goto toward an

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resultText } from "../src/agent/mcp-client.js";
+import { resultText, parseTrackingStatus } from "../src/agent/mcp-client.js";
 
 describe("resultText", () => {
   it("returns the text of a success result", () => {
@@ -22,5 +22,21 @@ describe("resultText", () => {
     expect(() => resultText("get_tracking_status", result)).toThrow(
       /get_tracking_status.*no text content/,
     );
+  });
+});
+
+describe("parseTrackingStatus", () => {
+  const body = { state: "waiting", reason: "pan_unreferenced", label: null, pointing_error_deg: null };
+
+  it("reads pan_referenced into panReferenced", () => {
+    expect(parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: false })))
+      .toEqual({ state: "waiting", label: null, pointingErrorDeg: null, panReferenced: false });
+    expect(parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: true })).panReferenced).toBe(true);
+  });
+
+  // Fail closed: a status that does not say the rig is referenced must never
+  // be read as permission to move it.
+  it("rejects a status without pan_referenced", () => {
+    expect(() => parseTrackingStatus(JSON.stringify(body))).toThrow();
   });
 });

@@ -617,3 +617,68 @@ describe("idle park", () => {
     }
   });
 });
+
+// Spec 6.8 rule 2: with pan's origin unknown the computed boresight is a
+// guess, so neither park may plan or fly a path from it. A sun trip must still
+// HALT the rig -- refusing to park is not the same as refusing to stop.
+describe("pan unreferenced", () => {
+  const NIGHT_MS = Date.UTC(2026, 0, 1, 8, 0);
+  const NOON_MS = Date.UTC(2026, 6, 17, 19, 30);   // Phoenix: sun ~175 az / ~77 el
+
+  async function dropReference(): Promise<void> {
+    mock!.model.ref = { pan: "none", persisted: false, ageS: null };
+    const t0 = Date.now();
+    while (dev!.getState().ref.pan !== "none" && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 20));
+    expect(dev!.getState().ref.pan).toBe("none");
+  }
+
+  it("idle park refuses while unreferenced and sends nothing", async () => {
+    const { cfg, store } = await harness(25, NIGHT_MS);
+    await dropReference();
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NIGHT_MS, sched);
+    const before = motionCalls(mock!).length;
+    const r = await sup.parkIdle();
+    expect(r).toEqual({ parked: false, reason: "pan_unreferenced" });
+    expect(motionCalls(mock!).slice(before)).toEqual([]);
+  });
+
+  it("a sun trip while unreferenced halts the rig and locks, but plans and flies no park", async () => {
+    const { cfg, store } = await harness(25, NOON_MS);
+    mock!.setPosition(175, 77);
+    await new Promise((r) => setTimeout(r, 200));
+    await dropReference();
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NOON_MS, sched);
+    const gotosBefore = mock!.gotoCount;
+    const stopsBefore = mock!.stopCount;
+    sup.tickForTest();
+    expect(sup.status().state).toBe("fault");
+    expect(sup.status().reason).toBe("pan_unreferenced");
+    expect(sup.isSunLocked()).toBe(true);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(mock!.stopCount).toBeGreaterThan(stopsBefore);   // halted
+    expect(mock!.gotoCount).toBe(gotosBefore);              // no park goto
+  });
+
+  it("a sun park in flight stops at the next waypoint when the reference drops", async () => {
+    const { cfg, store } = await harness(25, NOON_MS);
+    mock!.setPosition(175, 77);
+    await new Promise((r) => setTimeout(r, 200));
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NOON_MS, sched);
+    sup.tickForTest();
+    expect(sup.status().state).toBe("parking");
+    await new Promise((r) => setTimeout(r, 100));
+    await dropReference();
+    const stopsBefore = mock!.stopCount;
+    sup.tickForTest();
+    expect(sup.status().state).toBe("fault");
+    expect(sup.status().reason).toBe("pan_unreferenced");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(mock!.stopCount).toBeGreaterThan(stopsBefore);
+  });
+});

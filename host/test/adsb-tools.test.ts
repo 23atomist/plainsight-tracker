@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { scanAircraft, isTrackable, toPolicyTarget, type ScanParams } from "../src/mcp/adsb-tools.js";
+import { scanAircraft, isTrackable, toPolicyTarget, registerAdsbTools, type ScanParams } from "../src/mcp/adsb-tools.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { loadConfig } from "../src/shared/config.js";
 import type { AdsbSnapshot, EnrichedAircraft } from "../src/shared/adsb/types.js";
 import { Geodetic } from "../src/shared/geo/wgs84.js";
@@ -300,5 +303,35 @@ describe("toPolicyTarget", () => {
     expect(t.elevation_deg).toBe(12.7);
     expect(t.ground_speed_kt).toBe(333);
     expect(t.est_track_sec).toBe(47);
+  });
+});
+
+// Spec 6.8 rule 2: an operator-named hex is still automated motion (the
+// follower slews and servos on its own), so it is refused while pan's origin
+// is unknown -- before the follower is ever bound.
+describe("track_aircraft while pan is unreferenced", () => {
+  it("refuses with the re-reference hint and never binds the follower", async () => {
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-adsb-")), "cal.json"));
+    store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
+    store.setOrientation(I, new Date(0).toISOString());
+    const bound: string[] = [];
+    const server = new McpServer({ name: "t", version: "0" });
+    registerAdsbTools(
+      server,
+      { getSnapshot: () => ({ nowSec: NIGHT / 1000, aircraft: [] }) } as never,
+      { bind: (h: string) => { bound.push(h); }, onSnapshot: () => {}, status: () => ({ hex: null, lostMs: null, lastError: null }) } as never,
+      store, cfg,
+      { panReferenced: () => false, isActive: () => false } as never,
+      { isSunLocked: () => false } as never,
+      { get: () => ({ enabled: false, startDeg: 0, endDeg: 360 }) } as never,
+    );
+    const client = new Client({ name: "c", version: "0" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(b), client.connect(a)]);
+    const r: any = await client.callTool({ name: "track_aircraft", arguments: { hex: "a1b2c3" } });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("pan unreferenced — run reference_pan or set_position");
+    expect(bound).toEqual([]);
+    await client.close();
   });
 });

@@ -128,6 +128,27 @@ describe("track tools", () => {
     session.stop();
   });
 
+  it("get_tracking_status reports pan_referenced from the head's ref.pan", async () => {
+    await harness();
+    let body = JSON.parse(textOf(await client.callTool({ name: "get_tracking_status", arguments: {} })));
+    expect(body.pan_referenced).toBe(true);
+    mock.model.ref = { pan: "none", persisted: false, ageS: null };
+    await sleep(200);
+    body = JSON.parse(textOf(await client.callTool({ name: "get_tracking_status", arguments: {} })));
+    expect(body.pan_referenced).toBe(false);
+  });
+
+  it("start_tracking refuses while pan is unreferenced, and moves nothing", async () => {
+    const session = await harness();
+    mock.model.ref = { pan: "none", persisted: false, ageS: null };
+    await sleep(200);
+    const r: any = await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe("pan unreferenced — run reference_pan or set_position");
+    expect(session.isActive()).toBe(false);
+    expect(mock.gotoCount).toBe(0);
+  });
+
   it("stop_tracking ends the session", async () => {
     const session = await harness();
     await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });

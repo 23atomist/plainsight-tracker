@@ -1,7 +1,7 @@
 import { AxisConfig, Device } from "../device.js";
 import { Config } from "../config.js";
 import { CalibrationStore } from "../calibration.js";
-import { TrackingSession, Scheduler, realScheduler } from "./session.js";
+import { TrackingSession, Scheduler, realScheduler, isPanUnreferenced } from "./session.js";
 import { sunEnu, sunAzEl } from "../geo/sun.js";
 import { checkSun, planPark, ParkPlan } from "./sunguard.js";
 import { boresightEnu, limitHorizonMs, usableOr } from "./control.js";
@@ -24,7 +24,7 @@ export interface SunStatus {
   readonly locked: boolean;
 }
 
-type IdleParkAbort = "estop" | "sun_locked" | "tracking_active";
+type IdleParkAbort = "estop" | "pan_unreferenced" | "sun_locked" | "tracking_active";
 
 interface Boresight { readonly panDeg: number; readonly tiltDeg: number; readonly enu: Vec3 }
 
@@ -306,6 +306,14 @@ export class SunSupervisor {
       this.state = "parked"; this.reason = "sun_in_cone"; this.parkInFlight = false;
       return;
     }
+    // Spec 6.8 rule 2: with pan's origin unknown the boresight -- and so the
+    // sun-path validation planPark did -- is a guess. Refuse to fly (or keep
+    // flying) a park from it; halt instead. enterFault stops the session, the
+    // jog and the head and abandons any leg in flight, and holds the lock
+    // until a human clears it: a sun trip still halts the rig, it just cannot
+    // be answered with a slew. The operator re-references with set_position
+    // (no motion) or disables the guard to move manually.
+    if (isPanUnreferenced(this.device.getState())) { this.enterFault("pan_unreferenced"); return; }
     if (this.parkInFlight) return;
     const wp = plan.waypoints[this.parkStep];
     const gen = this.parkGen;
@@ -323,9 +331,9 @@ export class SunSupervisor {
       });
   }
 
-  // The three conditions under which parkIdle() must never command motion:
-  // E-STOP/any engaged firmware program, the sun park (which always wins),
-  // and an active tracking session. Factored out so the SAME check runs both
+  // The conditions under which parkIdle() must never command motion:
+  // E-STOP/any engaged firmware program, an unreferenced pan, the sun park
+  // (which always wins), and an active tracking session. Factored out so the SAME check runs both
   // at entry and again on every leg of a multi-waypoint flight (see
   // parkIdle()) -- a pan-detour is several seconds of real motion, and any of
   // these three can become true partway through it.
@@ -335,6 +343,10 @@ export class SunSupervisor {
     // parkIdle()'s own staleness check exists, rather than trusting this
     // snapshot no matter how old it is.
     if (this.device.getState().estop) return "estop";
+    // Spec 6.8 rule 2: no automated motion without a pan origin -- the park's
+    // own sun-path check would be computed from a pan that means nothing.
+    // Also re-checked on every leg, so a reference lost mid-flight aborts.
+    if (isPanUnreferenced(this.device.getState())) return "pan_unreferenced";
     // `locked` is true for the entire parking/parked/fault span (set by
     // setLocked at the exact instant tick() commits to a sun park), so this
     // one check covers all three without needing to know the guard's

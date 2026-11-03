@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
-import { Mat3, Vec3 } from "./geo/vec3.js";
+import { Mat3, Vec3, matMul, matVec, rotZ, deg2rad } from "./geo/vec3.js";
 import { fitCalibration, FitSighting, CalibrationFit, DEFAULT_SIGHTING_SIGMA_DEG } from "./geo/calibration-fit.js";
 import { enuDirection } from "./geo/wgs84.js";
 
@@ -317,6 +317,55 @@ export class CalibrationStore {
 
   clear(): void {
     this.profile = empty();
+    this.save();
+  }
+
+  /**
+   * The head renamed pan (spec 6.8 rule 1): the physical pose that read `p`
+   * now reads `p + deltaDeg` (USER frame -- the caller maps the head's
+   * device-frame delta through cfg.panSign). Re-express everything stored
+   * against pan's zero so every physical pose keeps its ENU boresight.
+   *
+   * Derivation, from boresightToEnu (geo/imu-orientation.ts):
+   *   b(R, p, t) = R · Rz(-gp·p) · Rx(t) · cHead          (gp = geoPanSign)
+   * Rotations about one axis compose additively, so
+   *   Rz(-gp·(p+d)) = Rz(-gp·d) · Rz(-gp·p).
+   * Requiring b(R', p+d, t) = b(R, p, t) for every p, t gives
+   *   R' · Rz(-gp·d) = R   ⇒   R' = R · Rz(+gp·d)
+   * -- the solved orientation turned about the MOUNT's pan axis (not ENU up),
+   * exact rather than a re-fit. The gravity anchors live in the mount frame
+   * and obey the same model (M(gp·pan, tilt)·R_s·g = d_base), so they become
+   * d' = Rz(-gp·d)·d; then R'·d' = R·d and a re-solve from the shifted
+   * sightings lands on R' with the same residuals. cHead and the IMU's R_s
+   * are head-frame quantities: a pan rename cannot touch them.
+   *
+   * Sighting pans move by +d unwrapped: the fit only ever sees pan through
+   * that periodic rotation, and the value matches what the head's counter
+   * now reads for that pose.
+   */
+  shiftPanZero(deltaDeg: number): void {
+    if (deltaDeg === 0) return;
+    const gp = this.geoPanSign;
+    const turnR = rotZ(deg2rad(gp * deltaDeg));
+    const turnMount = rotZ(deg2rad(-gp * deltaDeg));
+    const flat = (m: Mat3): number[] => [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1], m[2][2]];
+    const vec = (v: readonly number[]): number[] => {
+      const r = matVec(turnMount, [v[0], v[1], v[2]]);
+      return [r[0], r[1], r[2]];
+    };
+    const R = this.getOrientation();
+    const p = this.profile;
+    this.profile = {
+      ...p,
+      sightings: p.sightings.map((s) => ({ ...s, panDeg: s.panDeg + deltaDeg })),
+      ...(R ? { orientation: flat(matMul(R, turnR)) } : {}),
+      ...(p.baseDown ? { baseDown: vec(p.baseDown) } : {}),
+      ...(p.imuMounting ? { imuMounting: { ...p.imuMounting, dBase: vec(p.imuMounting.dBase) } } : {}),
+    };
+    // The cached fit describes the same solve in the old frame: carry it over
+    // rather than drop it (get_calibration reports its residuals, which a
+    // rename leaves unchanged).
+    if (this.lastFit) this.lastFit = { ...this.lastFit, R: matMul(this.lastFit.R, turnR) };
     this.save();
   }
 

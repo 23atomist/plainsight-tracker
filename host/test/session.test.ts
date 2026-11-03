@@ -55,6 +55,8 @@ interface Deferred {
 
 class FakeDevice {
   panDeg = 0; tiltDeg = 0; moving = false; estop = false;
+  // ref.pan: "none" means the head lost pan's zero (Pico reboot, ENABLE 0).
+  refPan: "none" | "imu" | "host" = "imu";
   lastUpdateMs = 1_000_000;
   // Every track() call, in order (the head's TRACK).
   tracks: HeadTrackCmd[] = [];
@@ -75,7 +77,7 @@ class FakeDevice {
     return {
       connected: true, panDeg: this.panDeg, tiltDeg: this.tiltDeg, zoomDeg: 0, focusDeg: 0,
       moving: this.moving, enabled: true, estop: this.estop, tiltDisagreeDeg: null,
-      ref: { pan: "imu", persisted: true, ageS: 0 }, link: { pico: true, imu: true },
+      ref: { pan: this.refPan, persisted: true, ageS: 0 }, link: { pico: true, imu: true },
       lastUpdateMs: this.lastUpdateMs,
     };
   }
@@ -481,6 +483,81 @@ describe("TrackingSession goto cancellation (generation stamp)", () => {
 // used to sit in a busy wait for the rig to come to rest before every
 // reacquire. The head accepts a goto while moving and retargets, so that dance
 // is gone.
+// Spec 6.8 rule 2: with pan's origin unknown, the host has no idea where the
+// camera points, so no automated motion may run -- but the operator's manual
+// jog/goto must keep working, they are how pan gets re-referenced.
+describe("TrackingSession: pan unreferenced", () => {
+  it("ref.pan none mid-track stops motion once and waits with pan_unreferenced; it resumes when re-referenced", async () => {
+    const s = newSession();
+    s.start(NORTH, null, null);
+    dev.gotoDeferreds[0].resolve();
+    await flush();
+    sched.fire();
+    expect(s.status().state).toBe("tracking");
+    expect(dev.tracks).toHaveLength(1);
+
+    dev.refPan = "none";
+    sched.fire();
+    expect(s.status().state).toBe("waiting");
+    expect(s.status().reason).toBe("pan_unreferenced");
+    expect(dev.stopCalls).toBe(1);
+    sched.fire();
+    sched.fire();
+    expect(dev.stopCalls).toBe(1);          // edge-triggered: one STOP, not one per tick
+    expect(dev.tracks).toHaveLength(1);     // and no TRACK while unreferenced
+    expect(dev.gotos).toHaveLength(1);      // nor a reacquire goto
+
+    dev.refPan = "host";
+    sched.fire();
+    expect(s.status().state).toBe("acquiring");
+    expect(dev.gotos).toHaveLength(2);
+    s.stop();
+  });
+
+  it("start() while unreferenced issues no acquire goto and waits with pan_unreferenced", () => {
+    dev.refPan = "none";
+    const s = newSession();
+    expect(s.start(NORTH, null, null)).toBeNull();
+    expect(dev.gotos).toHaveLength(0);
+    expect(s.status().state).toBe("waiting");
+    expect(s.status().reason).toBe("pan_unreferenced");
+    expect(s.panReferenced()).toBe(false);
+    s.stop();
+  });
+
+  it("against the head: the session holds while unreferenced, and a manual jog and goto still reach the head", async () => {
+    const head = new FakeHead();
+    await head.start({ tickMs: 0 });
+    const c = loadConfig(undefined, { TB3_HEAD_URL: head.url, TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" });
+    const device = new Device(c, () => clockMs);
+    device.start();
+    const s = new TrackingSession(device, c, store, () => clockMs, sched);
+    try {
+      await waitFor(() => device.getState().lastUpdateMs === clockMs);
+      head.model.ref = { pan: "none", persisted: false, ageS: null };
+      head.tick();
+      await waitFor(() => device.getState().ref.pan === "none");
+
+      expect(s.start(NORTH, [0, 0, 0], null)).toBeNull();
+      sched.fire();
+      expect(s.status().reason).toBe("pan_unreferenced");
+      await flush();
+      expect(head.gotoCount).toBe(0);
+      expect(head.lastTrack).toBeNull();
+
+      // Manual motion is the operator's way back to a reference: never gated.
+      await device.gotoAngle(12, 8);
+      expect(head.gotoCount).toBe(1);
+      await device.jog(3, 0, 120);
+      expect(head.calls.some((call) => call.path === "/api/jog")).toBe(true);
+    } finally {
+      s.stop();
+      device.close();
+      await head.stop();
+    }
+  });
+});
+
 describe("TrackingSession reacquire on the head", () => {
   function trackingWithError(): TrackingSession {
     const s = newSession();

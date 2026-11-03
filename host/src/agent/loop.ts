@@ -10,10 +10,19 @@ export interface ParkIdleResult {
   readonly reason: string;
 }
 
+export interface RigStatus {
+  readonly state: string;
+  readonly label: string | null;
+  readonly pointingErrorDeg: number | null;
+  readonly panReferenced: boolean;
+}
+
 export interface RigMcpClient {
   scanAircraft(p: { maxRangeKm: number; onlyTrackable: boolean; onlyEligible: boolean; limit: number }): Promise<AircraftBrief[]>;
   getTracked(): Promise<{ hex: string | null }>;
-  getStatus(): Promise<{ state: string; label: string | null; pointingErrorDeg: number | null }>;
+  // panReferenced: false while the head reports pan's origin unknown (spec
+  // 6.8 rule 2); the daemon refuses all automated motion then.
+  getStatus(): Promise<RigStatus>;
   track(hex: string): Promise<void>;
   stop(): Promise<void>;
   // Point the rig up between passes so a genuinely idle autonomous rig does
@@ -62,6 +71,14 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
   const trackable = [...scanned].sort((a, b) => (a.tier ?? Number.MAX_SAFE_INTEGER) - (b.tier ?? Number.MAX_SAFE_INTEGER));
   const tracked = await deps.client.getTracked();
   const status = await deps.client.getStatus();
+
+  // A rig-state gate, ahead of the model: with pan's origin unknown the daemon
+  // refuses tracking and idle park anyway, so there is nothing to decide --
+  // and a stop would only churn the follower binding the session is holding
+  // for when the reference comes back.
+  if (!status.panReferenced) {
+    return { action: { kind: "keep", reason: "pan_unreferenced" }, state };
+  }
 
   const trackableHexes = new Set(trackable.map((a) => a.hex.toLowerCase()));
   const currentHex = tracked.hex ? tracked.hex.toLowerCase() : null;
