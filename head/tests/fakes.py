@@ -232,6 +232,7 @@ class FakeBNO055:
         self.closed = False
         self.mode = _FAKE_MODE_NDOF
         self.offsets_writes: list[bytes] = []
+        self.offsets_reads = 0
         self._fail = 0
         self._fail_offsets = 0
 
@@ -273,6 +274,7 @@ class FakeBNO055:
 
     def get_offsets(self) -> bytes:
         self._maybe_fail()
+        self.offsets_reads += 1
         self.mode = _FAKE_MODE_CONFIG
         try:
             if self._fail_offsets > 0:

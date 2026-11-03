@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import struct
+import time
 
 from plainsight_head.imu import BNO055, ImuReader
-from tests.fakes import FakeBNO055
+from tests.fakes import FakeBNO055, FakeClock
 
 
 def test_read_sample_decodes_register_block(monkeypatch):
@@ -53,13 +54,94 @@ async def test_fully_calibrated_callback_fires_once():
 async def test_failed_offsets_read_is_retried_and_sensor_stays_in_fusion_mode():
     fake = FakeBNO055(cal=(3, 3, 3, 3))
     fake.fail_offsets(1)
+    clk = FakeClock()
     got = []
-    r = ImuReader(lambda: fake, rate_hz=200, on_fully_calibrated=got.append)
+    r = ImuReader(lambda: fake, rate_hz=200, on_fully_calibrated=got.append, time_fn=clk.now)
     await r.start()
     await asyncio.sleep(0.05)
+    assert got == []  # first attempt failed; the retry waits 5 s
+    clk.advance(5.0)
+    await asyncio.sleep(0.05)
     await r.close()
-    assert got == [fake.offsets]  # first attempt failed, a later sample retried
+    assert got == [fake.offsets]
     assert fake.mode == 0x0C
+
+
+async def test_offsets_retry_backs_off_5_10_20_40_then_caps_at_60():
+    fake = FakeBNO055(cal=(3, 3, 3, 3))
+    fake.fail_offsets(100)
+    clk = FakeClock()
+    got = []
+    r = ImuReader(lambda: fake, rate_hz=200, on_fully_calibrated=got.append, time_fn=clk.now)
+    await r.start()
+
+    async def attempts_after(advance: float) -> int:
+        clk.advance(advance)
+        await asyncio.sleep(0.03)  # several 200 Hz samples: at most one attempt is due
+        return fake.offsets_reads
+
+    assert await attempts_after(0) == 1
+    expected = 1
+    for gap in (5, 10, 20, 40, 60, 60):
+        assert await attempts_after(gap - 0.5) == expected, gap  # not yet
+        expected += 1
+        assert await attempts_after(0.5) == expected, gap
+    fake.fail_offsets(0)
+    await attempts_after(60)
+    assert got == [fake.offsets] and fake.offsets_reads == expected + 1
+    assert r._cal_retry_s == 5.0  # reset on success
+    await r.close()
+
+
+async def until_open(r: ImuReader) -> None:
+    for _ in range(200):
+        if r.ok:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("IMU never opened")
+
+
+async def test_a_slow_i2c_read_does_not_block_the_event_loop():
+    fake = FakeBNO055()
+    real = fake.read_sample
+
+    def slow_read(now):
+        time.sleep(0.3)  # a held bus / kernel adapter timeout
+        return real(now)
+
+    fake.read_sample = slow_read
+    r = ImuReader(lambda: fake, rate_hz=200)
+    await r.start()
+    await until_open(r)
+    burst = asyncio.create_task(r.burst(2))
+    worst = 0.0
+    for _ in range(40):  # ~0.4 s of 10 ms sleeps while reads block their worker thread
+        t0 = time.monotonic()
+        await asyncio.sleep(0.01)
+        worst = max(worst, time.monotonic() - t0 - 0.01)
+    assert worst < 0.05, worst
+    assert len(await burst) == 2
+    await r.close()
+
+
+async def test_sensor_calls_never_overlap():
+    fake = FakeBNO055()
+    real, active, overlaps = fake.read_sample, [0], []
+
+    def tracked(now):
+        active[0] += 1
+        overlaps.append(active[0])
+        time.sleep(0.002)
+        active[0] -= 1
+        return real(now)
+
+    fake.read_sample = tracked
+    r = ImuReader(lambda: fake, rate_hz=200)
+    await r.start()
+    await until_open(r)
+    await asyncio.gather(r.burst(20), r.burst(20))
+    await r.close()
+    assert max(overlaps) == 1
 
 
 def test_get_offsets_failure_leaves_fusion_mode():
@@ -146,7 +228,7 @@ async def test_non_oserror_is_logged_and_counts_as_failure(caplog):
 async def test_load_offsets_noop_with_warning_when_closed(caplog):
     r = ImuReader(lambda: FakeBNO055())
     with caplog.at_level(logging.WARNING, logger="plainsight_head.imu"):
-        r.load_offsets(bytes(22))
+        await r.load_offsets(bytes(22))
     assert any(rec.levelno == logging.WARNING for rec in caplog.records)
 
 
@@ -155,7 +237,7 @@ async def test_load_offsets_writes_through_set_offsets():
     r = ImuReader(lambda: fake, rate_hz=200)
     await r.start()
     await asyncio.sleep(0.02)
-    r.load_offsets(bytes([7] * 22))
+    await r.load_offsets(bytes([7] * 22))
     assert fake.offsets_writes == [bytes([7] * 22)]
     await r.close()
 
