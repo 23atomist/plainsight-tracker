@@ -172,7 +172,9 @@ export function registerTools(
   server.registerTool(
     "stop",
     { description: "Immediately stop all motion.", inputSchema: {} },
-    async () => { session.stop(); await device.stop(); return text("stopped"); },
+    // clearJog first: a live manual jog vector would otherwise keep being
+    // refreshed by the keep-alive and resume the axis right after the stop.
+    async () => { session.stop(); device.clearJog(); await device.stop(); return text("stopped"); },
   );
 
   server.registerTool(

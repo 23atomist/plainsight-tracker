@@ -17,13 +17,12 @@ import { SunSupervisor } from "../src/shared/track/supervisor.js";
 import { CaptureController, type CaptureDeps } from "../src/shared/capture/controller.js";
 import { PassJournal } from "../src/shared/capture/pass-journal.js";
 
-const PORT = 8793;
 let mock: FakeHead | null = null;
 let dev: Device | null = null;
 
 async function harness(env: Record<string, string> = {}) {
-  mock = new FakeHead(); await mock.start({ port: PORT });
-  const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, ...env });
+  mock = new FakeHead(); await mock.start();   // ephemeral port
+  const cfg = loadConfig(undefined, { TB3_HEAD_URL: mock.url, ...env });
   dev = new Device(cfg); dev.start();
   const t0 = Date.now();
   while (!dev.getState().connected && Date.now() - t0 < 3000) {
@@ -202,6 +201,20 @@ describe("MCP tools", () => {
     expect(mock!.lastJog).toEqual({ pan: 0, tilt: 0 });
   });
 
+  it("stop clears a live manual jog so the keep-alive cannot resume it", async () => {
+    const { client } = await harness();
+    dev!.setJogVector(5, 0, 2000);                    // a live jog, refreshed every 100ms
+    await new Promise((r) => setTimeout(r, 150));
+    const frames = captureJogFrames(mock!);
+    await client.callTool({ name: "stop", arguments: {} });
+    await new Promise((r) => setTimeout(r, 350));     // several keep-alive periods
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames[frames.length - 1]).toEqual({ pan: 0, tilt: 0 });
+    // The STOP is the last motion command: no jog refresh follows it.
+    const motion = mock!.calls.filter((c) => ["/api/jog", "/api/stop"].includes(c.path)).map((c) => c.path);
+    expect(motion.at(-1)).toBe("/api/stop");
+  });
+
   it("stop reaches the device", async () => {
     const { client } = await harness();
     await client.callTool({ name: "stop", arguments: {} });
@@ -374,9 +387,9 @@ describe("jog rate-limit enforcement (Part 1 safety fix)", () => {
   it("the stopping reserve uses trackFallbackAmaxDps2 until the head's config is known", async () => {
     // A gentler fallback amax only matters when the head has not answered
     // GET /api/config: make it unreadable before the Device connects.
-    mock = new FakeHead(); await mock.start({ port: PORT });
+    mock = new FakeHead(); await mock.start();   // ephemeral port
     mock.failNext("/api/config", 503, 1000);
-    const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, TB3_TRACK_FALLBACK_AMAX_DPS2: "1" });
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: mock.url, TB3_TRACK_FALLBACK_AMAX_DPS2: "1" });
     dev = new Device(cfg); dev.start();
     const t0 = Date.now();
     while (!dev.getState().connected && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 25));

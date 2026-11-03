@@ -23,7 +23,7 @@ const REJECT_WARN_INTERVAL_MS = 10_000;
 type RejectKind = "tick" | "event" | "config";
 
 // A motion POST waiting its turn in the Device's FIFO (see enqueueMotion).
-type MotionKind = "goto" | "track" | "stop" | "jog";
+type MotionKind = "goto" | "track" | "stop" | "jog" | "home" | "setpos";
 interface MotionCommand {
   readonly kind: MotionKind;
   readonly path: string;
@@ -114,7 +114,7 @@ export class Device {
   private jogVec: { panDps: number; tiltDps: number; expiresAtMs: number } | null = null;
   private jogTimer: NodeJS.Timeout | null = null;
   private jogLocked = false;
-  // Every motion POST (goto, TRACK, STOP, jog frames including the keep-alive)
+  // Every motion POST (goto, TRACK, STOP, home, setpos, jog frames including the keep-alive)
   // leaves this Device strictly in call order, one in flight at a time. Two
   // HTTP requests in flight can reach the head in either order, and in motion
   // the order IS the meaning: a STOP that lands after the park goto it
@@ -487,21 +487,31 @@ export class Device {
     // Nothing would accept the keep-alive's frames now: stop pumping them, drop
     // any queued frame, and end an in-progress jog() (it rejects).
     this.abortJog();
+    // Every motion command still queued was issued BEFORE the E-STOP and must
+    // never run after it: left queued, it would go out once the latch is
+    // cleared (clearEstop() is not queued either) and the head would accept
+    // it. Refused here, before the latch is even posted.
+    const discarded = this.motionQueue;
+    this.motionQueue = [];
+    for (const d of discarded) d.reject(new Error(`E-STOP: queued ${d.kind} discarded, not sent`));
     await this.post("/api/estop");
   }
 
+  // Not queued: clearing the latch is not motion, and must not wait behind it.
   async clearEstop(): Promise<void> {
     await this.post("/api/estop/clear");
   }
 
   /** `POST /api/home` (202). Completion arrives as a `homed`/`home_failed` event. */
   async home(axes?: string[]): Promise<void> {
-    await this.post("/api/home", axes ? { axes } : undefined);
+    await this.enqueueMotion("home", "/api/home", axes ? { axes } : undefined);
   }
 
   /** `POST /api/setpos`: declares the current position. A pan value re-references pan (`pan_reference` event). */
+  // Queued with the motion commands: it renames the frame every queued goto
+  // and TRACK is expressed in, so it must land exactly where it was called.
   async setPos(pos: { pan?: number; tilt?: number }): Promise<void> {
-    await this.post("/api/setpos", pos);
+    await this.enqueueMotion("setpos", "/api/setpos", pos);
   }
 
   /** `POST /api/reference` (202): re-runs the IMU north reference; the result arrives as an event. */

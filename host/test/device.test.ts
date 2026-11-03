@@ -309,18 +309,47 @@ describe("Device (head API)", () => {
     await expect(d.track({ pan: { pos: 0, vel: 0 } })).rejects.toThrow(/closed/);
   });
 
+  it("E-STOP discards queued motion: a pre-E-STOP goto never runs after the latch is cleared", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.responseDelayMs = 150;
+    const track = d.track({ pan: { pos: 1, vel: 0 } }).catch((e) => e);   // in flight
+    const goto = d.gotoAngle(10, 20).catch((e) => e);                     // queued behind it
+    await sleep(20);
+    await d.estop();
+    await d.clearEstop();
+    await track;
+    const err = await goto;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/E-STOP/);
+    await sleep(200);
+    const paths = h.calls.map((c) => c.path).filter((p) => p !== "/api/config");
+    expect(paths.slice(paths.indexOf("/api/estop"))).toEqual(["/api/estop", "/api/estop/clear"]);
+    expect(h.lastGoto).toBeNull();
+  });
+
+  it("home and setPos ride the motion FIFO in call order", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.responseDelayMs = 80;
+    await Promise.all([d.gotoAngle(1, 1), d.setPos({ pan: 0 }).catch(() => {}), d.home(["tilt"])]);
+    const paths = h.calls.map((c) => c.path).filter((p) => ["/api/goto", "/api/setpos", "/api/home"].includes(p));
+    expect(paths).toEqual(["/api/goto", "/api/setpos", "/api/home"]);
+  });
+
   it("E-STOP is not queued behind a slow motion command", async () => {
     const h = await startHead();
     const d = await startDevice(h);
     h.responseDelayMs = 200;
     const goto = d.gotoAngle(10, 20);
-    const stop = d.stop();
+    const stop = d.stop().catch((e) => e);
     await sleep(20);
     const estop = d.estop();
     await sleep(50);
     const paths = h.calls.map((c) => c.path).filter((p) => p !== "/api/config");
-    expect(paths).toEqual(["/api/goto", "/api/estop"]);   // estop overtook the queued stop
-    await Promise.allSettled([goto, stop, estop]);
+    expect(paths).toEqual(["/api/goto", "/api/estop"]);   // estop overtook the queued stop...
+    expect(await stop).toBeInstanceOf(Error);             // ...which it discarded
+    await Promise.allSettled([goto, estop]);
   });
 
   it("clearJog sends a zero frame only when a jog vector was live", async () => {
