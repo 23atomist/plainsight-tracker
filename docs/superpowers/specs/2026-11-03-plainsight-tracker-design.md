@@ -569,6 +569,21 @@ from the original:
   `${PLAINSIGHT_DATA}/adsb/`.
 - The old `adsbnet` external network is dropped.
 
+**Receiver change (2026-11-05):** the RTL-SDR is misplaced; the receiver is an
+ADALM-Pluto (PlutoSDR). The ultrafeeder image's readsb is built without Pluto
+support, so the compose gains a sidecar service `readsb-pluto`: readsb built
+from source with libiio/libad9361 (`PLUTOSDR=yes`), `--device-type plutosdr`,
+the Pluto passed through as a USB device (`/dev/bus/usb` + the usb cgroup
+rule), publishing Beast on `30005` on the host network. Ultrafeeder runs with
+no SDR of its own (`READSB_DEVICE_TYPE` unset) and takes
+`READSB_NET_CONNECTOR=127.0.0.1,30005,beast_in`; tar1090, the aggregator
+feeds and MLAT are unchanged. `ADSB_SDR_SERIAL`/`ADSB_SDR_PPM` no longer
+apply; `PLUTO_URI` (default `usb:`) and `PLUTO_GAIN` are the new `.env` keys.
+Expect somewhat less range than an RTL-SDR with a 1090 filter; an LNA+filter
+in front of the Pluto is the remedy, and the Pluto has no bias-tee. If the
+RTL-SDR turns up, the sidecar is dropped and ultrafeeder's own
+`READSB_DEVICE_TYPE=rtlsdr` returns.
+
 The tracker's `adsbUrl` defaults to `http://127.0.0.1:8088/data/aircraft.json`.
 The site position in the tracker's calibration (`set_rig_location`) is
 entered during bring-up from the same `FEEDER_*` values, so the two agree.
