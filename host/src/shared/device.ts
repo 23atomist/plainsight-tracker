@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import type { ZodError } from "zod";
 import { Config } from "./config.js";
 import { DeviceState } from "./types.js";
 import {
@@ -15,6 +16,19 @@ const COMMAND_TIMEOUT_MS = 2000;
 const IMU_TIMEOUT_MS = 20000;
 const RECONNECT_MS = 1000;
 const JOG_KEEPALIVE_MS = 100;
+const CONFIG_RETRY_MS = 2000;
+// At most one console warning per kind of rejected message per window: a head
+// that drifts from the contract sends a reject every tick (10 Hz).
+const REJECT_WARN_INTERVAL_MS = 10_000;
+
+type RejectKind = "tick" | "event" | "config";
+
+/** Counts of head messages the client could not use (see Device.getDiagnostics). */
+export interface DeviceDiagnostics {
+  rejectedTicks: number;
+  rejectedEvents: number;
+  rejectedConfig: number;
+}
 
 /** A pan reference change, from a `pan_reference` event. */
 export interface ReferenceChange {
@@ -69,6 +83,14 @@ export class Device {
   };
   private axisConfig: AxisConfig | null = null;
   private configGeneration = 0;
+  private configRetryTimer: NodeJS.Timeout | null = null;
+
+  // A message that fails the strict schema is dropped. Silently, that looks
+  // exactly like the 2026-07-22 telemetry freeze (one unparseable token cost
+  // the whole tick, lastUpdateMs froze while the socket stayed up, and nothing
+  // said why), so every reject is counted and warned about, rate-limited.
+  private rejected: Record<RejectKind, number> = { tick: 0, event: 0, config: 0 };
+  private lastRejectWarnMs: Record<RejectKind, number> = { tick: -Infinity, event: -Infinity, config: -Infinity };
 
   private jogVec: { panDps: number; tiltDps: number; expiresAtMs: number } | null = null;
   private jogTimer: NodeJS.Timeout | null = null;
@@ -81,6 +103,9 @@ export class Device {
   private jogPending: { pan: number; tilt: number } | null = null;
   private jogInflight: Promise<void> | null = null;
   private jogError: unknown = null;
+  // Bumped by close() and estop(): an in-progress jog() loop sees the change
+  // and exits instead of re-arming the keep-alive.
+  private jogEpoch = 0;
 
   // Fired once per REAL parsed telemetry tick (see onMessage below), not on
   // a timer -- a caller that needs one sample per tick with no drops and no
@@ -115,8 +140,8 @@ export class Device {
   close(): void {
     this.closed = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-    this.stopJogTimer();
-    this.jogVec = null;
+    if (this.configRetryTimer) { clearTimeout(this.configRetryTimer); this.configRetryTimer = null; }
+    this.abortJog();
     this.ws?.removeAllListeners();
     this.ws?.on("error", () => { /* a close() during CONNECTING errors; nothing listens any more */ });
     this.ws?.close();
@@ -125,6 +150,26 @@ export class Device {
   }
 
   getState(): DeviceState { return this.snapshot(); }
+
+  /** Head messages rejected so far (malformed JSON, or failing the strict schema). */
+  getDiagnostics(): DeviceDiagnostics {
+    return {
+      rejectedTicks: this.rejected.tick,
+      rejectedEvents: this.rejected.event,
+      rejectedConfig: this.rejected.config,
+    };
+  }
+
+  private reject(kind: RejectKind, why: string): void {
+    this.rejected[kind] += 1;
+    const t = this.now();
+    if (t - this.lastRejectWarnMs[kind] < REJECT_WARN_INTERVAL_MS) return;
+    this.lastRejectWarnMs[kind] = t;
+    console.warn(
+      `head: rejected ${kind} (${this.rejected[kind]} so far; warning at most every ` +
+      `${REJECT_WARN_INTERVAL_MS / 1000}s): ${why}`,
+    );
+  }
 
   getAxisConfig(): AxisConfig | null {
     return this.axisConfig ? cloneAxisConfig(this.axisConfig) : null;
@@ -187,14 +232,25 @@ export class Device {
 
   private onMessage(raw: string): void {
     let msg: unknown;
-    try { msg = JSON.parse(raw); } catch { return; }
+    try {
+      msg = JSON.parse(raw);
+    } catch (e) {
+      // Unparseable, so the type is a guess from the raw text; ticks are the 10 Hz traffic.
+      const kind: RejectKind = /"type"\s*:\s*"event"/.test(raw) ? "event" : "tick";
+      this.reject(kind, `JSON parse error: ${(e as Error).message}`);
+      return;
+    }
     const type = (msg as { type?: unknown } | null)?.type;
     if (type === "tick") {
       const r = HeadTickZ.safeParse(msg);
       if (r.success) this.onTick(r.data);
+      else this.reject("tick", zodWhy(r.error));
     } else if (type === "event") {
       const r = HeadEventZ.safeParse(msg);
       if (r.success) this.onHeadEvent(r.data);
+      else this.reject("event", `name ${JSON.stringify((msg as { name?: unknown }).name)}: ${zodWhy(r.error)}`);
+    } else {
+      this.reject("event", `unknown message type ${JSON.stringify(type)}`);
     }
   }
 
@@ -253,23 +309,39 @@ export class Device {
   }
 
   // Fetches the Pico limits and rates. Overlapping fetches (a burst of config
-  // events) resolve in any order; only the newest one is applied.
+  // events) resolve in any order; only the newest one is applied. Until one
+  // has succeeded, a failure is retried every CONFIG_RETRY_MS while the socket
+  // is up: the limit guard falls back to a constant without it.
   private async refreshConfig(): Promise<void> {
     const gen = ++this.configGeneration;
-    let config: AxisConfig;
+    let raw: unknown;
     try {
-      const raw = await this.request("GET", "/api/config");
-      const parsed = HeadAxisConfigResponseZ.safeParse(raw);
-      if (!parsed.success || gen !== this.configGeneration) return;
-      const pick = (a: HeadAxisConfig): HeadAxisConfig => ({ min: a.min, max: a.max, vmax: a.vmax, amax: a.amax });
-      config = { pan: pick(parsed.data.pan), tilt: pick(parsed.data.tilt) };
+      raw = await this.request("GET", "/api/config");
     } catch {
-      return; // the head is unreachable or the link is down; the next connect or config event retries
+      if (!this.closed && gen === this.configGeneration) this.scheduleConfigRetry();
+      return; // unreachable, or the Pico link is down (503)
     }
+    if (this.closed || gen !== this.configGeneration) return;
+    const parsed = HeadAxisConfigResponseZ.safeParse(raw);
+    if (!parsed.success) {
+      this.reject("config", zodWhy(parsed.error));
+      this.scheduleConfigRetry();
+      return;
+    }
+    const pick = (a: HeadAxisConfig): HeadAxisConfig => ({ min: a.min, max: a.max, vmax: a.vmax, amax: a.amax });
+    const config: AxisConfig = { pan: pick(parsed.data.pan), tilt: pick(parsed.data.tilt) };
     this.axisConfig = config;
     for (const cb of this.configListeners) {
       try { cb(cloneAxisConfig(config)); } catch { /* isolated, see onTelemetry */ }
     }
+  }
+
+  private scheduleConfigRetry(): void {
+    if (this.closed || this.configRetryTimer || this.axisConfig !== null) return;
+    this.configRetryTimer = setTimeout(() => {
+      this.configRetryTimer = null;
+      if (!this.closed && this.state.connected && this.axisConfig === null) void this.refreshConfig();
+    }, CONFIG_RETRY_MS);
   }
 
   // --- HTTP ------------------------------------------------------------------
@@ -337,9 +409,9 @@ export class Device {
 
   /** `POST /api/estop`: latches the head; every motion route returns 423 until cleared. */
   async estop(): Promise<void> {
-    // Nothing would accept the keep-alive's frames now; stop pumping them.
-    this.jogVec = null;
-    this.stopJogTimer();
+    // Nothing would accept the keep-alive's frames now: stop pumping them, drop
+    // any queued frame, and end an in-progress jog() (it rejects).
+    this.abortJog();
     await this.post("/api/estop");
   }
 
@@ -383,14 +455,24 @@ export class Device {
 
   // --- jog -------------------------------------------------------------------
 
+  // Stops the keep-alive without sending a frame (the head's own dead-man,
+  // or the E-STOP, stops the axis) and ends any jog() loop in progress.
+  private abortJog(): void {
+    this.jogEpoch += 1;
+    this.jogVec = null;
+    this.jogPending = null;
+    this.stopJogTimer();
+  }
+
   private sendJog(pan: number, tilt: number): void {
+    if (this.closed) return;
     this.jogPending = { pan, tilt };
     if (!this.jogInflight) this.jogInflight = this.drainJog();
   }
 
   private async drainJog(): Promise<void> {
     try {
-      while (this.jogPending) {
+      while (this.jogPending && !this.closed) {
         const frame = this.jogPending;
         this.jogPending = null;
         try {
@@ -439,7 +521,7 @@ export class Device {
   // (jog()'s loop, or a tracking session) invokes this at roughly the
   // keep-alive rate; sending here too would double it.
   setJogVector(panDps: number, tiltDps: number, ttlMs: number): void {
-    if (this.jogLocked) return;
+    if (this.jogLocked || this.closed) return;
     this.jogVec = { panDps, tiltDps, expiresAtMs: this.now() + ttlMs };
     if (!this.jogTimer) {
       this.pumpJog();
@@ -474,12 +556,21 @@ export class Device {
   // this.now()-policed TTL — so even a stuck jog is not exempt from expiry.
   // Resolves once the zero frame has been answered; rejects with the first
   // frame the head refused (423 E-STOP, 503 link down), after stopping.
+  // close() ends the loop quietly (nothing more is sent); estop() ends it
+  // with a rejection, so the caller does not report a jog that was cut short.
   async jog(panDps: number, tiltDps: number, durationMs: number): Promise<void> {
     this.jogError = null;
+    const epoch = this.jogEpoch;
+    const aborted = (): boolean => {
+      if (epoch === this.jogEpoch) return false;
+      if (this.closed) return true;
+      throw new Error("jog aborted: E-STOP latched");
+    };
     const ticks = Math.ceil(durationMs / JOG_KEEPALIVE_MS);
     this.setJogVector(panDps, tiltDps, JOG_KEEPALIVE_MS * 5);
     for (let i = 0; i < ticks; i++) {
       await new Promise((res) => setTimeout(res, JOG_KEEPALIVE_MS));
+      if (aborted()) return;
       this.setJogVector(panDps, tiltDps, JOG_KEEPALIVE_MS * 5);
     }
     this.clearJog();
@@ -510,6 +601,12 @@ export class Device {
   async setHome(): Promise<void> {
     throw new Error("removed: use setPos({ pan }) or home()");
   }
+}
+
+function zodWhy(err: ZodError): string {
+  return err.issues.slice(0, 3)
+    .map((i) => `${i.path.length > 0 ? i.path.join(".") : "(root)"}: ${i.message}`)
+    .join("; ");
 }
 
 function cloneAxisConfig(c: AxisConfig): AxisConfig {

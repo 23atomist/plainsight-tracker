@@ -124,6 +124,7 @@ export class FakeHead {
   gotoCount = 0;
   /** Delay every HTTP response by this much (a slow head). */
   responseDelayMs = 0;
+  private failures = new Map<string, { status: number; times: number }>();
 
   private http: Server | null = null;
   private wss: WebSocketServer | null = null;
@@ -178,6 +179,12 @@ export class FakeHead {
         query: Object.fromEntries(Object.entries(req.query).map(([k, v]) => [k, String(v)])),
         body: hasBody ? req.body : undefined,
       });
+      const fail = this.failures.get(req.path);
+      if (fail && fail.times > 0) {
+        fail.times -= 1;
+        res.status(fail.status).json({ ok: false, error: `injected failure ${fail.status}` });
+        return;
+      }
       if (this.responseDelayMs > 0) setTimeout(next, this.responseDelayMs); else next();
     });
     this.routes(app);
@@ -220,6 +227,24 @@ export class FakeHead {
     }
     this.wss = null;
     this.http = null;
+  }
+
+  /** The next `times` requests to `path` answer `status` with the error envelope (logged in `calls` first). */
+  failNext(path: string, status: number, times = 1): void {
+    this.failures.set(path, { status, times });
+  }
+
+  /** The tick the model would publish now (seq not advanced), for building variants. */
+  currentTick(): Record<string, unknown> {
+    return this.buildTick(this.model.link.pico, false);
+  }
+
+  /**
+   * Sends a raw text frame to every client, bypassing schema validation: for
+   * tests of how the client handles a head that breaks its contract.
+   */
+  sendRaw(frame: string): void {
+    this.wss?.clients.forEach((c) => { if (c.readyState === WebSocket.OPEN) c.send(frame); });
   }
 
   /** Terminates every WebSocket client (the server keeps listening). */

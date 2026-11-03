@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { FakeHead } from "./fake-head.js";
 import { Device, DeviceHttpError } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
@@ -29,6 +29,7 @@ async function startDevice(h: FakeHead): Promise<Device> {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   dev?.close(); dev = null;
   if (head) { await head.stop(); head = null; }
 });
@@ -409,5 +410,106 @@ describe("Device (head API)", () => {
     h.dropClients();
     await waitFor(() => !d.getState().connected);
     await waitFor(() => d.getState().connected, 3000);
+  });
+
+  it("rejected ticks and events leave state untouched, are counted, and warn once per burst", async () => {
+    const h = await startHead();
+    h.setPosition(40, 20);
+    const d = await startDevice(h);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const before = d.getState();
+
+    // A bare NaN literal (invalid JSON) and an extra key (fails the strict schema),
+    // both carrying a pan the client must not adopt.
+    const tick = h.currentTick() as { axes: { pan: { pos: number } } };
+    tick.axes.pan.pos = 77;
+    const nanFrame = JSON.stringify(tick).replace(/"tiltDisagreeDeg":[^,]+/, '"tiltDisagreeDeg":NaN');
+    expect(nanFrame).toContain("NaN");
+    const extraFrame = JSON.stringify({ ...tick, extra: 1 });
+    for (let i = 0; i < 3; i++) { h.sendRaw(nanFrame); h.sendRaw(extraFrame); }
+    await waitFor(() => d.getDiagnostics().rejectedTicks === 6);
+
+    const after = d.getState();
+    expect(after.panDeg).toBe(40);
+    expect(after.lastUpdateMs).toBe(before.lastUpdateMs);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toMatch(/rejected tick.*JSON parse error/);
+
+    // Events are a separate kind: their own counter and their own warning.
+    h.sendRaw(JSON.stringify({ type: "event", t: 1, name: "estop", axis: "pan", detail: null }));
+    await waitFor(() => d.getDiagnostics().rejectedEvents === 1);
+    expect(d.getState().estop).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(String(warn.mock.calls[1][0])).toMatch(/rejected event.*"estop"/);
+
+    expect(d.getDiagnostics()).toEqual({ rejectedTicks: 6, rejectedEvents: 1, rejectedConfig: 0 });
+
+    // A config response missing a required key is rejected too.
+    delete (h.config.pan as Record<string, number>).amax;
+    h.emitEvent({ type: "event", t: 2, name: "config", axis: null, detail: { scope: "pan", key: "x", value: 1 } });
+    await waitFor(() => d.getDiagnostics().rejectedConfig >= 1);
+    expect(d.getAxisConfig()?.pan.amax).toBe(10); // the cached config is kept
+    expect(String(warn.mock.calls[2][0])).toMatch(/rejected config.*pan\.amax/);
+  });
+
+  it("a strict-schema reject names the zod issue", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    h.sendRaw(JSON.stringify({ ...h.currentTick(), extra: 1 }));
+    await waitFor(() => d.getDiagnostics().rejectedTicks === 1);
+    expect(String(warn.mock.calls[0][0])).toMatch(/rejected tick.*extra/);
+  });
+
+  it("close() mid-jog stops the keep-alive: no further /api/jog calls land", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    const p = d.jog(5, 0, 1000);
+    await waitFor(() => jogBodies(h).length >= 2);
+    const closedAt = Date.now();
+    d.close();
+    await p; // ends quietly, at the next keep-alive tick rather than after the full duration
+    expect(Date.now() - closedAt).toBeLessThan(300);
+    await sleep(50); // let an already in-flight frame land
+    const n = jogBodies(h).length;
+    await sleep(350);
+    expect(jogBodies(h).length).toBe(n);
+    expect(jogBodies(h).every((f) => f.pan === 5)).toBe(true); // nothing sent after close, not even zeros
+  });
+
+  it("estop() mid-jog ends the jog with a rejection and stops the keep-alive", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    const p = d.jog(5, 0, 1000);
+    const settled = p.catch((e) => e);
+    await waitFor(() => jogBodies(h).length >= 2);
+    await d.estop();
+    expect(String(await settled)).toMatch(/E-STOP/);
+    await sleep(300);
+    const estopAt = h.calls.findIndex((c) => c.path === "/api/estop");
+    expect(h.calls.slice(estopAt + 1).filter((c) => c.path === "/api/jog")).toEqual([]);
+  });
+
+  it("onConfig does not fire after close() when a config fetch was in flight", async () => {
+    const h = await startHead();
+    h.responseDelayMs = 200;
+    const d = makeDevice(h);
+    let fired = 0;
+    d.onConfig(() => { fired += 1; });
+    d.start();
+    await waitFor(() => h.calls.some((c) => c.path === "/api/config"));
+    d.close();
+    await sleep(400);
+    expect(fired).toBe(0);
+    expect(d.getAxisConfig()).toBeNull();
+  });
+
+  it("retries a failed config fetch until it succeeds", async () => {
+    const h = await startHead();
+    h.failNext("/api/config", 500);
+    const d = makeDevice(h);
+    d.start();
+    await waitFor(() => d.getAxisConfig() !== null, 4000);
+    expect(h.calls.filter((c) => c.path === "/api/config").length).toBe(2);
   });
 });
