@@ -116,6 +116,11 @@ describe("server", () => {
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);
 
+    // Compose healthcheck target: unauthenticated, outside the /mcp bearer gate.
+    const hz = await fetch(`http://127.0.0.1:${MCP_PORT}/healthz`);
+    expect(hz.status).toBe(200);
+    expect(await hz.json()).toEqual({ ok: true });
+
     await transport.close();
   });
 

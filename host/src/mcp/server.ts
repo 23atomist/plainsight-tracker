@@ -416,6 +416,10 @@ export function buildApp(
   const app = express();
   app.use(express.json());
 
+  // Liveness probe for the compose healthcheck. Deliberately outside the
+  // /mcp bearer gate: it exposes nothing and must work without the token.
+  app.get("/healthz", (_req: Request, res: Response) => { res.json({ ok: true }); });
+
   // Optional bearer-token gate.
   app.use("/mcp", (req: Request, res: Response, next) => {
     if (!cfg.mcpToken) return next();

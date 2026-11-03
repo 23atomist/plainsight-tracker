@@ -1,0 +1,192 @@
+# Plainsight host stack. Run from this directory: `docker compose up -d --build`.
+# All services use host networking: the config defaults assume 127.0.0.1 between
+# processes and WebRTC ICE from a bridged container needs extra candidates.
+# Profiles come from COMPOSE_PROFILES in .env (adsb,gps by default; vision is opt-in).
+#
+# Time discipline (chrony/NTP sync from the GPS) is NOT containerised; it is a
+# host-OS choice. The gpsd service below only exposes the receiver on :2947.
+x-host-service: &host-service
+  build: ./host
+  image: plainsight-host
+  network_mode: host
+  restart: unless-stopped
+  init: true
+  # required:false so `docker compose --env-file .env.example config` validates
+  # without a real .env; at deploy time .env always exists.
+  env_file:
+    - path: .env
+      required: false
+
+services:
+  mcp:
+    <<: *host-service
+    command: ["node", "dist/mcp/server.js"]
+    volumes:
+      - "${PLAINSIGHT_DATA}/config:/config:ro"
+      - "${PLAINSIGHT_DATA}/state:/data/state"
+      - "${PLAINSIGHT_DATA}/snapshots:/data/snapshots"
+      # Read-write: keep-recording hardlinks /recordings/tb3/* into
+      # /recordings/keep (src/shared/recordings/keep.ts), and a hardlink needs
+      # a writable mount on the same filesystem. Delete is guarded to keep/.
+      - "${PLAINSIGHT_DATA}/recordings:/recordings"
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:${TB3_MCP_PORT:-8770}/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
+  agent:
+    <<: *host-service
+    command: ["node", "dist/agent/agent.js"]
+    volumes:
+      - "${PLAINSIGHT_DATA}/config:/config:ro"
+    depends_on:
+      mcp:
+        condition: service_healthy
+
+  dashboard:
+    <<: *host-service
+    command: ["node", "dist/dashboard/server.js"]
+    volumes:
+      - "${PLAINSIGHT_DATA}/config:/config:ro"
+      - "${PLAINSIGHT_DATA}/state:/data/state"
+      - "${PLAINSIGHT_DATA}/snapshots:/data/snapshots"
+      - "${PLAINSIGHT_DATA}/recordings:/recordings"
+    devices:
+      - "${CAMERA_DEVICE}:${CAMERA_DEVICE}"
+      - "/dev/dri/renderD128:/dev/dri/renderD128"
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${RENDER_GID:-992}"
+    depends_on:
+      - mcp
+      - mediamtx
+
+  mediamtx:
+    image: bluenviron/mediamtx:1.19.3
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - "./host/mediamtx/mediamtx.yml:/mediamtx.yml:ro"
+      - "${PLAINSIGHT_DATA}/recordings:/recordings"
+
+  # PlutoSDR front end: readsb built with libiio, publishing Beast on 127.0.0.1:31005.
+  # BUILD NOTE: pinned via ARG READSB_VERSION in host/readsb-pluto/Dockerfile.
+  readsb-pluto:
+    build: ./host/readsb-pluto
+    image: plainsight-readsb-pluto
+    network_mode: host
+    restart: unless-stopped
+    device_cgroup_rules:
+      - "c 189:* rwm"
+    volumes:
+      - "/dev/bus/usb:/dev/bus/usb"
+    command:
+      - readsb
+      - --device-type
+      - plutosdr
+      - --pluto-uri
+      - "${PLUTO_URI:-usb:}"
+      - --gain
+      - "${PLUTO_GAIN:-60}"
+      - --net
+      - --net-only=no
+      # Beast out on 31005, loopback only. NOT 30005/30004: ultrafeeder runs
+      # with host networking and binds its own 30004/30005, so reusing those
+      # ports would make whichever service starts second fail to bind.
+      - --net-bind-address
+      - 127.0.0.1
+      - --net-bo-port
+      - "31005"
+      - --lat
+      - "${FEEDER_LAT}"
+      - --lon
+      - "${FEEDER_LONG}"
+      - --quiet
+    profiles: ["adsb"]
+
+  # Ported from /media/data/adsb/docker-compose.yml on 192.168.4.11. No SDR of
+  # its own: it ingests Beast from readsb-pluto on 127.0.0.1:31005.
+  adsb:
+    image: ghcr.io/sdr-enthusiasts/docker-adsb-ultrafeeder:telegraf
+    container_name: ultrafeeder
+    hostname: ultrafeeder
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - readsb-pluto
+    environment:
+      - LOGLEVEL=${LOGLEVEL:-verbose}
+      - TZ=${FEEDER_TZ}
+      - READSB_NET_ONLY=true
+      - READSB_NET_CONNECTOR=127.0.0.1,31005,beast_in
+      - READSB_LAT=${FEEDER_LAT}
+      - READSB_LON=${FEEDER_LONG}
+      - READSB_ALT=${FEEDER_ALT_M}m
+      - READSB_RX_LOCATION_ACCURACY=2
+      - READSB_STATS_RANGE=true
+      - ULTRAFEEDER_CONFIG=
+        adsb,feed.adsb.fi,30004,beast_reduce_plus_out;
+        adsb,in.adsb.lol,30004,beast_reduce_plus_out;
+        adsb,feed.airplanes.live,30004,beast_reduce_plus_out;
+        adsb,feed.planespotters.net,30004,beast_reduce_plus_out;
+        adsb,data.avdelphi.com,24999,beast_reduce_plus_out;
+        adsb,skyfeed.hpradar.com,30004,beast_reduce_plus_out;
+        adsb,dati.flyitalyadsb.com,4905,beast_reduce_plus_out;
+        mlat,feed.adsb.fi,31090,39000; mlat,in.adsb.lol,31090,39001;
+        mlat,feed.airplanes.live,31090,39002;
+        mlat,mlat.planespotters.net,31090,39003;
+        mlat,skyfeed.hpradar.com,31090,39005;
+        mlat,dati.flyitalyadsb.com,30100,39007;
+      - UUID=${MULTIFEEDER_UUID}
+      - MLAT_USER=${FEEDER_NAME}
+      - UPDATE_TAR1090=true
+      - TAR1090_MESSAGERATEINTITLE=true
+      - TAR1090_PAGETITLE=${FEEDER_NAME}
+      - TAR1090_PLANECOUNTINTITLE=true
+      - TAR1090_ENABLE_AC_DB=true
+      - TAR1090_FLIGHTAWARELINKS=true
+      - HEYWHATSTHAT_PANORAMA_ID=${FEEDER_HEYWHATSTHAT_ID}
+      - HEYWHATSTHAT_ALTS=${FEEDER_HEYWHATSTHAT_ALTS}
+      - TAR1090_SITESHOW=true
+      - TAR1090_RANGE_OUTLINE_COLORED_BY_ALTITUDE=true
+      - TAR1090_RANGE_OUTLINE_WIDTH=2.0
+      - TAR1090_RANGERINGSDISTANCES=50,100,150,200
+      - TAR1090_RANGERINGSCOLORS='#1A237E','#0D47A1','#42A5F5','#64B5F6'
+      - TAR1090_USEROUTEAPI=true
+      - GRAPHS1090_DARKMODE=true
+      - INFLUXDBV2_URL=${INFLUX_URL:-}
+      - INFLUXDBV2_TOKEN=${INFLUX_TOKEN:-}
+      - INFLUXDBV2_BUCKET=${INFLUX_BUCKET:-adsb}
+      - PROMETHEUS_ENABLE=false
+    volumes:
+      - "${PLAINSIGHT_DATA}/adsb/globe_history:/var/globe_history"
+      - "${PLAINSIGHT_DATA}/adsb/graphs1090:/var/lib/collectd"
+      - "/proc/diskstats:/proc/diskstats:ro"
+    tmpfs:
+      - /run:exec,size=256M
+      - /tmp:size=128M
+      - /var/log:size=32M
+    profiles: ["adsb"]
+
+  # u-blox GPS exposed on :2947 for the host (chrony etc. is a host-OS matter).
+  gpsd:
+    build: ./host/gpsd
+    image: plainsight-gpsd
+    network_mode: host
+    restart: unless-stopped
+    command: ["-N", "-n", "${GPS_DEVICE}", "-G"]
+    devices:
+      - "${GPS_DEVICE}:${GPS_DEVICE}"
+    profiles: ["gps"]
+
+  # Placeholder: the YOLO sidecar lives in the old repo at
+  # TB3-ESP32/services/detector. Uncomment `build` once it is copied to
+  # ./services/detector. Never started by default.
+  detector:
+    image: plainsight-detector
+    # build: ./services/detector
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["vision"]

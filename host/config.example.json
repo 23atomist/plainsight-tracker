@@ -31,8 +31,11 @@
   "cameraFallbackMs": 1500,
   "cameraDevicePort": "",
   "cameraEncoder": "vaapi",
+  "cameraMediamtxSize": "1280x720",
   "cameraFfmpegBin": "/usr/bin/ffmpeg",
   "captureFfmpegBin": "/usr/bin/ffmpeg",
   "captureSnapshotDir": "/data/snapshots",
+  "captureRecordingsDir": "/recordings/tb3",
+  "captureKeepDir": "/recordings/keep",
   "passJournalFile": "/data/state/passes.jsonl"
 }
