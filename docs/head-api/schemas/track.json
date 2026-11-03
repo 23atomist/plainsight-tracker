@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plainsight.local/head-api/track.json",
+  "title": "POST /api/track body",
+  "description": "Position-now plus rate per axis. Values must be finite (JSON cannot carry NaN; the parser rejects it).",
+  "type": "object",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "properties": {
+    "pan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pos",
+        "vel"
+      ],
+      "properties": {
+        "pos": {
+          "type": "number"
+        },
+        "vel": {
+          "type": "number"
+        }
+      }
+    },
+    "tilt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pos",
+        "vel"
+      ],
+      "properties": {
+        "pos": {
+          "type": "number"
+        },
+        "vel": {
+          "type": "number"
+        }
+      }
+    }
+  }
+}

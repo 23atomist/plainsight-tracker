@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plainsight.local/head-api/config-set.json",
+  "title": "POST /api/config body",
+  "description": "One Pico setting. Guarded settings need ?force=1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "scope",
+    "key",
+    "value"
+  ],
+  "properties": {
+    "scope": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_]+$"
+    },
+    "key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_]+$"
+    },
+    "value": {
+      "type": "number"
+    },
+    "save": {
+      "type": "boolean"
+    }
+  }
+}

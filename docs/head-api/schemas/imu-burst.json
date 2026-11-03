@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plainsight.local/head-api/imu-burst.json",
+  "title": "GET /api/imu response",
+  "description": "A burst of raw IMU samples; `n` is the clamped count requested.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "n",
+    "samples"
+  ],
+  "properties": {
+    "n": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "samples": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sample"
+      }
+    }
+  },
+  "$defs": {
+    "sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "t",
+        "heading",
+        "roll",
+        "pitch",
+        "quat",
+        "gravity",
+        "linacc",
+        "cal",
+        "tempC"
+      ],
+      "properties": {
+        "t": {
+          "type": "number"
+        },
+        "heading": {
+          "type": "number"
+        },
+        "roll": {
+          "type": "number"
+        },
+        "pitch": {
+          "type": "number"
+        },
+        "quat": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "gravity": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "linacc": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "cal": {
+          "$ref": "#/$defs/cal"
+        },
+        "tempC": {
+          "type": "number"
+        }
+      }
+    },
+    "cal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sys",
+        "gyr",
+        "acc",
+        "mag"
+      ],
+      "properties": {
+        "sys": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "gyr": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "acc": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "mag": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
+      }
+    }
+  }
+}

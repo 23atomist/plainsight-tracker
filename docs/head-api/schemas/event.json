@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plainsight.local/head-api/event.json",
+  "title": "Head event",
+  "description": "One WebSocket event. `detail` shapes per event name are in docs/HEAD-API.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "t",
+    "name",
+    "axis",
+    "detail"
+  ],
+  "properties": {
+    "type": {
+      "const": "event"
+    },
+    "t": {
+      "type": "integer"
+    },
+    "name": {
+      "type": "string"
+    },
+    "axis": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "detail": {
+      "type": [
+        "string",
+        "object",
+        "null"
+      ]
+    }
+  }
+}

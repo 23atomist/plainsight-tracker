@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plainsight.local/head-api/goto.json",
+  "title": "POST /api/goto body",
+  "description": "Target position per axis. Values must be finite.",
+  "type": "object",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "properties": {
+    "pan": {
+      "type": "number"
+    },
+    "tilt": {
+      "type": "number"
+    },
+    "zoom": {
+      "type": "number"
+    },
+    "focus": {
+      "type": "number"
+    }
+  }
+}

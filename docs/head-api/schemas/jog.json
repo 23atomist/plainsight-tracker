@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plainsight.local/head-api/jog.json",
+  "title": "POST /api/jog body",
+  "description": "Constant rate in degrees per second per axis; 0 stops the axis. Values must be finite.",
+  "type": "object",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "properties": {
+    "pan": {
+      "type": "number"
+    },
+    "tilt": {
+      "type": "number"
+    },
+    "zoom": {
+      "type": "number"
+    },
+    "focus": {
+      "type": "number"
+    }
+  }
+}

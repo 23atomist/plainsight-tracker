@@ -1,0 +1,238 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://plainsight.local/head-api/tick.json",
+  "title": "Head telemetry tick",
+  "description": "One WebSocket tick, also the body of GET /api/state. `axes`, `enabled` and `moving` are omitted while the Pico link is down or before the first status line.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "t",
+    "seq",
+    "estop",
+    "imu",
+    "tiltDisagreeDeg",
+    "ref",
+    "link"
+  ],
+  "properties": {
+    "type": {
+      "const": "tick"
+    },
+    "t": {
+      "type": "integer"
+    },
+    "seq": {
+      "type": "integer"
+    },
+    "axes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pan",
+        "tilt",
+        "zoom",
+        "focus"
+      ],
+      "properties": {
+        "pan": {
+          "$ref": "#/$defs/axis"
+        },
+        "tilt": {
+          "$ref": "#/$defs/axis"
+        },
+        "zoom": {
+          "$ref": "#/$defs/axis"
+        },
+        "focus": {
+          "$ref": "#/$defs/axis"
+        }
+      }
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "moving": {
+      "type": "boolean"
+    },
+    "estop": {
+      "type": "boolean"
+    },
+    "imu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ok",
+        "heading",
+        "pitch",
+        "roll",
+        "cal",
+        "tempC"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "heading": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pitch": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "roll": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cal": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/cal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tempC": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "tiltDisagreeDeg": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pan",
+        "persisted",
+        "ageS"
+      ],
+      "properties": {
+        "pan": {
+          "enum": [
+            "none",
+            "imu",
+            "host"
+          ]
+        },
+        "persisted": {
+          "type": "boolean"
+        },
+        "ageS": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pico",
+        "imu"
+      ],
+      "properties": {
+        "pico": {
+          "type": "boolean"
+        },
+        "imu": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pos",
+        "vel",
+        "tgt",
+        "mode",
+        "homed",
+        "endstop",
+        "driver"
+      ],
+      "properties": {
+        "pos": {
+          "type": "number"
+        },
+        "vel": {
+          "type": "number"
+        },
+        "tgt": {
+          "type": "number"
+        },
+        "mode": {
+          "enum": [
+            "I",
+            "P",
+            "T",
+            "V",
+            "H"
+          ]
+        },
+        "homed": {
+          "type": "boolean"
+        },
+        "endstop": {
+          "type": "boolean"
+        },
+        "driver": {
+          "type": "boolean"
+        }
+      }
+    },
+    "cal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sys",
+        "gyr",
+        "acc",
+        "mag"
+      ],
+      "properties": {
+        "sys": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "gyr": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "acc": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "mag": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
+      }
+    }
+  }
+}
