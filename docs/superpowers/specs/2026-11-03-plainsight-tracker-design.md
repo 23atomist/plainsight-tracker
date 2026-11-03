@@ -112,9 +112,14 @@ same as before; the dashboard's token gate is the only user-facing auth).
 
 ### 4.1 Frame contract
 
-- **pan**: azimuth, clockwise from true north viewed from above, reported in
-  (-180, 180]. The Pico's `period 360` and `invert 1` for pan are already
-  set so that increasing pan is clockwise; the head does not re-sign.
+- **pan**: azimuth, clockwise from true north viewed from above. The head
+  reports the Pico's position unchanged (no re-wrapping, no re-signing); the
+  Pico's pan limits define the travel, and today they are -180..180 with
+  `period 360` and `invert 1` already set so that increasing pan is
+  clockwise. The host reads the limits from `GET /api/config` (6.1) rather
+  than assuming them. Widening pan travel beyond one turn (the Pico supports
+  +-270 or continuous with a slip ring) is out of scope: the host's limit
+  guard and through-north behaviour assume at most one turn.
 - **tilt**: elevation, 0 at the lower endstop which sits at roughly
   horizontal, positive up, range 0..90 (Pico limits). The upper end is
   mechanically self-limiting (gear runs out and clicks), so no upper switch.
@@ -360,6 +365,17 @@ entrypoints. `npm test` stays vitest.
 - `waitForArrival` compares degrees with a 0.25° tolerance.
 - A tick without `axes` (Pico link down) updates `link` and `imu` only and
   does not refresh `lastUpdateMs`, so every existing staleness gate fires.
+- On connect, and whenever the head emits a `config` event (the head emits
+  one after every successful `POST /api/config`), the client fetches
+  `GET /api/config` and caches pan/tilt `min`, `max`, `vmax`, `amax`. The
+  limit guard's stopping horizon is derived from the Pico's `amax` for that
+  axis (the old constant came from ESP32 accumulator behaviour and is
+  deleted). The host's own `panMin`/`panMax`/`tiltMin`/`tiltMax` config keys
+  remain as the operator ceiling and are clamped to the Pico's limits at
+  load, with a startup warning if they were wider.
+- Pan reference changes (6.8) are handled here: the client watches `ref`
+  and `pan_reference` events and raises a `referenceChanged` notification
+  with the old and new pan value when both are known.
 
 ### 6.2 Tracking loop (`shared/track/session.ts`)
 
@@ -375,6 +391,14 @@ clamped track). `trackKp`, `trackRateSlewDps`, `maxJogDps`-as-deflection,
 that asserted on commanded rates are rewritten to assert on the track
 setpoints and on stop-on-block. The acquisition "device_busy" dance that
 waited for `moving` to clear before a goto is deleted (gotos retarget).
+
+The Pico's `TRACK` has not yet been run against the real mechanics. The
+decision is still to port to it directly rather than carry the old
+host-side rate servo behind a switch: two servos in the hardest code is the
+worse outcome, and the Pico firmware is ours to fix. Bring-up (section 8)
+gets a bench step that drives `TRACK` with a synthetic moving target from a
+script and checks following error before the host tracking port is
+accepted. If that step fails, the firmware is fixed first.
 
 ### 6.3 Removed MCP tools and dashboard bits
 
@@ -444,6 +468,48 @@ with ffmpeg and the VAAPI driver). All three Node services run the same
 image with different commands. Images are built on the host
 (`docker compose up -d --build`); no registry.
 
+### 6.8 Pan reference changes and automated motion
+
+The head can rename pan: at boot (IMU north), on `POST /api/reference`, on
+`POST /api/setpos`, and it drops `ref.pan` to `none` after a Pico reboot or
+`ENABLE 0`. The host's calibration solution, taught limits, sector, floor
+and aim trims are all expressed against pan's zero, so a rename with a
+stale solution points every exclusion cone at the wrong sky. Rules:
+
+1. **Known delta (setpos, reference, boot restore from file):** the head
+   reports old and new pan for the same physical position. The host shifts
+   its calibration solution, taught limits, sector and trims by that delta
+   and keeps them. The sun guard stays calibrated. This is what the old
+   `feat/reboot-rezero` branch did for the ESP32's lost step origin; it is
+   reimplemented here against the head's `pan_reference` event, not ported.
+2. **Unknown origin (`ref.pan = none`):** the host refuses all automated
+   motion (tracking, agent target selection, sun park, idle park) and the
+   dashboard shows "pan unreferenced". Manual jog and goto stay available
+   so the operator can re-reference. The policy layer gets one new
+   predicate, `pan_referenced`, and the agent's gates include it.
+3. The owner's answer to the open item in section 9 may change rule 1 to
+   "invalidate instead of shift".
+
+### 6.9 Sun park on a head that cannot look down
+
+Tilt 0 is the floor, so the old `parkTiltDeg` default of -20 ("down and
+away from the sun") is unreachable; `planPark`'s clamp to `tiltMin` would
+turn it into "horizontal at the current pan", which is exactly where the
+neighbours' windows are. New defaults: `tiltMin` 0, `parkTiltDeg` +60,
+with the pan leg of the park unchanged (away from the sun's azimuth). The
+idle park (`idleParkTiltDeg` 45) already points up. Both remain config
+keys.
+
+### 6.10 Source of the port
+
+The port starts from `TB3-ESP32` branch `feat/ops-rework` (d7c1e3c,
+2026-08-30), which is the branch the last field sessions ran on and
+already contains the dashboard redesign, MediaMTX/WebRTC, N-sighting
+calibration, the recordings index and vision lock. `main` is 225 commits
+behind it and is not used. The side branches `feat/reboot-rezero` and
+`feat/calib-fixes-tuning` are not ported; the one idea from them this
+design needs is restated in 6.8.
+
 ## 7. Repo layout
 
 ```
@@ -478,19 +544,33 @@ plainsight-tracker/
    `/ws`; `home`; jog each axis 5°; confirm pan increases clockwise and tilt
    increases upward; set `HEAD_IMU_PITCH_OFFSET_DEG` so `tiltDisagreeDeg` is
    ~0 at tilt 0 and 45.
-3. BNO055 calibration dance until all four read 3; confirm
+3. Bench `TRACK`: a script in `head/tools/` feeds the head a synthetic
+   target (constant angular rate, then a sinusoid) over `POST /api/track`
+   at 10 Hz for a minute per axis and reports following error from the
+   ticks. Accept when the error stays under 0.5 deg at rates the ADS-B
+   tracker needs (2 deg/s pan, 1 deg/s tilt). Also stop sending mid-run and
+   confirm the axis stops on `track_timeout` within 1 s.
+4. BNO055 calibration dance until all four read 3; confirm
    `bno055-offsets.json` appears; `POST /api/reference`; point at a known
    landmark and set `HEAD_IMU_HEADING_OFFSET_DEG`.
-4. Host: plug the camera, fill `.env`, `docker compose up -d --build`; open
+5. Host: plug the camera, fill `.env`, `docker compose up -d --build`; open
    the dashboard; telemetry, joystick, E-STOP, camera tile.
-5. Host calibration as before (sightings, boresight, trims) from the
+6. Host calibration as before (sightings, boresight, trims) from the
    dashboard procedures.
-6. Raise Pico `vmax`/`amax` from the current 5/10 via `POST /api/config`
+7. Raise Pico `vmax`/`amax` from the current 5/10 via `POST /api/config`
    until the head misses steps, back off 30%, `save`.
-7. ADS-B on, manual track, then arm the agent.
+8. ADS-B on, manual track, then arm the agent.
 
 ## 9. Open items for the owner
 
+- **Pan reference policy.** Whether rule 1 in 6.8 (shift the calibration by
+  the known delta) is acceptable, or whether every reference change should
+  invalidate the calibration and force a re-sighting.
+- **Camera.** Which USB camera, and whether it outputs H.264 natively or
+  only MJPEG/YUYV. Native H.264 means the `copy` path and no encoding;
+  MJPEG at 1080p means decode + VAAPI encode is the CPU hot path and sets
+  the default size and frame rate. Also decides whether the image needs
+  `intel-media-va-driver-non-free` (Debian non-free).
 - **LLM endpoint.** The agent needs an OpenAI-compatible chat-completions
   URL. The old one ran on the retired GPU workstation; the new host has no
   GPU. `TB3_LLM_URL`/`TB3_LLM_MODEL` are `.env` keys; the design does not
