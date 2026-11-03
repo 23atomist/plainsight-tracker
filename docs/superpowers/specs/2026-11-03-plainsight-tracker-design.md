@@ -460,7 +460,8 @@ Bind mounts, one root: `${PLAINSIGHT_DATA:-/srv/plainsight}` with
 named volumes so the operator can read recordings and edit config with
 normal tools. `.env.example` lists `PLAINSIGHT_DATA`, `HEAD_HOST`
 (default `192.168.4.96`), `CAMERA_DEVICE` (by-id path), `TB3_ADSB_URL`,
-`TB3_LLM_URL`, `TB3_LLM_MODEL`, `TB3_DASHBOARD_AUTH`, `TB3_MCP_TOKEN`.
+`TB3_LLM_URL`, `TB3_LLM_MODEL`, `TB3_LLM_API_KEY`, `TB3_DASHBOARD_AUTH`,
+`TB3_MCP_TOKEN`.
 `deviceHost` in config becomes `headUrl` (`http://192.168.4.96:8780`).
 
 One `Dockerfile` (multi-stage: `npm ci` + `tsc`, then a slim runtime stage
@@ -509,6 +510,29 @@ calibration, the recordings index and vision lock. `main` is 225 commits
 behind it and is not used. The side branches `feat/reboot-rezero` and
 `feat/calib-fixes-tuning` are not ported; the one idea from them this
 design needs is restated in 6.8.
+
+### 6.11 LLM: Ollama Cloud
+
+The agent's only LLM call is `chooseTarget()`. It goes to Ollama Cloud's
+OpenAI-compatible endpoint (`https://ollama.com/v1/chat/completions`) with
+a bearer token. Consequences, from the August 2026 evaluation:
+
+- The LLM client gains an `llmApiKey` config key (`TB3_LLM_API_KEY`), sent
+  as `Authorization: Bearer`. It is a secret: never in `config.json`, only
+  in the host's `.env`, which is gitignored. The deploy doc fetches it from
+  1Password with the CLI (`op read`) into `.env`; the item is referenced
+  by UUID in `docs/DEPLOY.md`, the value is not.
+- Ollama Cloud accepts `response_format: json_schema` and ignores it, so
+  the hard structured-output guarantee the local server gave is gone. The
+  prompt already instructs JSON; the client keeps sending `response_format`
+  (harmless where ignored, enforced where honoured) and the loop's existing
+  fail-safe on an unparseable reply (`loop.ts`, "keep" action) is the
+  safety net. A test covers a prose reply producing "keep".
+- Call volume: one call per agent tick (`agentTickSec` 5) while armed, so
+  up to ~720 calls/hour. The agent only calls when there is at least one
+  eligible target, as today. `agentTickSec` is the cost knob.
+- `TB3_LLM_MODEL` is an `.env` choice; the deploy doc suggests starting
+  with a mid-size instruct model and lists how to switch.
 
 ## 7. Repo layout
 
@@ -571,10 +595,7 @@ plainsight-tracker/
   MJPEG at 1080p means decode + VAAPI encode is the CPU hot path and sets
   the default size and frame rate. Also decides whether the image needs
   `intel-media-va-driver-non-free` (Debian non-free).
-- **LLM endpoint.** The agent needs an OpenAI-compatible chat-completions
-  URL. The old one ran on the retired GPU workstation; the new host has no
-  GPU. `TB3_LLM_URL`/`TB3_LLM_MODEL` are `.env` keys; the design does not
-  pick a provider.
+- ~~LLM endpoint~~ Decided 2026-11-03: **Ollama Cloud** for now. See 6.11.
 
 ## 10. Left to the builder
 
