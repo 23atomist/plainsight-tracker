@@ -205,3 +205,25 @@ async def test_imu_reference_and_host_setpos_serialise_and_report_busy(ctx_imu_r
     assert (await imu_task).reason == "imu calibration timeout"
     await host_task
     assert not c.ref.busy and c.fake.sent[-1] == "SETPOS pan 5.00000"
+
+
+# --- final review: the E-STOP latch gates the head's own motion ---------------------------
+
+async def test_imu_north_refuses_to_move_tilt_while_estop_latched(ctx_imu_ready):
+    c = ctx_imu_ready
+    c.state.set_estop(True)
+    r = await c.ref.reference_from_imu(1.0)
+    assert r == ReferenceResult("none", None, "estop latched")
+    assert not any(s.startswith("MOVE") for s in c.fake.sent)
+
+
+async def test_estop_during_the_tilt_settle_aborts_at_once(ctx_imu_ready):
+    c = ctx_imu_ready
+    c.cfg_override(ref_tilt_deg=10.0)  # the fake never reaches it: the settle wait runs until cap
+    task = asyncio.create_task(c.ref.reference_from_imu(1.0))
+    await asyncio.sleep(0.1)
+    assert "MOVE tilt 10.00000" in c.fake.sent
+    c.state.set_estop(True)
+    r = await asyncio.wait_for(task, 1.0)  # not the 30 s settle cap
+    assert r.reason == "estop latched"
+    assert not any(s.startswith("SETPOS") for s in c.fake.sent)

@@ -14,7 +14,7 @@ from .imu import ImuReader
 from .persist import JsonStore
 from .pico import PicoError, PicoLink
 from .protocol import AxisStatus, PicoStatus, fmt_axes
-from .state import HeadState, PanRef
+from .state import EstopLatched, HeadState, PanRef, guard_head_motion
 
 log = logging.getLogger(__name__)
 
@@ -147,9 +147,17 @@ class PanReference:
             return "no pico status", None
         if not pico.axes["tilt"].homed:
             return "tilt not homed", None
+        try:
+            guard_head_motion(self._state)
+        except EstopLatched:
+            return "estop latched", None
         await self._pico.command("MOVE " + fmt_axes({"tilt": self._cfg.ref_tilt_deg}))
         before = self._state.pico
-        if not await self._poll(self._settle_cap_s, lambda: self._settled(before)):
+        settled = await self._poll(self._settle_cap_s,
+                                   lambda: self._state.estop or self._settled(before))
+        if self._state.estop:
+            return "estop latched", None
+        if not settled:
             return "tilt did not settle", None
         if not await self._poll(timeout_s, self._imu_ready):
             return "imu calibration timeout", None

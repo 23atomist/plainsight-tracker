@@ -440,3 +440,19 @@ async def test_fresh_process_stops_an_orphan_jog_at_init(tmp_path, caplog):
         assert rig.fake.sent[2:] == INIT[1:]
         assert rig.fake.model["pan"]["mode"] == "I"
     assert_no_leaked_tasks()
+
+
+async def test_boot_skips_home_tilt_while_estop_latched(tmp_path, caplog, monkeypatch):
+    from plainsight_head import main as main_mod
+
+    real_boot = main_mod.Head.boot
+
+    async def latched_boot(self):
+        self.state.set_estop(True)  # the operator hit E-STOP before boot reached the homing
+        await real_boot(self)
+    monkeypatch.setattr(main_mod.Head, "boot", latched_boot)
+    rig = Rig(tmp_path, {"HEAD_PAN_RESTORE": "none"})  # auto-home on, tilt not homed
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        assert "HOME tilt" not in rig.fake.sent and rig.fake.sent == INIT
+        assert any("E-STOP is latched; skipping HOME tilt" in r.getMessage() for r in caplog.records)

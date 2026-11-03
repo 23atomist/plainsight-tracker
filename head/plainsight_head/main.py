@@ -18,7 +18,7 @@ from .persist import JsonStore
 from .pico import PicoError, PicoLink
 from .protocol import AXES, PicoEvent, PicoStatus, ProtocolError, parse_cfg_lines
 from .reference import PanReference
-from .state import HeadState
+from .state import EstopLatched, HeadState, guard_head_motion
 
 log = logging.getLogger(__name__)
 
@@ -190,6 +190,11 @@ class Head:
         return self.state.pico is not None and self.state.pico.axes["tilt"].homed
 
     async def _home_tilt(self) -> None:
+        try:
+            guard_head_motion(self.state)
+        except EstopLatched:
+            log.warning("boot: tilt not homed, but E-STOP is latched; skipping HOME tilt")
+            return
         log.info("boot: tilt not homed; HOME tilt")
         self._tilt_home = asyncio.get_running_loop().create_future()
         try:

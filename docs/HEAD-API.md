@@ -189,7 +189,7 @@ Common error statuses for any command that reaches the Pico:
 |---|---|
 | 400 | The Pico refused the command, or the body is invalid. |
 | 503 | `pico link down`. |
-| 504 | The Pico did not reply in time. The command may still have been applied. |
+| 504 | The Pico did not reply in time (2 s; 5 s for `stop` and `estop`), or the command waited that long behind others and was not sent. The command may still have been applied. |
 | 502 | The Pico sent a reply the head could not parse. |
 
 ### POST /api/goto
@@ -230,7 +230,10 @@ Constant rate in degrees per second. Returns **200**.
 
 A non-zero rate arms a dead-man timer for that axis. If the host does not
 refresh it within `jog_deadman_ms` (default 500), the head sends `STOP` for the
-axis. A zero rate stops the axis and clears its timer. If the Pico times out,
+axis. A zero rate stops the axis and clears its timer. An accepted `goto`,
+`track` or `home` for the axis replaces the jog on the Pico and clears its
+timer too (a bare `home` clears the timers of the axes the Pico starts
+homing; the head reads `STATUS` to find them). If the Pico times out,
 the timers stay armed. A timer whose `STOP` fails (link down, timeout) stays
 armed and retries until a `STOP` goes through.
 
@@ -300,7 +303,10 @@ Guards: 423, 503. Also:
 
 ### POST /api/reference
 
-Re-runs the IMU north reference in the background. Body optional:
+Re-runs the IMU north reference in the background. It moves tilt to the
+reference angle, so it fails with reason `estop latched` if the latch is set
+before the move or while tilt settles (the boot-time `HOME tilt` is skipped
+under the latch too). Body optional:
 `{"timeoutS": 30}`. `timeoutS` must be a positive finite number; it defaults
 to the head's `ref_timeout_s`. Returns **202** at once. The result arrives as
 a `pan_reference` event. Guards: 423, 503. **409** `reference busy` if a

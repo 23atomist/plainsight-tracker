@@ -208,3 +208,30 @@ async def test_status_round_trip_parses_the_reply():
     with pytest.raises(ProtocolError):
         await link.status()
     await link.close()
+
+
+async def test_command_waiting_behind_a_held_lock_times_out_unsent():
+    fake = FakeSerial(); link, _ = await make_link(fake)
+    await link._cmd_lock.acquire()  # a stuck holder (a write that never returns)
+    try:
+        with pytest.raises(PicoTimeout) as e:
+            await asyncio.wait_for(link.command("VER", timeout_s=0.2), 2.0)
+        assert "not sent" in e.value.reason
+    finally:
+        link._cmd_lock.release()
+    assert fake.sent == []
+    assert await link.command("VER") == ["V plainsight-ptz 0.1.0"]  # the lock was not leaked
+    await link.close()
+
+
+def test_pyserial_is_opened_with_a_write_timeout(monkeypatch):
+    import serial
+
+    from plainsight_head import pico
+
+    seen = {}
+    monkeypatch.setattr(serial, "Serial", lambda *a, **kw: seen.update(args=a, kw=kw) or "port")
+    assert pico._pyserial_factory("/dev/ttyACM0", 115200) == "port"
+    assert seen["args"] == ("/dev/ttyACM0", 115200)
+    assert seen["kw"]["write_timeout"] == pico.WRITE_TIMEOUT_S == 1.0
+    assert issubclass(serial.SerialTimeoutException, OSError)  # so command() maps it to PicoError

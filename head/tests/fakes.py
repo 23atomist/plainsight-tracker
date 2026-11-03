@@ -44,6 +44,7 @@ class FakeSerial:
         self.is_open = True
         self.model: dict = {**{ax: _axis_model() for ax in AXES}, "enabled": True}
         self.home_ticks = 2
+        self.home_axes = ("tilt",)  # axes with home_dir set in the firmware config
         self.home_pos = 0.0
         self.sent: list[str] = []
         self.reply_override: dict[str, str] = {}
@@ -191,7 +192,7 @@ class FakeSerial:
                     m[ax]["mode"] = "I"
             self._reply("ok")
         elif verb == "HOME":
-            for ax in args:
+            for ax in args or self.home_axes:  # bare HOME homes the axes with an endstop
                 if ax not in AXES:
                     raise KeyError(ax)
                 m[ax]["mode"] = "H"

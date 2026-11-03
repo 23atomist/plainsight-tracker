@@ -6,7 +6,7 @@ import json
 import logging
 import math
 import re
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -20,7 +20,7 @@ from .imu import ImuReader, ImuSample
 from .pico import PicoError, PicoLink, PicoLinkDown, PicoTimeout
 from .protocol import AXES, ProtocolError, fmt_axes, parse_cfg_lines, parse_drv_lines
 from .reference import PanReference
-from .state import HeadState
+from .state import EstopLatched, HeadState, guard_head_motion
 
 log = logging.getLogger(__name__)
 
@@ -163,8 +163,10 @@ async def _command(ctx: HeadContext, line: str, timeout_s: float = COMMAND_TIMEO
 
 
 def _guard_motion(ctx: HeadContext) -> None:
-    if ctx.state.estop:
-        raise _error(HTTPLocked, "estop latched; POST /api/estop/clear")
+    try:
+        guard_head_motion(ctx.state)
+    except EstopLatched:
+        raise _error(HTTPLocked, "estop latched; POST /api/estop/clear") from None
     if not ctx.state.pico_link:
         raise _error(web.HTTPServiceUnavailable, "pico link down")
 
@@ -175,15 +177,27 @@ async def send_motion(ctx: HeadContext, line: str) -> list[str]:
 
 
 # --- motion routes ----------------------------------------------------------------
+async def _send_superseding(ctx: HeadContext, line: str, axes: Iterable[str]) -> list[str]:
+    """Send a command that replaces any jog on `axes`, then disarm their dead-man timers.
+
+    Otherwise the dead-man would STOP the axis mid-move. A jog re-armed while the command was
+    queued is newer than it and keeps its timer. After a timeout the timers stay armed.
+    """
+    snap = ctx.deadman.snapshot()
+    data = await send_motion(ctx, line)
+    ctx.deadman.clear_unchanged(snap, axes)
+    return data
+
+
 async def goto(request: web.Request) -> web.Response:
     values = expect_axes(await _body(request), AXES, "scalar")
-    await send_motion(request.app[CTX], "MOVE " + fmt_axes(values))
+    await _send_superseding(request.app[CTX], "MOVE " + fmt_axes(values), values)
     return _ok(202)
 
 
 async def track(request: web.Request) -> web.Response:
     values = expect_axes(await _body(request), TRACK_AXES, "pair")
-    await send_motion(request.app[CTX], "TRACK " + fmt_axes(values))
+    await _send_superseding(request.app[CTX], "TRACK " + fmt_axes(values), values)
     return _ok()
 
 
@@ -211,9 +225,25 @@ async def jog(request: web.Request) -> web.Response:
 
 
 async def home(request: web.Request) -> web.Response:
+    ctx = request.app[CTX]
     axes = _axis_list(await _body(request, required=False))
-    await send_motion(request.app[CTX], " ".join(["HOME", *axes]))
+    if axes:
+        await _send_superseding(ctx, " ".join(["HOME", *axes]), axes)
+        return _ok(202)
+    snap = ctx.deadman.snapshot()
+    await send_motion(ctx, "HOME")
+    if snap:  # bare HOME homes the axes with an endstop; ask the Pico which ones started
+        await _clear_homing(ctx, snap)
     return _ok(202)
+
+
+async def _clear_homing(ctx: HeadContext, snap: dict[str, float]) -> None:
+    try:
+        st = await ctx.pico.status()
+    except (PicoError, ProtocolError) as exc:
+        log.warning("HOME: could not read which axes are homing (%s); jog timers stay armed", exc)
+        return
+    ctx.deadman.clear_unchanged(snap, [ax for ax in snap if st.axes[ax].mode == "H"])
 
 
 async def setpos(request: web.Request) -> web.Response:

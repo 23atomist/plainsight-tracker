@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 _TICK_MAX_S = 0.05
 _READ_CHUNK = 256
+WRITE_TIMEOUT_S = 1.0
 
 
 class PicoError(Exception):
@@ -35,7 +36,9 @@ class PicoLinkDown(PicoError):
 def _pyserial_factory(port: str, baud: int) -> Any:
     import serial  # imported lazily so tests never need a real port
 
-    return serial.Serial(port, baud, timeout=0.1)
+    # write_timeout: a stuck USB endpoint raises SerialTimeoutException (an OSError) instead of
+    # blocking the write, and so the command lock, forever.
+    return serial.Serial(port, baud, timeout=0.1, write_timeout=WRITE_TIMEOUT_S)
 
 
 class PicoLink:
@@ -257,34 +260,45 @@ class PicoLink:
             raise PicoError("line contains a newline")
         if not self.connected:
             raise PicoLinkDown()
-        async with self._cmd_lock:
-            ser = self._serial
-            if not self.connected or ser is None:
-                raise PicoLinkDown()
-            while not self._replies.empty():
-                stray = self._replies.get_nowait()
-                if stray is not None:
-                    log.warning("discarding stray reply %r", stray)
+        try:
+            async with asyncio.timeout(timeout_s):  # bounds the wait behind other commands
+                await self._cmd_lock.acquire()
+        except TimeoutError:
+            raise PicoTimeout(f"{line!r} waited {timeout_s}s for the link; not sent") from None
+        try:
+            return await self._exchange(line, timeout_s)
+        finally:
+            self._cmd_lock.release()
+
+    async def _exchange(self, line: str, timeout_s: float) -> list[str]:
+        """Write one command and collect its reply; the caller holds `_cmd_lock`."""
+        ser = self._serial
+        if not self.connected or ser is None:
+            raise PicoLinkDown()
+        while not self._replies.empty():
+            stray = self._replies.get_nowait()
+            if stray is not None:
+                log.warning("discarding stray reply %r", stray)
+        try:
+            await asyncio.to_thread(ser.write, (line + "\n").encode())
+        except OSError as exc:
+            self._reader_died = True
+            raise PicoError(f"write failed: {exc}") from exc
+        data: list[str] = []
+        deadline = self._loop.time() + timeout_s
+        while True:
+            remaining = deadline - self._loop.time()
             try:
-                await asyncio.to_thread(ser.write, (line + "\n").encode())
-            except OSError as exc:
-                self._reader_died = True
-                raise PicoError(f"write failed: {exc}") from exc
-            data: list[str] = []
-            deadline = self._loop.time() + timeout_s
-            while True:
-                remaining = deadline - self._loop.time()
-                try:
-                    reply = await asyncio.wait_for(self._replies.get(), max(remaining, 0.0))
-                except asyncio.TimeoutError:
-                    raise PicoTimeout(f"no reply to {line!r} within {timeout_s}s") from None
-                if reply is None:
-                    raise PicoLinkDown()
-                if reply == "ok":
-                    return data
-                if reply == "err" or reply.startswith("err "):
-                    raise PicoError(reply[4:])
-                data.append(reply)
+                reply = await asyncio.wait_for(self._replies.get(), max(remaining, 0.0))
+            except asyncio.TimeoutError:
+                raise PicoTimeout(f"no reply to {line!r} within {timeout_s}s") from None
+            if reply is None:
+                raise PicoLinkDown()
+            if reply == "ok":
+                return data
+            if reply == "err" or reply.startswith("err "):
+                raise PicoError(reply[4:])
+            data.append(reply)
 
     async def status(self, timeout_s: float = 2.0) -> PicoStatus:
         """One `STATUS` round trip. ProtocolError if the reply is missing or unparseable."""
