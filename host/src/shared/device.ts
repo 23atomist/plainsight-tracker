@@ -559,6 +559,7 @@ export class Device {
   // close() ends the loop quietly (nothing more is sent); estop() ends it
   // with a rejection, so the caller does not report a jog that was cut short.
   async jog(panDps: number, tiltDps: number, durationMs: number): Promise<void> {
+    if (this.closed) return;
     this.jogError = null;
     const epoch = this.jogEpoch;
     const aborted = (): boolean => {

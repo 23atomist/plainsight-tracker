@@ -470,6 +470,11 @@ describe("Device (head API)", () => {
     d.close();
     await p; // ends quietly, at the next keep-alive tick rather than after the full duration
     expect(Date.now() - closedAt).toBeLessThan(300);
+
+    // A jog on an already-closed device returns at once and sends nothing.
+    const t0 = Date.now();
+    await d.jog(5, 0, 1000);
+    expect(Date.now() - t0).toBeLessThan(50);
     await sleep(50); // let an already in-flight frame land
     const n = jogBodies(h).length;
     await sleep(350);
@@ -507,9 +512,23 @@ describe("Device (head API)", () => {
   it("retries a failed config fetch until it succeeds", async () => {
     const h = await startHead();
     h.failNext("/api/config", 500);
-    const d = makeDevice(h);
+    // Record what the device actually received, so the injected failure is
+    // proven to be the head's JSON envelope and not some other error page.
+    const configResponses: Array<{ status: number; body: unknown }> = [];
+    const recordingFetch: typeof fetch = async (input, init) => {
+      const r = await fetch(input, init);
+      if (String(input).endsWith("/api/config")) {
+        configResponses.push({ status: r.status, body: await r.clone().json() });
+      }
+      return r;
+    };
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: h.url });
+    const d = new Device(cfg, Date.now, recordingFetch);
+    dev = d;
     d.start();
     await waitFor(() => d.getAxisConfig() !== null, 4000);
     expect(h.calls.filter((c) => c.path === "/api/config").length).toBe(2);
+    expect(configResponses[0]).toEqual({ status: 500, body: { ok: false, error: "injected failure 500" } });
+    expect(configResponses[1].status).toBe(200);
   });
 });

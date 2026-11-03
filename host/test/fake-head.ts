@@ -172,7 +172,7 @@ export class FakeHead {
   async start(opts: { port?: number; tickMs?: number } = {}): Promise<number> {
     const app = express();
     app.use(express.json({ limit: "64kb" }));
-    app.use((req, _res, next) => {
+    app.use((req, res, next) => {
       const hasBody = (req.headers["content-type"] ?? "").includes("json") && req.headers["content-length"] !== "0";
       this.calls.push({
         method: req.method, path: req.path,
