@@ -20,11 +20,16 @@ export interface MoveResult {
 // range instead — passing only the config ceiling here would silently
 // re-open the same "enforced in some paths, not others" gap Part 1 closes
 // for rate jog.
+//
+// `signal` abandons the arrival wait (see Device.waitForArrival): for a caller
+// whose goto has been superseded on the head (gotos retarget), so the wait
+// does not outlive the move it was waiting for.
 export async function moveToUserAngle(
   device: Device, cfg: Config, panDeg: number, tiltDeg: number, speedDps?: number,
   limits: Pick<Limits, "panMin" | "panMax" | "tiltMin" | "tiltMax"> = {
     panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
   },
+  signal?: AbortSignal,
 ): Promise<MoveResult> {
   const lim = checkPanTilt(panDeg, tiltDeg, limits);
   if (!lim.ok) throw new Error(lim.error!);
@@ -51,7 +56,7 @@ export async function moveToUserAngle(
   const effSpeed = speedDps ?? cfg.maxSpeedDps;
   const timeoutMs = Math.max(5000, (distDeg / effSpeed) * 1000 * 3 + 3000);
 
-  const final = await device.waitForArrival(devPan, devTilt, timeoutMs);
+  const final = await device.waitForArrival(devPan, devTilt, timeoutMs, signal);
   return {
     arrived: true,
     pan_deg: Number(applySign(final.panDeg, cfg.panSign).toFixed(3)),

@@ -8,7 +8,6 @@ import { loadConfig } from "../src/shared/config.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
 import { TrackingSession } from "../src/shared/track/session.js";
 import { Mat3 } from "../src/shared/geo/vec3.js";
-import { rateToDeflection } from "../src/shared/track/control.js";
 
 // Ports 8791-8799 are already taken by other test files. Do not reuse them.
 const PORT = 8800;
@@ -29,33 +28,36 @@ afterEach(async () => {
   await mock?.stop();
 });
 
-// The cheapest possible guard against the mock's model and the control law's
-// model drifting apart: rateToDeflection (src/track/control.ts) is supposed
-// to be the exact inverse of the mock's deadband+cubic curve. If either one's
-// deadband/span/plateau ever changes without the other, this goes red before
-// the (much slower, much fuzzier) closed-loop simulation would even notice.
-// Task 5: the ESP32 joystick deflection curve is gone (the head takes deg/s),
-// and with it MOCK_JOG_MAX_DPS/mockJogRate; Task 5 deletes rateToDeflection
-// and replaces these two cases with the TRACK-driven simulation.
-describe.skip("mock jog model matches the control law's inverse", () => {
-  // The round-trip below uses MOCK_JOG_MAX_DPS on BOTH sides, so it cannot see
-  // the mock's plateau drifting away from the real rig's. 19.0 deg/s is a
-  // hardware measurement (jog-probe.mjs, 2026-07-16), not a tunable: if these
-  // two ever disagree, every closed-loop result here is measured against a rig
-  // that does not exist.
-  it("uses the same jog plateau the daemon is configured with", () => {
-    expect(MOCK_JOG_MAX_DPS).toBe(loadConfig(undefined, {}).maxJogDps);
+// The cheapest guard against the fake's TRACK model drifting from what the
+// head does (docs/HEAD-API.md, POST /api/track: "The Pico extrapolates and
+// servos ... stops the axis if updates stop"). The closed-loop pass below is
+// only as honest as this model: a fake that teleported onto each setpoint
+// would pass a host that sent the wrong rate.
+describe("FakeHead TRACK model", () => {
+  it("extrapolates the setpoint at the commanded rate and servos the axis onto it", () => {
+    const h = new FakeHead();
+    h.model.axes.pan = { ...h.model.axes.pan, pos: 0, tgt: 1, vel: 2, mode: "T" };
+    for (let i = 0; i < 16; i++) h.advance(50);    // 0.8s, under the 1s track timeout
+    const pan = h.model.axes.pan;
+    expect(pan.tgt).toBeCloseTo(1 + 2 * 0.8, 9);   // setpoint moved at vel
+    expect(Math.abs(pan.pos - pan.tgt)).toBeLessThan(0.05); // and the axis caught it
+    expect(pan.mode).toBe("T");
   });
 
-  it("round-trips rateToDeflection -> mockJogRate back to the original rate", () => {
-    for (const dps of [0.5, 1, 3, 7, 12, 19, -0.5, -5, -19]) {
-      const deflection = rateToDeflection(dps, MOCK_JOG_MAX_DPS);
-      const rate = mockJogRate(deflection, MOCK_JOG_MAX_DPS);
-      // rateToDeflection rounds to an integer deflection, so the round trip
-      // is not exact -- but it must be close, and critically it must NOT be
-      // off by the ~9x a linear-vs-cubic mismatch would produce.
-      expect(rate).toBeCloseTo(dps, 0);
-    }
+  it("does not teleport: one step covers at most the feed-forward plus the catch-up", () => {
+    const h = new FakeHead();
+    h.model.axes.pan = { ...h.model.axes.pan, pos: 0, tgt: 10, vel: 0, mode: "T" };
+    h.advance(50);
+    expect(h.model.axes.pan.pos).toBeGreaterThan(0);
+    expect(h.model.axes.pan.pos).toBeLessThan(10 * 5 * 0.05 + 1e-9);
+  });
+
+  it("stops the axis when TRACK updates stop (the Pico's track timeout)", () => {
+    const h = new FakeHead();
+    h.model.axes.pan = { ...h.model.axes.pan, pos: 0, tgt: 0, vel: 3, mode: "T" };
+    for (let i = 0; i < 21; i++) h.advance(50);    // 1.05s with no TRACK
+    expect(h.model.axes.pan.mode).toBe("I");
+    expect(h.model.axes.pan.vel).toBe(0);
   });
 });
 
@@ -105,16 +107,19 @@ describe("closed-loop tracking simulation", () => {
     expect(session.status().state).toBe("tracking");
     expect(samples.length).toBeGreaterThan(4);
     const worst = Math.max(...samples);
-    // The controller must actually converge — not merely avoid diverging.
-    // The brief's own tolerance (3deg) is loose enough that it does NOT go
-    // red under either of the two failure modes this test exists to catch
-    // (verified empirically, 3 runs each): a zeroed feedforward term settles
-    // at ~0.82-0.87deg of steady-state lag, and a linear (rather than cubic)
-    // mock jog curve oscillates up to ~1.8deg. The correct implementation
-    // settles at ~0.08-0.12deg across 6+ runs. 0.5deg sits with margin above
-    // that baseline and below both fault floors, so it actually catches them
-    // instead of only proving the loop doesn't diverge.
+    // The loop must actually follow -- not merely avoid diverging. The head
+    // model servos onto the TRACK setpoint extrapolated at the TRACK rate, so
+    // a wrong setpoint, a wrong or missing feed-forward, or a sign error all
+    // show up here as following error. 0.5deg is the bound the jog-era servo
+    // was held to on this same pass; it catches a wrong setpoint (a 1deg pos
+    // error measured 1.0deg) but NOT a feed-forward fault, because the
+    // setpoint is refreshed every tick. Measured worst error, 3 runs each:
+    // correct 0.030deg, vel zeroed 0.22deg, vel sign flipped 0.41deg. So the
+    // second bound sits 4x above the correct baseline and below both faults.
     expect(worst).toBeLessThan(0.5);
+    expect(worst).toBeLessThan(0.12);
+    // And it was the TRACK that did it: the session servoed through it.
+    expect(mock.lastTrack?.pan).toBeDefined();
   }, 15000);
 
   it("stops commanding motion when target updates dry up", async () => {
@@ -140,6 +145,13 @@ describe("closed-loop tracking simulation", () => {
     await sleep(1500);
     expect(session.status().state).toBe("waiting");
     expect(session.status().reason).toBe("target_stale");
-    expect(mock.lastJog).toEqual({ pan: 0, tilt: 0 });
+    // The session stopped the head on the way into waiting...
+    expect(mock.stopCount).toBeGreaterThan(0);
+    expect(mock.model.axes.pan.mode).toBe("I");
+    expect(mock.model.axes.tilt.mode).toBe("I");
+    // ...and sends nothing more while it waits.
+    const tracksBefore = mock.calls.filter((c) => c.path === "/api/track").length;
+    await sleep(300);
+    expect(mock.calls.filter((c) => c.path === "/api/track").length).toBe(tracksBefore);
   }, 15000);
 });

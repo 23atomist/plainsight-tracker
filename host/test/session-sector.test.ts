@@ -42,8 +42,6 @@ class FakeDevice {
   lastUpdateMs = 1_000_000;
   // Every track() call, in order (the head's TRACK; Task 5 servos through it).
   tracks: HeadTrackCmd[] = [];
-  jogVec: { panDps: number; tiltDps: number; ttlMs: number } | null = null;
-  cleared = 0;
   gotos: { pan: number; tilt: number }[] = [];
   stopCalls = 0;
   getState(): DeviceState {
@@ -54,8 +52,6 @@ class FakeDevice {
       lastUpdateMs: this.lastUpdateMs,
     };
   }
-  setJogVector(panDps: number, tiltDps: number, ttlMs: number) { this.jogVec = { panDps, tiltDps, ttlMs }; }
-  clearJog() { this.jogVec = null; this.cleared++; }
   async track(cmd: HeadTrackCmd) { this.tracks.push(cmd); }
   async gotoAngle(pan: number, tilt: number) {
     this.gotos.push({ pan, tilt });
@@ -106,7 +102,7 @@ describe("initial-acquire azimuth-sector stop", () => {
     expect(dev.gotos.length).toBe(0);
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("outside_sector");
-    expect(dev.jogVec).toBeNull();
+    expect(dev.tracks).toHaveLength(0);
   });
 });
 
@@ -130,7 +126,7 @@ describe("in-track azimuth-sector stop", () => {
 
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("outside_sector");
-    expect(dev.jogVec).toBeNull();
+    expect(dev.tracks).toHaveLength(0);
 
     // Feed a fix INSIDE the arc again (due south, bearing 180) -- the hold
     // must release: the reason is no longer outside_sector.

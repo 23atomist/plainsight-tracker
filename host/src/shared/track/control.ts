@@ -13,10 +13,6 @@ const FF_DELTA_MS = 10;
 // Below this range the pointing direction is undefined.
 const MIN_RANGE_M = 1e-3;
 
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, v));
-}
-
 // Wrap to (-180, 180] so errors always take the short way round.
 export function wrapDeg180(d: number): number {
   const x = ((d % 360) + 360) % 360;
@@ -67,8 +63,8 @@ export interface TargetAim {
 //
 // NOTE this is deliberately NOT enuToPanTiltOffset's in-range-preferring
 // selection, even though `a`'s panDeg/tiltDeg below double as the COMMANDED
-// posture (session.ts feeds them straight into reachablePanTilt and
-// controlRate's P-error term, not just into the ratePanDps/rateTiltDps
+// posture (session.ts feeds them straight into reachablePanTilt and on to
+// the head's TRACK setpoint, not just into the ratePanDps/rateTiltDps
 // feedforward). Those two uses share one deterministic root selection ON
 // PURPOSE: `a` (u0) and `b` (the +FF_DELTA_MS lookahead point) must pick the
 // SAME physical branch, or a target passing near a branch boundary could
@@ -118,121 +114,38 @@ export interface ControlOutput {
   readonly tiltDps: number;
 }
 
-// rate = feedforward + Kp * error, clamped. P only — feedforward does the
-// heavy lifting, so an integral term would fight it and wind up at the limits.
-export function controlRate(
-  aim: Pick<TargetAim, "panDeg" | "tiltDeg" | "ratePanDps" | "rateTiltDps">,
-  rigPanDeg: number, rigTiltDeg: number, kp: number, maxJogDps: number,
-): ControlOutput {
-  const errPan = wrapDeg180(aim.panDeg - rigPanDeg);
-  const errTilt = aim.tiltDeg - rigTiltDeg;   // tilt is bounded, it never wraps
-  return {
-    panDps: clamp(aim.ratePanDps + kp * errPan, -maxJogDps, maxJogDps),
-    tiltDps: clamp(aim.rateTiltDps + kp * errTilt, -maxJogDps, maxJogDps),
-  };
-}
-
 /**
- * Host-side commanded-rate slew limit.
- *
- * The firmware already ramps the rig's ACTUAL velocity (~1s zero-to-full via
- * the jog accumulator), but the COMMAND it receives could until now jump from
- * full forward to full reverse between two ticks -- which happens exactly when
- * a noisy fix or a predictor correction kicks the P-term, and reads as a jerk
- * through the glass. Limiting how fast the COMMANDED rate may change bounds
- * those reversals upstream of the cubic curve; sized to match (not fight) the
- * firmware's own accel ramp, so steady tracking is untouched and only
- * discontinuities are shaved.
- *
- * prev === null means "no standing command" (fresh acquire/resume): pass the
- * new rate through unslewed rather than ramping from zero, or every catch-up
- * would start with a manufactured soft-start lag.
+ * A usable per-axis rate or acceleration from the head's config: finite and
+ * positive, else the fallback. A head that reports 0, a negative value or no
+ * config at all must never turn into a zero stopping time or a zero rate cap.
  */
-export function slewTowards(prevDps: number | null, cmdDps: number, maxDeltaDps: number): number {
-  if (prevDps === null || !Number.isFinite(prevDps)) return cmdDps;
-  const delta = cmdDps - prevDps;
-  if (Math.abs(delta) <= maxDeltaDps) return cmdDps;
-  return prevDps + Math.sign(delta) * maxDeltaDps;
-}
-
-// Deflection units the firmware's cubic curve maps to full rate: |x|=100
-// minus the deadband offset of 5.
-const JOY_SPAN = 95;
-const JOY_DEADBAND = 5;
-
-// Convert a desired rate (deg/s, already sign-corrected for the axis) into a
-// joystick deflection, inverting the firmware's cubic curve.
-//
-// Layer 1's `jog` tool maps this LINEARLY on purpose -- it is a human-in-the-
-// loop framing nudge where "approximately" is fine. The servo has no such
-// luxury: feedforward IS the design, so its mapping must match the hardware.
-export function rateToDeflection(dps: number, maxJogDps: number): number {
-  const f = Math.min(Math.abs(dps) / maxJogDps, 1);
-  if (f <= 0) return 0;
-  const joyDb = JOY_SPAN * Math.cbrt(f);
-  const x = Math.round(joyDb + JOY_DEADBAND);
-  return Math.sign(dps) * Math.min(x, 100);
-}
-
-// --- Firmware deceleration model -------------------------------------------
-// All four constants below are read off updateMotorVelocities2()
-// (src/TB3_Nunchuck.ino), which owns the rig's velocity accumulator.
-
-// The velocity engine's cycle: "Happens 20 times a second".
-const FW_CYCLE_MS = 50;
-
-// Per-cycle accumulator ramp limit: accelmax0/1 = (65535/20)/1.0, i.e. sized so
-// zero->full takes ~1s. This is the ONLY thing bounding how fast a commanded
-// rate change is honoured, in either direction -- decel is not special-cased.
-const FW_ACCEL_PER_CYCLE = 65535 / 20;
-
-// Accumulator value at full deflection. The firmware cubes the deflection
-// (joy^3/10000) then scales by 655.3 * motormax, where
-// motormax = PAN_MAX_JOG_STEPS_PER_SEC/20000 = 10000/20000
-// (TB3_Black_109_Release1.ino:227). At |joy| = JOY_SPAN this is ~28092, and
-// that accumulator value is what the measured maxJogDps plateau corresponds to.
-const FW_ACCUM_SCALE = 655.3;
-const FW_MOTORMAX = 10000 / 20000;
-const FW_FULL_SCALE_ACCUM = (Math.pow(JOY_SPAN, 3) / 10000) * FW_ACCUM_SCALE * FW_MOTORMAX;
-
-/**
- * How long the rig takes to ramp a standing rate back down to zero, in ms.
- *
- * The accumulator moves at most FW_ACCEL_PER_CYCLE per 50ms cycle, and
- * FW_FULL_SCALE_ACCUM of accumulator == maxJogDps of rate, so the rig sheds
- * ~2.22 deg/s per cycle at the default 19 deg/s plateau => ~450ms from full
- * rate. Scales with the commanded rate: a slow rate stops almost immediately,
- * which is exactly why the limit guard's horizon is computed rather than fixed.
- */
-export function decelMs(rateDps: number, maxJogDps: number): number {
-  const dpsPerCycle = maxJogDps * (FW_ACCEL_PER_CYCLE / FW_FULL_SCALE_ACCUM);
-  if (!(dpsPerCycle > 0) || !Number.isFinite(rateDps)) return 0;
-  return Math.ceil(Math.abs(rateDps) / dpsPerCycle) * FW_CYCLE_MS;
+export function usableOr(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 /**
  * How far ahead the limit guard must predict, in ms, for ONE axis.
  *
- * This was a flat 3 ticks (300ms). That is shorter than the rig's real stopping
- * distance, and the shortfall is invisible in simulation because the mock
- * pushes telemetry 4x faster than the rig and stops dead instead of ramping.
- * Every term below is a real delay between "the rig is here" and "the rig has
- * actually stopped", so the guard has to cover their sum:
+ * A flat few ticks is shorter than the head's real stopping distance, and the
+ * shortfall is invisible in a simulation that stops dead. Every term below is
+ * a real delay between "the axis is here" and "the axis has actually
+ * stopped", so the guard has to cover their sum:
  *
- *   telemetryAgeMs  the reading is already this old (the rig pushes at 5Hz --
- *                   src/tb3_web.cpp -- so up to 200ms, not the mock's 50ms)
- *   tickPeriodMs    nothing re-evaluates until the next tick
- *   decelMs(rate)   the firmware ramps the rate down, ~450ms from saturation
+ *   telemetryAgeMs     the reading is already this old
+ *   tickPeriodMs       nothing re-evaluates until the next tick
+ *   |rate| / amax      the Pico decelerates at its configured amax (deg/s^2)
  *
- * Computed rather than a bigger constant on purpose: decelMs scales with the
- * commanded rate, so this spends ~14deg of lookahead only when actually
- * saturated and next to nothing when creeping. A constant sized for the worst
- * case would surrender that travel at every rate.
+ * Computed rather than a bigger constant on purpose: the stopping term scales
+ * with the rate, so this spends real lookahead only when actually fast and
+ * next to nothing when creeping. A constant sized for the worst case would
+ * surrender that travel at every rate. An unusable amax (0, negative, NaN)
+ * is an infinite horizon -- limitGuard blocks it -- never a zero one.
  */
 export function limitHorizonMs(
-  rateDps: number, telemetryAgeMs: number, tickPeriodMs: number, maxJogDps: number,
+  rateDps: number, telemetryAgeMs: number, tickPeriodMs: number, amaxDps2: number,
 ): number {
-  return Math.max(0, telemetryAgeMs) + tickPeriodMs + decelMs(rateDps, maxJogDps);
+  if (!(amaxDps2 > 0)) return Infinity;
+  return Math.max(0, telemetryAgeMs) + tickPeriodMs + (Math.abs(rateDps) / amaxDps2) * 1000;
 }
 
 /** Per-axis lookahead. Each axis decelerates on its own rate, so each gets its own. */
@@ -241,13 +154,13 @@ export interface GuardHorizon {
   readonly tiltMs: number;
 }
 
-// The jog path does NOT enforce soft limits and the rig has no endstops, so the
-// session must. Check the PREDICTED position over the horizon, not the current
-// one: by the time we are outside, it is already too late.
+// The host-side soft-limit net, in front of the Pico's own. Check the
+// PREDICTED position over the horizon, not the current one: by the time we are
+// outside, it is already too late.
 //
 // Predicting at the FULL commanded rate for the whole horizon deliberately
-// over-estimates the stopping distance (the real decel ramp averages about half
-// the rate). On a rig with no endstops, erring long is the correct direction.
+// over-estimates the stopping distance (a linear decel ramp averages half the
+// rate). Erring long is the correct direction.
 // Whether this axis' commanded rate must be zeroed, judged on DIRECTION and
 // not merely on whether the prediction sits inside [min,max].
 //
@@ -263,7 +176,12 @@ export interface GuardHorizon {
 // allowed only when it is strictly closer to the range than where the rig is
 // now. Motion that reduces a violation is never blocked; motion that creates
 // or deepens one always is.
+//
+// A prediction that is not a finite number (a NaN rate, an infinite horizon
+// from an unusable amax) blocks the axis: an unknown stopping point is not a
+// safe one.
 function axisBlocked(cur: number, pred: number, min: number, max: number): boolean {
+  if (!Number.isFinite(pred)) return true;
   if (pred <= max && pred >= min) return false;
   if (pred > max) return pred >= cur;  // above the top: only descending is allowed
   return pred <= cur;                  // below the bottom: only ascending is allowed

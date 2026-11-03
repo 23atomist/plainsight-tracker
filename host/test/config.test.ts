@@ -62,14 +62,17 @@ describe("tracking config", () => {
   it("defaults every tracking key", () => {
     const c = loadConfig(undefined, {});
     expect(c.trackTickHz).toBe(10);
-    expect(c.trackKp).toBe(1.0);
     expect(c.trackLeadMs).toBe(150);
     expect(c.trackMaxTargetAgeMs).toBe(12000);
-    expect(c.trackRateSlewDps).toBe(40);
     expect(c.trackStaleTelemetryMs).toBe(1000);
     expect(c.trackDeadmanMs).toBe(120000);
     expect(c.trackReacquireDeg).toBe(10);
-    expect(c.jogVectorTtlMs).toBe(500);
+    expect(c.trackFallbackAmaxDps2).toBe(10);
+  });
+
+  it("TB3_TRACK_FALLBACK_AMAX_DPS2 overrides the fallback amax, which must be positive", () => {
+    expect(loadConfig(undefined, { TB3_TRACK_FALLBACK_AMAX_DPS2: "4" }).trackFallbackAmaxDps2).toBe(4);
+    expect(() => loadConfig(undefined, { TB3_TRACK_FALLBACK_AMAX_DPS2: "0" })).toThrow();
   });
 
   it("rejects a non-positive tick rate", () => {

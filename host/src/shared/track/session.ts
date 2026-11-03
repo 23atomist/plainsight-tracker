@@ -1,15 +1,16 @@
 import { Vec3, angleBetweenDeg } from "../geo/vec3.js";
 import { Geodetic } from "../geo/wgs84.js";
-import { Device, DeviceHttpError } from "../device.js";
+import { AxisConfig, Device } from "../device.js";
 import { Config } from "../config.js";
 import { CalibrationStore } from "../calibration.js";
 import { applySign } from "../angles.js";
+import { DeviceState } from "../types.js";
+import { HeadTrackCmd } from "../head-types.js";
 import { moveToUserAngle } from "../../mcp/move.js";
 import { reachablePanTilt } from "../../mcp/geo-tools.js";
 import { EstimatorState, emptyEstimator, withFix, lastFixMs } from "./estimator.js";
 import {
-  TargetAim, targetAimAt, controlRate, limitGuard, boresightEnu, limitHorizonMs,
-  slewTowards, GuardLimits,
+  TargetAim, targetAimAt, limitGuard, boresightEnu, limitHorizonMs, usableOr, GuardLimits,
 } from "./control.js";
 import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
 import { TrackFloor, DISABLED_FLOOR, aboveFloor, enuElevationDeg } from "./floor.js";
@@ -20,7 +21,7 @@ export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
   | "below_tilt_limit" | "pan_limit" | "target_stale"
   | "telemetry_stale" | "estop" | "not_calibrated"
-  | "device_busy" | "goto_failed" | "outside_sector"
+  | "goto_failed" | "outside_sector"
   // Distinct from below_tilt_limit on purpose: that one means the rig
   // physically cannot reach the target, this one means the operator has
   // forbidden tracking that low (see track/floor.ts). Collapsing them would
@@ -70,15 +71,11 @@ export const realScheduler: Scheduler = {
 };
 
 /**
- * Why an acquire goto failed. A 409 means tb3_goto_safe() was false -- a
- * program is engaged, or (far more often) the rig is still decelerating out of
- * a jog and motorMoving is still set. It is routine, self-healing, and above
- * all NOT a telemetry fault: reporting it as one blames a healthy subsystem on
- * the single most common catch-up path there is.
+ * Why an acquire goto failed. Above all NOT a telemetry fault unless it is
+ * one: the ESP32 era reported a routine refused goto as "telemetry_stale",
+ * blaming a healthy subsystem on the most common catch-up path there was.
  */
 function acquireFailureReason(e: unknown): WaitReason {
-  const cause = e instanceof Error ? e.cause : undefined;
-  if (cause instanceof DeviceHttpError && cause.status === 409) return "device_busy";
   // Defence in depth: beginAcquire() pre-checks reachability, so moveToUserAngle's
   // own limit check should never be the thing that throws here. If it ever is,
   // say which limit rather than inventing a fault.
@@ -86,9 +83,14 @@ function acquireFailureReason(e: unknown): WaitReason {
   if (/outside the (allowed|reachable)/.test(msg)) {
     return /tilt/.test(msg) ? "below_tilt_limit" : "pan_limit";
   }
-  // Arrival timeout, transport error, or any other device rejection.
+  // Arrival timeout, transport error, or any other device rejection (423
+  // E-STOP and 503 link down also reach the next tick's gates via telemetry).
   return "goto_failed";
 }
+
+type TrackAxis = "pan" | "tilt";
+// What a STOP covers: the named axes, or every axis on the head.
+type StopScope = readonly TrackAxis[] | "all";
 
 // Compass azimuth (0-360, clockwise from north) of an ENU unit vector. Shared
 // by the sector gate in tick() and recordAim()'s status reporting so the two
@@ -119,11 +121,27 @@ export class TrackingSession {
   private lastActivityMs = 0;
   private acquireGen = 0;
   private gotoInFlight = false;
-  // Last COMMANDED jog rates (post-guard, post-slew), for the per-tick slew
-  // limit in tick(). Null means no standing command: the next command passes
-  // through unslewed (see slewTowards). Cleared wherever motion stops.
-  private lastCmdPanDps: number | null = null;
-  private lastCmdTiltDps: number | null = null;
+  // Ends the in-flight acquire's arrival wait when that goto is abandoned, so
+  // the wait does not poll on (up to its whole timeout) for a move that no
+  // longer exists.
+  private acquireAbort: AbortController | null = null;
+  // True from the moment the session commands motion (an acquire goto, a
+  // TRACK) until it stops the head. This is what makes stopMotion()
+  // edge-triggered: a session sitting in "waiting" re-enters wait() every tick,
+  // and must not spray a STOP at the head every tick while it does.
+  private motionLive = false;
+  // Axes the limit guard is holding (stopped on the head and left out of the
+  // TRACK). Only the transition into a hold sends a STOP.
+  private held: Readonly<Record<TrackAxis, boolean>> = { pan: false, tilt: false };
+  // TRACK and STOP requests the head has not answered yet. Two HTTP requests
+  // can reach the head in either order, so a TRACK still in flight could land
+  // AFTER a STOP (and restart the axis) or after an acquire goto (and replace
+  // it). See haltAxes() and beginAcquire() for how each is ordered.
+  private inflightTracks = new Set<Promise<void>>();
+  private inflightStops = new Set<Promise<void>>();
+  // One console line per failure streak per command: a head refusing every
+  // TRACK at 10 Hz must be visible without flooding the log.
+  private failing: Record<"track" | "stop", boolean> = { track: false, stop: false };
   private lastStatus: Partial<TrackStatus> = {};
   private stateListeners: ((s: TrackState, icao: string | null) => void)[] = [];
   // The standing aim-offset (see track/offset.ts). Reset on every start() so
@@ -159,6 +177,12 @@ export class TrackingSession {
     // Defaults to disabled so every existing caller/test keeps its exact prior
     // behavior.
     private readonly floorProvider: () => TrackFloor = () => DISABLED_FLOOR,
+    // The head's per-axis limits and rates (Device.getAxisConfig(), from GET
+    // /api/config), read fresh on every tick: amax sizes the limit guard's
+    // stopping horizon and vmax caps the TRACK feed-forward. Null until the
+    // head's config has been read; cfg.trackFallbackAmaxDps2 and
+    // cfg.maxJogDps stand in until then.
+    private readonly axisConfigProvider: () => AxisConfig | null = () => null,
   ) {}
 
   // The pass baseline: the persisted trim, clamped nowhere here (the store
@@ -186,7 +210,9 @@ export class TrackingSession {
     if (!rig) return "not calibrated — set_rig_location, sight two landmarks, then solve_calibration first";
     if (!this.store.getOrientation()) return "not calibrated — run solve_calibration first";
 
-    this.stopMotion();
+    // No stop: the acquire goto below retargets the head, and a STOP sent
+    // alongside it could land after it and cancel it.
+    this.supersede();
     this.est = withFix(emptyEstimator(), rig, g, this.fixTimeMs(fixAgeSec), statedVel);
     this.label = label;
     this.hex = hex;
@@ -315,26 +341,90 @@ export class TrackingSession {
     };
   }
 
-  // Abandon any outstanding acquire: break the firmware out of its blocking
-  // goto loop, and bump the generation so the orphaned promise's late
-  // resolution cannot flip state on a session that has moved on.
-  private cancelGoto(): void {
+  // Abandon any outstanding acquire: bump the generation so the orphaned
+  // promise's late resolution cannot flip state on a session that has moved
+  // on, and end its arrival wait. Sends nothing itself: whoever supersedes the
+  // goto either retargets the head (a fresh acquire) or stops it (stopMotion).
+  private abandonGoto(): void {
     if (!this.gotoInFlight) return;
     this.gotoInFlight = false;
     this.acquireGen++;
-    void this.device.stop().catch(() => {});
+    this.acquireAbort?.abort();
+    this.acquireAbort = null;
   }
 
-  private stopMotion(): void {
-    this.cancelGoto();
-    this.device.clearJog();
-    this.lastCmdPanDps = null;
-    this.lastCmdTiltDps = null;
+  // Drop the current pass's motion bookkeeping without commanding anything:
+  // for a fresh acquire, which retargets the head with its own goto.
+  private supersede(): void {
+    this.abandonGoto();
+    this.held = { pan: false, tilt: false };
     this.lastStatus = {
       ...this.lastStatus,
       commandedPanDps: null, commandedTiltDps: null,
       panLimited: false, tiltLimited: false,
     };
+  }
+
+  // Stop the head, edge-triggered: one STOP when the session stops commanding
+  // motion (entering waiting, stop(), a throwing tick), none while it already
+  // has. A STOP the head refuses re-arms the edge so the next waiting tick
+  // tries again; if the session is stopped outright there is no next tick, and
+  // the Pico's own track timeout (it stops an axis whose TRACKs stop) is the
+  // backstop.
+  private stopMotion(): void {
+    const live = this.motionLive || this.gotoInFlight;
+    this.supersede();
+    if (!live) return;
+    this.motionLive = false;
+    this.haltAxes("all", () => (this.motionLive ? null : "all"), () => { this.motionLive = true; });
+  }
+
+  // POST a STOP now; and if a TRACK was still unanswered when it went out,
+  // POST it again once that TRACK has been answered, because the TRACK may
+  // have reached the head after the STOP and restarted the axis. `chase`
+  // decides at that point what (if anything) still needs stopping: never an
+  // axis the session has since commanded again.
+  private haltAxes(scope: StopScope, chase: () => StopScope | null, onFailure: () => void): void {
+    const overtaking = [...this.inflightTracks];
+    this.postStop(scope, onFailure);
+    if (overtaking.length === 0) return;
+    void Promise.allSettled(overtaking).then(() => {
+      const again = chase();
+      if (again !== null) this.postStop(again, onFailure);
+    });
+  }
+
+  private postStop(scope: StopScope, onFailure: () => void): void {
+    this.send(this.inflightStops, "stop", this.device.stop(scope === "all" ? undefined : scope), onFailure);
+  }
+
+  private sendTrack(cmd: HeadTrackCmd): void {
+    this.motionLive = true;
+    // A refused TRACK (423 E-STOP, 503 link down) needs no handling here: the
+    // same cause reaches the next tick's gates through telemetry, and the
+    // Pico stops an axis whose TRACK updates stop.
+    this.send(this.inflightTracks, "track", this.device.track(cmd), () => {});
+  }
+
+  // Tracks one head command until it is answered, and logs the first failure
+  // of a streak (see `failing`).
+  private send(
+    inflight: Set<Promise<void>>, kind: "track" | "stop", cmd: Promise<void>, onFailure: () => void,
+  ): void {
+    const settled: Promise<void> = cmd.then(
+      () => {
+        inflight.delete(settled);
+        this.failing = { ...this.failing, [kind]: false };
+      },
+      (e: unknown) => {
+        inflight.delete(settled);
+        onFailure();
+        if (this.failing[kind]) return;
+        this.failing = { ...this.failing, [kind]: true };
+        console.error(`[tracking] head refused ${kind.toUpperCase()}: ${e instanceof Error ? e.message : String(e)}`);
+      },
+    );
+    inflight.add(settled);
   }
 
   private wait(reason: WaitReason): void {
@@ -365,8 +455,9 @@ export class TrackingSession {
     }
   }
 
-  // Any throw inside a tick must not leave a rate running. The Device TTL is
-  // the real backstop (it survives an event-loop stall, which this cannot).
+  // Any throw inside a tick must not leave the head tracking. The Pico's
+  // track timeout is the real backstop (it survives an event-loop stall, which
+  // this cannot).
   private safeTick(): void {
     try { this.tick(); }
     catch { this.stopMotion(); }
@@ -437,85 +528,95 @@ export class TrackingSession {
     if (this.state === "acquiring") return;   // a goto is in flight; let it finish
 
     if (this.state === "waiting" || errDeg > this.cfg.trackReacquireDeg) {
-      // Drop the standing rate first, then let the rig actually come to rest.
-      // tb3_goto_safe() is `!Program_Engaged && motorMoving == 0`, and a jog
-      // sets motorMoving just as a goto does, so a goto POSTed during the
-      // ~450ms ramp-down is refused with a 409. Reacquire fires at
-      // trackReacquireDeg of error, which means the servo was saturated -- so
-      // without this gate the worst case is also the common case, and every
-      // catch-up sprays doomed POSTs.
-      //
-      // This is a best-effort damper, not a guarantee: `moving` is telemetry
-      // and is up to 200ms stale, so a 409 can still slip through. That is
-      // what acquireFailureReason() is for -- it reports device_busy and the
-      // next tick simply tries again.
-      //
-      // wait() stops motion itself, which is what starts the deceleration this
-      // is waiting on; each subsequent tick re-enters here and re-checks.
-      if (dev.moving) { this.wait("device_busy"); return; }
+      // On the head an accepted goto retargets, even mid-move (docs/HEAD-API.md,
+      // POST /api/goto). The ESP32 refused a goto while a jog was still
+      // decelerating, which is what the old busy-wait for `moving` to clear
+      // was for; that wait is gone. The reacquire goto goes out now, and
+      // nothing is stopped first: a STOP sent alongside the goto could land
+      // after it and cancel it.
       this.setState("acquiring");
       this.reason = null;
-      this.stopMotion();
+      this.supersede();
       this.beginAcquire();
       return;
     }
 
-    // state === tracking. panDeg/tiltDeg come from `reach` (the offset-shifted,
-    // range-resolved setpoint) -- NOT `aim` -- so the servo drives toward
-    // target+offset. ratePanDps/rateTiltDps stay aim's own feedforward: the
-    // offset is a constant correction, so it contributes zero rate of its own.
-    const raw = controlRate(
-      { ...aim, panDeg: reach.pan, tiltDeg: reach.tilt }, rig.panDeg, rig.tiltDeg,
-      this.cfg.trackKp, this.cfg.maxJogDps,
-    );
-    // Bounded by the staleness gate above (telemetry older than
+    this.servo(t, dev, aim, reach, rig, limits);
+  }
+
+  // state === tracking: one TRACK per tick; the Pico extrapolates and servos.
+  // pos comes from `reach` (the offset-shifted, range-resolved setpoint) --
+  // NOT `aim` -- so the head drives toward target+offset. vel is aim's own
+  // feedforward: the offset is a constant correction, so it contributes zero
+  // rate of its own.
+  private servo(
+    t: number, dev: DeviceState, aim: TargetAim, reach: { pan: number; tilt: number },
+    rig: { panDeg: number; tiltDeg: number }, limits: GuardLimits,
+  ): void {
+    const axisCfg = this.axisConfigProvider();
+    // Bounded by the staleness gate in tick() (telemetry older than
     // trackStaleTelemetryMs already sent us to `waiting`), so the horizon
     // cannot be inflated by an arbitrarily old reading.
     const tickPeriodMs = 1000 / this.cfg.trackTickHz;
     const telemetryAgeMs = t - dev.lastUpdateMs;
-    const guarded = limitGuard(raw, rig.panDeg, rig.tiltDeg, limits, {
-      panMs: limitHorizonMs(raw.panDps, telemetryAgeMs, tickPeriodMs, this.cfg.maxJogDps),
-      tiltMs: limitHorizonMs(raw.tiltDps, telemetryAgeMs, tickPeriodMs, this.cfg.maxJogDps),
+    const fallbackAmax = this.cfg.trackFallbackAmaxDps2;
+    const guarded = limitGuard({ panDps: aim.ratePanDps, tiltDps: aim.rateTiltDps }, rig.panDeg, rig.tiltDeg, limits, {
+      panMs: limitHorizonMs(aim.ratePanDps, telemetryAgeMs, tickPeriodMs, usableOr(axisCfg?.pan.amax, fallbackAmax)),
+      tiltMs: limitHorizonMs(aim.rateTiltDps, telemetryAgeMs, tickPeriodMs, usableOr(axisCfg?.tilt.amax, fallbackAmax)),
     });
 
-    // Slew the COMMANDED rate toward what this tick computed (see
-    // slewTowards): a noisy fix or predictor correction can otherwise flip
-    // the command full-reverse between two ticks and read as a jerk. Sized by
-    // config to roughly match the firmware's own accel ramp, so normal
-    // tracking is unaffected and only discontinuities are shaved.
-    // A BLOCKED axis bypasses the slew entirely and commands zero outright.
-    // The guard's stopping reserve (limitHorizonMs -> decelMs) is sized for
-    // the FIRMWARE's rate ramp on the assumption that a block drops the
-    // command to zero at once. Ramping the command down instead spends that
-    // reserve on the host side: harmless at the default trackRateSlewDps
-    // (40 deg/s/s, ~= the firmware's own 42), but the knob is operator-facing
-    // and the tempting direction -- lower, for smoother video -- is the unsafe
-    // one. Measured stopping distance from saturation: 3.4deg unslewed,
-    // 3.6deg at 40, 11.5deg at 25, 17.1deg at 10 (past panMax). Smoothing is
-    // for tracking; a guard trip is a stop.
-    const slewPerTick = this.cfg.trackRateSlewDps / this.cfg.trackTickHz;
-    const cmdPanDps = guarded.panBlocked
-      ? 0 : slewTowards(this.lastCmdPanDps, guarded.out.panDps, slewPerTick);
-    const cmdTiltDps = guarded.tiltBlocked
-      ? 0 : slewTowards(this.lastCmdTiltDps, guarded.out.tiltDps, slewPerTick);
-    this.lastCmdPanDps = cmdPanDps;
-    this.lastCmdTiltDps = cmdTiltDps;
+    // A blocked axis is STOPPED on the head, not sent a clamped TRACK: the
+    // Pico extrapolates a TRACK, so any TRACK would keep it moving. The guard
+    // trip is a stop, not a ramp -- its stopping reserve (limitHorizonMs)
+    // assumes the axis starts decelerating at once. One STOP per hold, on the
+    // tick the hold begins; the held axis is then simply left out of the
+    // TRACK until the guard releases it.
+    const blocked: Record<TrackAxis, boolean> = { pan: guarded.panBlocked, tilt: guarded.tiltBlocked };
+    const newlyHeld = (["pan", "tilt"] as const).filter((a) => blocked[a] && !this.held[a]);
+    this.held = blocked;
+    if (newlyHeld.length > 0) {
+      this.haltAxes(
+        newlyHeld,
+        () => {
+          const still = newlyHeld.filter((a) => this.held[a]);
+          return this.state === "tracking" && still.length > 0 ? still : null;
+        },
+        // A refused STOP drops the hold, so the next tick sees a fresh edge
+        // and stops again.
+        () => { this.held = { pan: this.held.pan && !newlyHeld.includes("pan"), tilt: this.held.tilt && !newlyHeld.includes("tilt") }; },
+      );
+    }
 
-    // TRANSITIONAL — Task 5 replaces this servo tail with the head's TRACK. The
-    // head jogs in deg/s, so the ESP32 deflection mapping (rateToDeflection)
-    // is no longer applied here.
-    this.device.setJogVector(cmdPanDps * this.cfg.panSign, cmdTiltDps * this.cfg.tiltSign, this.cfg.jogVectorTtlMs);
+    const panVel = this.feedForward(aim.ratePanDps, axisCfg?.pan.vmax);
+    const tiltVel = this.feedForward(aim.rateTiltDps, axisCfg?.tilt.vmax);
+    const cmd: HeadTrackCmd = {
+      ...(guarded.panBlocked ? {} : {
+        pan: { pos: applySign(reach.pan, this.cfg.panSign), vel: applySign(panVel, this.cfg.panSign) },
+      }),
+      ...(guarded.tiltBlocked ? {} : {
+        tilt: { pos: applySign(reach.tilt, this.cfg.tiltSign), vel: applySign(tiltVel, this.cfg.tiltSign) },
+      }),
+    };
+    if (cmd.pan || cmd.tilt) this.sendTrack(cmd);
+
     this.lastStatus = {
       ...this.lastStatus,
-      commandedPanDps: cmdPanDps,
-      commandedTiltDps: cmdTiltDps,
-      // Surfaced so a guard-held axis (commanded rate zeroed, state still
-      // "tracking", no wait reason) is diagnosable instead of looking
-      // identical to "the servo is happy". See the README's Safety section --
-      // an aggressive trackKp can make this self-perpetuate near a limit.
+      commandedPanDps: guarded.panBlocked ? 0 : panVel,
+      commandedTiltDps: guarded.tiltBlocked ? 0 : tiltVel,
+      // Surfaced so a guard-held axis (stopped, state still "tracking", no
+      // wait reason) is diagnosable instead of looking identical to "the
+      // servo is happy". See the README's Safety section.
       panLimited: guarded.panBlocked,
       tiltLimited: guarded.tiltBlocked,
     };
+  }
+
+  // The TRACK feed-forward, capped at the head's vmax for the axis (or
+  // maxJogDps while the head's config is unknown): a rate the axis cannot
+  // reach only winds the Pico's extrapolated setpoint away from it.
+  private feedForward(rateDps: number, vmax: number | undefined): number {
+    const cap = usableOr(vmax, this.cfg.maxJogDps);
+    return Math.max(-cap, Math.min(cap, rateDps));
   }
 
   private recordAim(aim: TargetAim, errDeg?: number): void {
@@ -578,18 +679,33 @@ export class TrackingSession {
     // a superseded attempt's resolution recognize it is stale and do nothing,
     // instead of overwriting whatever the session has moved on to.
     const gen = ++this.acquireGen;
+    const abort = new AbortController();
+    this.acquireAbort = abort;
     this.gotoInFlight = true;
-    void moveToUserAngle(this.device, this.cfg, reach.pan, reach.tilt, undefined, limits)
-      .then(() => {
-        if (gen !== this.acquireGen) return;
-        this.gotoInFlight = false;
-        if (this.state === "acquiring") this.setState("tracking");
-      })
-      .catch((e: unknown) => {
-        if (gen !== this.acquireGen) return;
-        this.gotoInFlight = false;
-        if (this.state === "acquiring") this.wait(acquireFailureReason(e));
-      });
+    this.motionLive = true;
+    const go = (): void => {
+      if (gen !== this.acquireGen) return;   // superseded while waiting its turn
+      void moveToUserAngle(this.device, this.cfg, reach.pan, reach.tilt, undefined, limits, abort.signal)
+        .then(() => {
+          if (gen !== this.acquireGen) return;
+          this.gotoInFlight = false;
+          this.acquireAbort = null;
+          if (this.state === "acquiring") this.setState("tracking");
+        })
+        .catch((e: unknown) => {
+          if (gen !== this.acquireGen) return;
+          this.gotoInFlight = false;
+          this.acquireAbort = null;
+          if (this.state === "acquiring") this.wait(acquireFailureReason(e));
+        });
+    };
+    // A TRACK or STOP the head has not answered yet could reach it AFTER this
+    // goto and replace or cancel it, so the goto waits for them. Normally
+    // there are none (they are answered within a tick); this matters when the
+    // head is slow.
+    const ahead = [...this.inflightTracks, ...this.inflightStops];
+    if (ahead.length === 0) go();
+    else void Promise.allSettled(ahead).then(go);
   }
 
   /** Test seam: force a state without waiting for a real goto to complete. */

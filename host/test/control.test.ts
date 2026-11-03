@@ -1,8 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Mat3, Vec3 } from "../src/shared/geo/vec3.js";
 import {
-  wrapDeg180, boresightEnu, targetAimAt, controlRate, limitGuard, rateToDeflection,
-  decelMs, limitHorizonMs, slewTowards,
+  wrapDeg180, boresightEnu, targetAimAt, limitGuard, limitHorizonMs,
 } from "../src/shared/track/control.js";
 import { emptyEstimator, withFix } from "../src/shared/track/estimator.js";
 import { enuToPanTiltOffsetAll } from "../src/shared/geo/imu-orientation.js";
@@ -108,42 +107,6 @@ describe("targetAimAt's root[0] selection (branch-consistency invariant)", () =>
   });
 });
 
-describe("controlRate", () => {
-  const aim = { panDeg: 10, tiltDeg: 5, ratePanDps: 2, rateTiltDps: -1, enuUnit: [0, 1, 0] as const, rangeM: 1000 };
-
-  it("with zero error the command is pure feedforward", () => {
-    const out = controlRate(aim, 10, 5, 1.0, 20);
-    expect(out.panDps).toBeCloseTo(2, 9);
-    expect(out.tiltDps).toBeCloseTo(-1, 9);
-  });
-
-  it("with a static target the command is pure proportional", () => {
-    const still = { ...aim, ratePanDps: 0, rateTiltDps: 0 };
-    const out = controlRate(still, 8, 5, 1.5, 20);
-    expect(out.panDps).toBeCloseTo(1.5 * 2, 9);  // Kp * 2 deg of error
-    expect(out.tiltDps).toBeCloseTo(0, 9);
-  });
-
-  it("takes the short way around the pan seam", () => {
-    // Target at -179, rig at 179 => error is +2, NOT -358.
-    const seam = { ...aim, panDeg: -179, ratePanDps: 0, rateTiltDps: 0 };
-    const out = controlRate(seam, 179, 5, 1.0, 20);
-    expect(out.panDps).toBeCloseTo(2, 9);
-  });
-
-  it("clamps to maxJogDps", () => {
-    const far = { ...aim, panDeg: 170, ratePanDps: 0, rateTiltDps: 0 };
-    const out = controlRate(far, 0, 5, 1.0, 20);
-    expect(out.panDps).toBe(20);
-  });
-
-  it("clamps negatively too", () => {
-    const far = { ...aim, panDeg: -170, ratePanDps: 0, rateTiltDps: 0 };
-    const out = controlRate(far, 0, 5, 1.0, 20);
-    expect(out.panDps).toBe(-20);
-  });
-});
-
 // The old fixed lookahead: 3 ticks x 100ms, same for both axes.
 const H300 = { panMs: 300, tiltMs: 300 };
 
@@ -241,134 +204,61 @@ describe("limitGuard", () => {
     expect(g.tiltBlocked).toBe(true);
   });
 
-  // The bug this whole horizon rework exists for. The rig has no endstops, so
-  // a soft limit is the only thing between the servo and the hardware.
-  it("REGRESSION: a fixed 300ms horizon is too short to stop the real rig before a limit", () => {
-    // Real-hardware budget at the 19 deg/s plateau, from pan 174 (6 deg of
-    // room to panMax 180):
-    //   telemetry up to 200ms stale (the rig pushes at 5Hz, src/tb3_web.cpp)  +3.8
-    //   100ms until the next tick re-evaluates                                +1.9
-    //   ~450ms decel ramp, averaging ~9.5 deg/s                               +4.3
-    // => the rig ends near 184, about 4 deg PAST the soft limit, and there are
-    // no endstops behind it.
-    //
+  // The bug the computed horizon exists for. A soft limit is the host-side
+  // net in front of the Pico's own, so it must predict where the axis ends up
+  // once it has actually STOPPED, not where it is one tick from now.
+  it("REGRESSION: a fixed 300ms horizon is too short to stop the head before a limit", () => {
+    // Budget at 19 deg/s with the Pico's default amax (10 deg/s^2), from pan
+    // 174 (6 deg of room to panMax 180):
+    //   telemetry up to 200ms old                                  +3.8
+    //   100ms until the next tick re-evaluates                     +1.9
+    //   stopping time |rate|/amax = 1.9s, ~half of it at full rate +18
     // The old fixed 3-tick horizon predicts only 174 + 19*0.3 = 179.7, calls
-    // that safe and commands the rate anyway. The honest horizon predicts
-    // 174 + 19*0.75 = 188.25 and stops the axis. Sim never caught this: the
-    // mock pushes telemetry at 20Hz and stops dead, so both terms it misses
-    // are exactly the terms that hurt on hardware.
+    // that safe and commands the rate anyway. The honest horizon (2.2s at the
+    // full rate, a deliberate over-estimate) stops the axis.
     const rigPan = 174, rate = 19;
-    const honest = { panMs: limitHorizonMs(rate, 200, 100, 19), tiltMs: 0 };
-    expect(honest.panMs).toBe(750);
+    const honest = { panMs: limitHorizonMs(rate, 200, 100, 10), tiltMs: 0 };
+    expect(honest.panMs).toBe(2200);
 
     expect(limitGuard({ panDps: rate, tiltDps: 0 }, rigPan, 0, LIMITS, H300).panBlocked).toBe(false);
     expect(limitGuard({ panDps: rate, tiltDps: 0 }, rigPan, 0, LIMITS, honest).panBlocked).toBe(true);
   });
 
   it("the dynamic horizon costs almost nothing at low rate", () => {
-    // The reason this is computed instead of a bigger constant: at 1 deg/s the
-    // rig stops within one 50ms firmware cycle, so a horizon sized for the
-    // saturated worst case (750ms) would surrender travel it never needed.
-    expect(limitHorizonMs(1, 200, 100, 19)).toBe(350);
+    // Computed instead of a bigger constant: at 1 deg/s the head stops in
+    // 100ms, so a horizon sized for the saturated worst case would surrender
+    // travel it never needed.
+    expect(limitHorizonMs(1, 200, 100, 10)).toBe(400);
     // ...and it never blocks a slow creep that is genuinely safe.
     expect(limitGuard({ panDps: 1, tiltDps: 0 }, 179, 0, LIMITS,
-      { panMs: limitHorizonMs(1, 200, 100, 19), tiltMs: 0 }).panBlocked).toBe(false);
+      { panMs: limitHorizonMs(1, 200, 100, 10), tiltMs: 0 }).panBlocked).toBe(false);
+  });
+
+  it("fails closed on a prediction it cannot compute (NaN/Infinity blocks the axis)", () => {
+    expect(limitGuard({ panDps: NaN, tiltDps: 0 }, 0, 0, LIMITS, H300).panBlocked).toBe(true);
+    expect(limitGuard({ panDps: 1, tiltDps: 0 }, 0, 0, LIMITS, { panMs: Infinity, tiltMs: 0 }).panBlocked).toBe(true);
+    // The healthy axis is untouched.
+    expect(limitGuard({ panDps: NaN, tiltDps: 0 }, 0, 0, LIMITS, H300).tiltBlocked).toBe(false);
   });
 });
 
-describe("decelMs (firmware ramp-down model)", () => {
-  it("matches the firmware's accumulator ramp from the measured plateau", () => {
-    // updateMotorVelocities2 sheds at most (65535/20) of accumulator per 50ms
-    // cycle; full scale (~28092) is the 19 deg/s plateau => ~2.216 deg/s per
-    // cycle => ceil(19/2.216) = 9 cycles = 450ms. This is the number the limit
-    // horizon and the reacquire gate both rest on.
-    expect(decelMs(19, 19)).toBe(450);
+describe("limitHorizonMs (stopping time from the Pico's amax)", () => {
+  it("limitHorizonMs grows as amax shrinks", () => expect(limitHorizonMs(10, 0, 100, 5)).toBeGreaterThan(limitHorizonMs(10, 0, 100, 20)));
+  it("limitHorizonMs includes telemetry age and one tick", () => expect(limitHorizonMs(0, 200, 100, 10)).toBe(300));
+
+  it("stopping time is |rate| / amax, sign-agnostic", () => {
+    expect(limitHorizonMs(10, 0, 0, 10)).toBe(1000);
+    expect(limitHorizonMs(-10, 0, 0, 10)).toBe(1000);
+    expect(limitHorizonMs(5, 0, 0, 20)).toBe(250);
   });
 
-  it("scales with the commanded rate and bottoms out at one cycle", () => {
-    expect(decelMs(10, 19)).toBe(250);
-    expect(decelMs(5, 19)).toBe(150);
-    expect(decelMs(0.5, 19)).toBe(50);   // still one whole firmware cycle
-    expect(decelMs(0, 19)).toBe(0);
+  it("a negative telemetry age (clock skew) adds nothing", () => {
+    expect(limitHorizonMs(0, -500, 100, 10)).toBe(100);
   });
 
-  it("is sign-agnostic and finite-safe", () => {
-    expect(decelMs(-19, 19)).toBe(decelMs(19, 19));
-    expect(decelMs(NaN, 19)).toBe(0);
-    expect(decelMs(19, 0)).toBe(0);
-  });
-});
-
-describe("rateToDeflection (inverts the firmware's cubic jog curve)", () => {
-  const MAX = 19;
-
-  it("zero rate is zero deflection", () => {
-    expect(rateToDeflection(0, MAX)).toBe(0);
-  });
-
-  it("full rate is full deflection", () => {
-    expect(rateToDeflection(MAX, MAX)).toBe(100);
-    expect(rateToDeflection(-MAX, MAX)).toBe(-100);
-  });
-
-  it("saturates rather than exceeding full deflection", () => {
-    expect(rateToDeflection(MAX * 10, MAX)).toBe(100);
-    expect(rateToDeflection(-MAX * 10, MAX)).toBe(-100);
-  });
-
-  it("round-trips through the firmware's own curve", () => {
-    // The firmware: rate = MAX * ((|x|-5)/95)^3. Feed a rate in, get a
-    // deflection, push it back through the firmware curve, expect the rate.
-    const firmwareRate = (x: number) => {
-      if (Math.abs(x) < 6) return 0;
-      const db = Math.abs(x) - 5;
-      return Math.sign(x) * MAX * Math.pow(db / 95, 3);
-    };
-    for (const r of [1, 2.5, 5, 10, 15, 19]) {
-      const x = rateToDeflection(r, MAX);
-      expect(firmwareRate(x)).toBeCloseTo(r, 0);   // integer x quantises it
-    }
-  });
-
-  it("is emphatically NOT linear — half rate needs far more than half deflection", () => {
-    // Linear would say 50. The cubic needs ~80: (75/95)^3 = 0.49.
-    const x = rateToDeflection(MAX / 2, MAX);
-    expect(x).toBeGreaterThan(70);
-    expect(x).toBeLessThan(90);
-  });
-
-  it("matches the hardware-measured points", () => {
-    // Measured: x=50 -> 0.116 of full rate; x=75 -> 0.423 of full rate.
-    expect(rateToDeflection(MAX * 0.116, MAX)).toBeCloseTo(50, -0.5);
-    expect(rateToDeflection(MAX * 0.423, MAX)).toBeCloseTo(75, -0.5);
-  });
-});
-
-describe("slewTowards", () => {
-  it("passes a command through unchanged when it is within the budget", () => {
-    expect(slewTowards(10, 12, 4)).toBe(12);
-    expect(slewTowards(10, -10, 20)).toBe(-10);
-    expect(slewTowards(-3, -5, 2)).toBe(-5);
-  });
-
-  it("limits how far a command may move per tick", () => {
-    // Full-reverse demands arrive from the P-term all the time (a noisy fix,
-    // a predictor correction); the slew is what turns them into nudges.
-    expect(slewTowards(0, 19, 4)).toBe(4);
-    expect(slewTowards(19, -19, 4)).toBe(15);
-    expect(slewTowards(-19, 19, 4)).toBe(-15);
-  });
-
-  it("ramps to an arbitrary target over successive ticks without overshoot", () => {
-    let r = 0;
-    for (let i = 0; i < 100 && r !== 19; i++) r = slewTowards(r, 19, 4);
-    expect(r).toBe(19);   // lands exactly on target: last step clips to it
-  });
-
-  it("treats a null previous command as no standing rate (no manufactured soft-start)", () => {
-    // Fresh acquire/resume: ramping from zero would add lag to every
-    // catch-up. The first command after null passes through as-is.
-    expect(slewTowards(null, 17, 4)).toBe(17);
-    expect(slewTowards(null, -17, 4)).toBe(-17);
+  it("an unusable amax is an infinite horizon, never a zero one", () => {
+    expect(limitHorizonMs(5, 0, 100, 0)).toBe(Infinity);
+    expect(limitHorizonMs(5, 0, 100, NaN)).toBe(Infinity);
+    expect(limitHorizonMs(5, 0, 100, -3)).toBe(Infinity);
   });
 });

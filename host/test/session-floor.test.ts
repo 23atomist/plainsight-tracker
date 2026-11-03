@@ -40,7 +40,6 @@ class FakeDevice {
   lastUpdateMs = 1_000_000;
   // Every track() call, in order (the head's TRACK; Task 5 servos through it).
   tracks: HeadTrackCmd[] = [];
-  jogVec: { panDps: number; tiltDps: number; ttlMs: number } | null = null;
   gotos: { pan: number; tilt: number }[] = [];
   stopCalls = 0;
   getState(): DeviceState {
@@ -51,8 +50,6 @@ class FakeDevice {
       lastUpdateMs: this.lastUpdateMs,
     };
   }
-  setJogVector(panDps: number, tiltDps: number, ttlMs: number) { this.jogVec = { panDps, tiltDps, ttlMs }; }
-  clearJog() { this.jogVec = null; }
   async track(cmd: HeadTrackCmd) { this.tracks.push(cmd); }
   async gotoAngle(pan: number, tilt: number) {
     this.gotos.push({ pan, tilt });
@@ -99,7 +96,7 @@ describe("initial-acquire elevation floor", () => {
     expect(dev.gotos.length).toBe(0);
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("below_min_elevation");
-    expect(dev.jogVec).toBeNull();
+    expect(dev.tracks).toHaveLength(0);
   });
 
   it("dispatches normally for a target above the floor", () => {
@@ -136,7 +133,7 @@ describe("in-track elevation floor", () => {
 
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("below_min_elevation");
-    expect(dev.jogVec).toBeNull();
+    expect(dev.tracks).toHaveLength(0);
   });
 
   it("releases the hold when the target climbs back above the floor", () => {

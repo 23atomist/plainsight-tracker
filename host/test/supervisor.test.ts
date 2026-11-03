@@ -443,35 +443,30 @@ describe("idle park", () => {
   });
 
   // Round-2 review finding: the waypoint loop awaited each leg to completion
-  // without re-checking locked/session.isActive()/estop in between,
-  // so a multi-second multi-leg detour (like the pan-detour above) could fly
-  // its remaining legs on top of a since-started sun park -- desyncing the
-  // guard's state model (it believes "parked" at parkTiltDeg while the rig
-  // is actually mid-flight to idleParkTiltDeg; tick() returns early for the
-  // entire "parked" state, so it never notices). Reuses the exact pan-detour
-  // fixture above (guaranteed 2 waypoints) and interrupts between leg 1 and
-  // leg 2 with a real tracking session start (motion calls stubbed, see
-  // below) -- the honest way to flip session.isActive() true mid-flight.
-  it("aborts mid-flight if an abort condition changes between legs, and never flies the remaining waypoints", async () => {
+  // without re-checking locked/session.isActive()/estop in between, so a
+  // multi-second multi-leg detour could fly its remaining legs on top of a
+  // since-started sun park or tracking pass. Reuses the exact pan-detour
+  // fixture above (guaranteed 2 waypoints) and starts a REAL tracking session
+  // on the same head while leg 1 is in flight.
+  //
+  // On the head an accepted goto retargets, so the session's acquire goto
+  // REPLACES leg 1: leg 1 never arrives. parkIdle must therefore race each
+  // leg's arrival against its abort conditions, not await the arrival and
+  // check afterwards -- or it sits out the arrival timeout (~9s; forever with
+  // this harness's frozen device clock) and reports goto_failed.
+  it("aborts mid-flight promptly when a tracking session starts during a leg, and never flies the remaining waypoints", async () => {
     const nowMs = Date.UTC(2026, 6, 17, 16, 30);
     const { cfg, store } = await harness(25, nowMs);
     const sunAz = sunAzEl(RIG, nowMs).azDeg;
     mock!.setPosition(sunAz, 0);
     await new Promise((r) => setTimeout(r, 200));
-    // The session reads the real telemetry but its motion calls go nowhere.
-    // On the head a zero jog stops the axis (docs/HEAD-API.md, POST /api/jog),
-    // so a real session's first stopMotion()/clearJog() -- it sends one on
-    // every waiting tick -- would halt leg 1 itself and parkIdle would sit out
-    // its arrival timeout instead of reaching the between-legs check under
-    // test. The goto never settles, so the session stays "acquiring".
-    const sessionDevice = {
-      getState: () => dev!.getState(),
-      gotoAngle: () => new Promise<void>(() => {}),
-      waitForArrival: () => new Promise<never>(() => {}),
-      setJogVector: () => {}, clearJog: () => {}, track: async () => {}, stop: async () => {},
-    };
-    const session = new TrackingSession(sessionDevice as never, cfg, store);
+    // Same frozen clock as the device, so the session sees fresh telemetry.
+    const { sched } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store, () => nowMs, sched);
     const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs);
+    const gotoTilts = () => mock!.calls
+      .filter((c) => c.path === "/api/goto")
+      .map((c) => (c.body as { tilt?: number }).tilt);
 
     const parkPromise = sup.parkIdle();
 
@@ -485,18 +480,22 @@ describe("idle park", () => {
     // A real tracking session starting mid-flight (bypasses the tool-layer
     // gate on purpose, same as the "suspenders" test above -- this test is
     // for parkIdle's own mid-flight guard, not the tool gate).
+    const startedMs = Date.now();
     const err = session.start({ lat: 33.5, lon: -112.074, height: 0 }, null, "race");
     expect(err).toBeNull();
     expect(session.isActive()).toBe(true);
 
-    const r = await parkPromise;
-    expect(r).toEqual({ parked: false, reason: "aborted_mid_flight: tracking_active" });
-    // Leg 2 (the tilt-up leg) must NEVER have been issued.
-    expect(mock!.gotoCount).toBe(1);
-    const finalTiltDeg = dev!.getState().tiltDeg;
-    expect(finalTiltDeg).not.toBeCloseTo(cfg.idleParkTiltDeg, 0);
-
-    session.stop();
+    try {
+      const r = await parkPromise;
+      expect(r).toEqual({ parked: false, reason: "aborted_mid_flight: tracking_active" });
+      expect(Date.now() - startedMs).toBeLessThan(1000);
+      // Leg 2 (the tilt-up leg) must NEVER have been issued: the only gotos
+      // are leg 1 and the session's own acquire.
+      expect(mock!.gotoCount).toBe(2);
+      for (const tilt of gotoTilts()) expect(tilt).not.toBeCloseTo(cfg.idleParkTiltDeg, 0);
+    } finally {
+      session.stop();
+    }
   });
 
   // I2: parkIdle() must fail closed on stale telemetry exactly like tick()

@@ -1,14 +1,14 @@
-import { Device } from "../device.js";
+import { AxisConfig, Device } from "../device.js";
 import { Config } from "../config.js";
 import { CalibrationStore } from "../calibration.js";
 import { TrackingSession, Scheduler, realScheduler } from "./session.js";
 import { sunEnu, sunAzEl } from "../geo/sun.js";
 import { checkSun, planPark, ParkPlan } from "./sunguard.js";
-import { boresightEnu, limitHorizonMs } from "./control.js";
+import { boresightEnu, limitHorizonMs, usableOr } from "./control.js";
 import { Vec3 } from "../geo/vec3.js";
 import { moveToUserAngle } from "../../mcp/move.js";
 import { applySign } from "../angles.js";
-import { TaughtEdges, effectiveLimits } from "../limits-store.js";
+import { CeilingLimits, TaughtEdges, effectiveLimits } from "../limits-store.js";
 
 export type SunState = "disabled" | "monitoring" | "parking" | "parked" | "fault";
 
@@ -23,6 +23,8 @@ export interface SunStatus {
   readonly separationDeg: number | null;
   readonly locked: boolean;
 }
+
+type IdleParkAbort = "estop" | "sun_locked" | "tracking_active";
 
 interface Boresight { readonly panDeg: number; readonly tiltDeg: number; readonly enu: Vec3 }
 
@@ -42,6 +44,12 @@ const PARK_MAX_RETRIES = 50;
 // parked" for parkIdle()'s dwell check -- see parkIdle() for why this is
 // derived from live telemetry rather than a boolean flag.
 const IDLE_PARK_DWELL_EPSILON_DEG = 0.5;
+
+// How often parkIdle() re-checks its abort conditions while a leg is flying.
+// A session start during a leg retargets the head, so that leg never arrives:
+// this is how quickly parkIdle notices instead of sitting out the arrival
+// timeout.
+const IDLE_PARK_ABORT_POLL_MS = 50;
 
 export class SunSupervisor {
   private state: SunState = "disabled";
@@ -74,6 +82,10 @@ export class SunSupervisor {
     // "nothing taught" so every existing caller/test keeps its exact prior
     // (config-ceiling-only) behavior.
     private readonly limitsProvider: () => TaughtEdges = () => ({}),
+    // The head's per-axis config (Device.getAxisConfig()), for the sun guard's
+    // stopping horizon -- the same source TrackingSession uses. Null until the
+    // head's config has been read; cfg.trackFallbackAmaxDps2 stands in.
+    private readonly axisConfigProvider: () => AxisConfig | null = () => null,
   ) {
     this.enabled = cfg.sunGuardEnabled;
     this.coneDeg = cfg.sunConeDeg;
@@ -244,7 +256,14 @@ export class SunSupervisor {
     this.prev = { pan: bore.panDeg, tilt: bore.tiltDeg, tMs: nowMs };
 
     const rate = Math.max(Math.abs(ratePan), Math.abs(rateTilt));
-    const horizon = limitHorizonMs(rate, telAge, 1000 / this.cfg.sunGuardTickHz, this.cfg.maxJogDps);
+    // The faster axis's rate against the gentler axis's amax: one horizon for
+    // both, so it takes the longer stop.
+    const axisCfg = this.axisConfigProvider();
+    const amax = Math.min(
+      usableOr(axisCfg?.pan.amax, this.cfg.trackFallbackAmaxDps2),
+      usableOr(axisCfg?.tilt.amax, this.cfg.trackFallbackAmaxDps2),
+    );
+    const horizon = limitHorizonMs(rate, telAge, 1000 / this.cfg.sunGuardTickHz, amax);
     const chk = checkSun(
       this.store.getOrientation()!, bore.panDeg, bore.tiltDeg, ratePan, rateTilt, horizon, sEnu, this.coneDeg,
       this.cHead(), this.cfg.geoPanSign,
@@ -310,7 +329,7 @@ export class SunSupervisor {
   // at entry and again on every leg of a multi-waypoint flight (see
   // parkIdle()) -- a pan-detour is several seconds of real motion, and any of
   // these three can become true partway through it.
-  private idleParkAbortReason(): "estop" | "sun_locked" | "tracking_active" | null {
+  private idleParkAbortReason(): IdleParkAbort | null {
     // NOTE: device.getState() returns the last CACHED WebSocket telemetry
     // snapshot, not a live read of the device -- that is exactly why
     // parkIdle()'s own staleness check exists, rather than trusting this
@@ -416,10 +435,18 @@ export class SunSupervisor {
       // for the entire "parked" state. Each already-flown leg was itself
       // sun-path-validated by planPark above, so stopping here never risks
       // the boresight -- only the state-desync this closes.
+      //
+      // And re-check DURING every leg, not only between legs: on the head an
+      // accepted goto retargets, so a tracking session that starts mid-leg
+      // replaces this leg's goto and the leg never arrives. Awaiting the
+      // arrival alone would sit out its whole timeout and then misreport
+      // goto_failed (measured: ~8.8s). Each leg races its arrival against the
+      // abort conditions; on abort parkIdle stops waiting and sends nothing --
+      // whoever caused the abort (the session's goto, the sun park, the
+      // E-STOP) already owns the head.
       for (const wp of plan.waypoints) {
-        const midFlightAbort = this.idleParkAbortReason();
+        const midFlightAbort = this.idleParkAbortReason() ?? await this.flyIdleParkLeg(wp.panDeg, wp.tiltDeg, lim);
         if (midFlightAbort) return { parked: false, reason: `aborted_mid_flight: ${midFlightAbort}` };
-        await moveToUserAngle(this.device, this.cfg, wp.panDeg, wp.tiltDeg, undefined, lim);
       }
       return { parked: true, reason: "parked" };
     } catch (e) {
@@ -433,6 +460,33 @@ export class SunSupervisor {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[sun-supervisor] idle park goto failed: ${msg}`);
       return { parked: false, reason: `goto_failed: ${msg}` };
+    }
+  }
+
+  // One idle-park leg: resolves null on arrival, or the abort reason as soon
+  // as one appears (the leg's arrival wait is then abandoned). Rejects if the
+  // goto itself fails. Polls on a timer rather than reading this.now(), so a
+  // frozen injected clock cannot stall it.
+  private async flyIdleParkLeg(panDeg: number, tiltDeg: number, lim: CeilingLimits): Promise<IdleParkAbort | null> {
+    const abandon = new AbortController();
+    const poller: { timer: NodeJS.Timeout | null } = { timer: null };
+    const aborted = new Promise<IdleParkAbort>((resolve) => {
+      const poll = (): void => {
+        const reason = this.idleParkAbortReason();
+        if (reason) resolve(reason);
+        else poller.timer = setTimeout(poll, IDLE_PARK_ABORT_POLL_MS);
+      };
+      poller.timer = setTimeout(poll, IDLE_PARK_ABORT_POLL_MS);
+    });
+    const arrived = moveToUserAngle(this.device, this.cfg, panDeg, tiltDeg, undefined, lim, abandon.signal)
+      .then(() => null);
+    try {
+      return await Promise.race([arrived, aborted]);
+    } finally {
+      if (poller.timer) clearTimeout(poller.timer);
+      abandon.abort();
+      // The losing arrival rejects once abandoned; nobody is waiting for it.
+      arrived.catch(() => {});
     }
   }
 }

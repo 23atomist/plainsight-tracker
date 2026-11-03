@@ -27,19 +27,17 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 | panMin/panMax | `-180/180` | pan soft limits (degrees) |
 | tiltMin/tiltMax | `-90/90` | tilt soft limits (degrees) |
 | maxSpeedDps | `22` | max goto speed (°/s); the firmware caps point-to-point moves at ~22.5°/s (10000 steps/s) |
-| maxJogDps | `19` | °/s at full joystick deflection — **measured** on the rig (both axes, jog-probe.mjs, 2026-07-16), not a preference. This is a different ceiling from `maxSpeedDps` on purpose: jog runs through the firmware's 20kHz DDS accumulator, goto sets a direct pulse rate — the two mechanisms genuinely plateau at different rates. Note the firmware's deflection→rate curve is *cubic* with a deadband, so `jog` (which maps linearly) is approximate by design; layer-3 tracking inverts the measured cubic. |
-| panSign/tiltSign/auxSign | `1` | per-axis sign flip (`1` or `-1`) |
+| maxJogDps | `19` | the manual-jog ceiling (°/s, per axis): `jog` clamps each axis to it, and tracking caps its TRACK feed-forward to it until the head's own `vmax` (`GET /api/config`) has been read (env `TB3_MAX_JOG_DPS`) |
+| panSign/tiltSign | `1` | per-axis sign flip (`1` or `-1`) |
 | calibrationFile | `~/.tb3-mcp/calibration.json` | where the calibration profile is persisted (env `TB3_CALIBRATION_FILE`) |
 | limitsFile | `~/.tb3-mcp/limits.json` | where operator-taught travel limits are persisted — see "Operator-taught travel limits" below (env `TB3_LIMITS_FILE`) |
 | trackTickHz | `10` | target-tracking control loop rate (env `TB3_TRACK_TICK_HZ`) |
-| trackKp | `1.0` | tracking proportional gain, °/s of rate per ° of pointing error (env `TB3_TRACK_KP`) |
 | trackLeadMs | `150` | how far ahead the tracker aims the servo, to cover command + rig latency (env `TB3_TRACK_LEAD_MS`) |
 | trackMaxTargetAgeMs | `12000` | coast budget: how long the servo keeps driving on the estimator's prediction after the newest accepted fix, before it stops and waits (env `TB3_TRACK_MAX_TARGET_AGE_MS`) |
-| trackRateSlewDps | `40` | how fast the *commanded* tracking rate may change (°/s per second). Shaves tick-to-tick command reversals from noisy fixes/predictor corrections upstream of the firmware's cubic jog curve; sized to roughly match the rig's own ~1s accel ramp (env `TB3_TRACK_RATE_SLEW_DPS`) |
 | trackStaleTelemetryMs | `1000` | device telemetry older than this → tracking stops and waits (env `TB3_TRACK_STALE_TELEMETRY_MS`) |
 | trackDeadmanMs | `120000` | total silence (no `update_target`/activity) before a tracking session ends outright (env `TB3_TRACK_DEADMAN_MS`) |
-| trackReacquireDeg | `10` | pointing error above which tracking drops the rate servo and re-acquires with a goto (env `TB3_TRACK_REACQUIRE_DEG`) |
-| jogVectorTtlMs | `500` | the daemon's jog keep-alive won't re-send a rate vector older than this — see Safety under Target tracking (env `TB3_JOG_VECTOR_TTL_MS`) |
+| trackReacquireDeg | `10` | pointing error above which tracking stops sending TRACK and re-acquires with a goto (env `TB3_TRACK_REACQUIRE_DEG`) |
+| trackFallbackAmaxDps2 | `10` | the acceleration (°/s²) the soft-limit guard assumes for its stopping time until the head's per-axis `amax` (`GET /api/config`) has been read; lower is the safe direction (env `TB3_TRACK_FALLBACK_AMAX_DPS2`) |
 
 **Soft limits refuse out-of-range moves** — there are no endstops. Set them to your rig's real reachable range.
 
@@ -47,10 +45,11 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 
 `get_status`, `goto_angle`, `jog`, `stop`, `set_home`, `trigger_camera`, `list_programs`, `select_program`.
 
-`goto_angle` is the soft-limit-enforced primitive — out-of-range targets are refused. `jog` predicts
-where the commanded rate would take each axis over the command's own duration and zeroes that
-axis's rate before it would cross the effective pan/tilt limit — see "Rate-jog limit enforcement"
-below. (There are no endstops, so this prediction is the only thing standing between a held-down
+`goto_angle` is the soft-limit-enforced primitive — out-of-range targets are refused. `jog` takes
+`pan_dps`/`tilt_dps` in °/s (user frame, each capped at `maxJogDps`) and `duration_ms`, replies
+`jogged for Nms (pan X°/s tilt Y°/s)` with the rates actually sent, and predicts where those rates
+would take each axis over the command's own duration, zeroing an axis before it would cross the
+effective pan/tilt limit — see "Rate-jog limit enforcement" below. (There are no endstops, so this prediction is the only thing standing between a held-down
 jog and the mechanical stop.)
 
 ### Web motion is mode-gated on the rig — use "Track (Web)"
@@ -122,40 +121,23 @@ Continuously follow a **moving** geographic target. Requires a solved layer-2 ca
 
 Unlike every other tool here, the tracking tools **return immediately** — tracking runs in the
 background (a control loop at `trackTickHz`) and outlives the call. Poll `get_tracking_status` to
-see how it's doing. Tracking drives the rig the same way `jog` does (a rate vector), so it is
-subject to the same mode-gating described above: **put the rig in "Track (Web)" (program index 8)
-before tracking.** Any other screen either ignores the rate vector entirely or, on the
-point-setting screens, honours it only until a stray C press advances the program and silently
-kills tracking.
+see how it's doing.
 
-**`POST /api/stop` halts a jog and latches the web joystick at centre.** The latch matters: a stop
-that only zeroes the rig's stored jog vector is a no-op against a client that streams one
-continuously — which is exactly what the tracking servo does at `trackTickHz`. The stop would
-land, and the client's next frame ~100ms later would re-apply the old vector. (That was the real
-behaviour until 2026-07-16: the endpoint returned `200 {"ok":true}` and the rig kept going.)
-
-Now the rig holds the web joystick at centre and **releases only when the client sends a centred
-frame** — you must let go before you can drive again. Verified on hardware against a client
-deliberately pumping `x=50` straight through the stop: motion ceased within ~0.4°, drifted 0.00°
-over the next 1.5s while still being commanded, released on a centred frame, and drove again.
-
-`/api/status` reports `joy_latched` so a latched rig doesn't look like a silently broken one. The
-latch is scoped to the web path, so it can't lock out a physical gamepad operator. Layer 3's
-`stop_tracking` / `stop` tools don't depend on any of this — `session.stop()` zeroes the vector and
-stops the pump, which releases the latch on its own — but `/api/stop` is now a real emergency stop
-rather than a suggestion.
-
-Two other things stop a jog regardless: the daemon's `jogVectorTtlMs` watchdog and the firmware's
-750ms joystick deadman.
+The servo itself runs on the head: every tick the session sends one `POST /api/track` with, per
+axis, the **setpoint** (`pos`: the target's pan/tilt at `trackLeadMs` ahead, plus the standing aim
+offset, resolved into the reachable range) and the **feed-forward** (`vel`: the target's angular
+rate, capped at the head's `vmax`). The Pico extrapolates the setpoint at that rate and servos the
+axis onto it between ticks; if the TRACK updates stop, the Pico stops the axis on its own
+(`track_timeout`). The host keeps everything that decides *whether* and *where* to point —
+estimator, offset, sector, floor, soft-limit guard, sun guard, reacquire — and the head does the
+following.
 
 ### Workflow
 
-0. **Select the mode** — `select_program` with `index: 8, commit: true` (or choose "Track (Web)"
-   on the rig's LCD). `list_programs` reports the current mode and the full menu.
 1. **Calibrate** (layer 2) — `set_rig_location`, two `sight_landmark`s, `solve_calibration`.
 2. **`start_tracking`** with the target's lat/lon/height, ideally plus `speed_mps` + `heading_deg`
-   (+ `climb_mps`). The rig slews to acquire (a `goto`), then switches to rate-tracking (a `jog`
-   vector). A `speed_mps` given without `heading_deg` drops the *entire* stated velocity for that
+   (+ `climb_mps`). The rig slews to acquire (a `goto`), then the head follows it (a
+   TRACK every tick). A `speed_mps` given without `heading_deg` drops the *entire* stated velocity for that
    call, `climb_mps` included; `climb_mps` alone is a valid pure-vertical velocity only when
    `speed_mps` is omitted entirely.
 3. **`update_target`** with each new fix; this refreshes the deadman. **A stated velocity is not
@@ -181,7 +163,7 @@ Two other things stop a jog regardless: the daemon's `jogVectorTtlMs` watchdog a
 
 ### States
 
-`acquiring` (slewing onto the target) → `tracking` (rate servo) ⇄ `waiting` (motion stopped,
+`acquiring` (slewing onto the target) → `tracking` (the head's TRACK servo) ⇄ `waiting` (motion stopped,
 still estimating) → `stopped`. It auto-reacquires (drops back to `acquiring`) once the target is
 reachable and fresh again, or once pointing error exceeds `trackReacquireDeg` while tracking.
 
@@ -194,12 +176,13 @@ A `waiting` status carries a `reason`:
 | `telemetry_stale` | the *rig* has gone quiet for `trackStaleTelemetryMs`; a real fault — check the link |
 | `estop` | the head's E-STOP is latched (`get_status.estop`); tracking holds until it is cleared |
 | `not_calibrated` | no solved layer-2 orientation |
-| `device_busy` | the rig refused the acquire goto (HTTP 409) because it was still moving or a program was engaged. **Routine and self-healing** — the rig accepts a goto only once stopped, and it needs ~450ms to decelerate out of a jog, plus up to 200ms before the daemon even sees `moving` go false (the rig's telemetry is 5Hz — see Accuracy, below). Expect this in passing on a catch-up; it clears itself within roughly **650ms, about 6-7 ticks** at the default 10Hz tick rate — not "a tick or two". |
-| `goto_failed` | the acquire goto failed for a real reason — arrival timeout, transport error, or a device rejection that wasn't a 409 |
+| `goto_failed` | the acquire goto failed — arrival timeout, transport error, or a device rejection. The head accepts a goto while moving and retargets, so a reacquire never has to wait for the rig to come to rest first |
 
-`device_busy` and `telemetry_stale` are deliberately separate: a reacquire that catches the rig
-mid-deceleration is normal operation, and reporting it as stale telemetry would blame a perfectly
-healthy link.
+`goto_failed` and `telemetry_stale` are deliberately separate: a failed goto is reported as itself,
+never blamed on a perfectly healthy link.
+
+Entering `waiting` (or `stop_tracking`) stops the head **once** — the stop is edge-triggered, not
+repeated every waiting tick — and no TRACK is sent while waiting or acquiring.
 
 ### Prediction, coasting, and smoothing
 
@@ -229,9 +212,9 @@ The estimator (`src/track/estimator.ts`) sits between the feed and the servo to 
 Coasting keeps the rig moving through dropouts: `get_tracking_status` reports `coasting: true`
 once the newest accepted fix ages past ~two poll intervals, and the servo keeps driving on the
 prediction until the coast budget (`trackMaxTargetAgeMs`) expires — all safety gates (sector,
-floor, soft limits, sun guard) keep running every tick regardless. Commanded rates are additionally
-slew-limited (`trackRateSlewDps`) so residual discontinuities reach the glass as nudges, not jerks;
-the first command after an acquire passes through unslewed so catch-ups stay snappy.
+floor, soft limits, sun guard) keep running every tick regardless. Smoothing between ticks is the head's: the
+Pico extrapolates each TRACK setpoint at its feed-forward rate, so a 10 Hz host loop does not
+reach the glass as 10 Hz steps.
 
 ### Arbitration
 
@@ -246,43 +229,36 @@ Tracking is the only thing here that commands sustained motion with **no human i
 the rig has **no endstops**, so several independent layers back it up:
 
 - **Soft-limit prediction**: the tracking session checks the *predicted* position ahead of the
-  rig and zeroes that axis before it would cross a limit. The lookahead is **computed, not
-  fixed**: it sums how stale the telemetry is, one tick period, and the firmware's actual
-  ramp-down time for the rate being commanded (~450ms from the 19°/s plateau, derived from
-  `updateMotorVelocities2`'s accumulator). That is ~750ms of lookahead when saturated — and
-  near-zero cost when creeping, which a constant sized for the worst case could not manage. The
-  guard reports which axis (if any) it is holding via `pan_limited`/`tilt_limited` in
-  `get_tracking_status`, so a held axis is diagnosable instead of looking identical to "the servo
-  is happy". The manual `jog` tool uses the same predict-then-zero idea over the command's own
-  duration instead of a computed ramp-down horizon — see "Rate-jog limit enforcement" below; it
-  used to be unguarded, which let a held-down jog (press-and-hold, or the joystick) slew straight
-  through a soft limit into the mechanical stop.
-- **An aggressive `trackKp` can make the guard self-perpetuate near a limit.** The guard predicts
-  forward from the *current* commanded rate; if `trackKp` is high enough (roughly **≥ 2.0**) that a
-  legal target near a soft limit still produces a rate whose predicted stopping point overshoots
-  it, the guard zeroes that axis every tick. Because the rig then doesn't move, the pointing error
-  the next tick's rate is computed from is unchanged, reproducing the identical block forever. The
-  default `trackKp = 1.0` converges instead of stalling. The symptom is `state: "tracking"` with
-  `commanded_pan_dps`/`commanded_tilt_dps` pinned at `0` and the matching `pan_limited`/
-  `tilt_limited` flag set — not a device fault, but the controller stuck against its own limit. If
-  you tune `trackKp` up, watch for this near the edges of your configured pan/tilt range.
-- **Stale-data gates**: stale device telemetry (`trackStaleTelemetryMs`), a stale target fix
-  (`trackMaxTargetAgeMs`), or an engaged program all move the session to `waiting` and stop
+  rig and stops that axis before it would cross a limit. The lookahead is **computed, not
+  fixed**, per axis: how stale the telemetry is, plus one tick period, plus the head's stopping
+  time for the feed-forward rate (`|rate| / amax`, with `amax` from the head's `GET /api/config`,
+  or `trackFallbackAmaxDps2` until that has been read). The prediction runs at the full rate for
+  the whole horizon, deliberately over-estimating. A blocked axis is sent a `STOP` for that axis
+  (once, when the hold begins) and left out of the TRACK until the guard releases it — never a
+  clamped TRACK, which the Pico would keep extrapolating toward the limit. The guard reports which
+  axis (if any) it is holding via `pan_limited`/`tilt_limited` in `get_tracking_status`
+  (`commanded_*_dps` reads `0` for it), so a held axis is diagnosable instead of looking
+  identical to "the servo is happy". The manual `jog` tool uses the same predict-then-zero idea
+  over the command's own duration — see "Rate-jog limit enforcement" below.
+- **Command ordering**: two HTTP requests can reach the head in either order. A stop sent while a
+  TRACK is still unanswered is sent again once that TRACK has been answered (unless the session
+  has commanded motion again since), so a late TRACK cannot restart a stopped axis; and an acquire
+  goto waits for any unanswered TRACK or stop, so neither can replace or cancel it.
+- **Stale-data gates**: stale device telemetry (`trackStaleTelemetryMs`; a tick without axes,
+  which the head publishes while its Pico link is down, does not count as fresh), a stale target
+  fix (`trackMaxTargetAgeMs`), or the head's E-STOP all move the session to `waiting` and stop
   motion.
 - **Deadman**: `trackDeadmanMs` of total silence (no `update_target`/activity) ends the session
   outright.
-- **Daemon-side jog TTL watchdog**: every commanded rate carries a TTL (`jogVectorTtlMs`); the
-  daemon's keep-alive refuses to re-send a vector past its expiry and zeroes the rig instead. This
-  watchdog lives in the device client, independent of the tracking control loop, so it still fires
-  if a tracking tick stalls or throws.
-- **Firmware-side joystick deadman**: independently of the daemon, the firmware itself stops
-  honoring joystick data 750ms after the websocket goes quiet — a second, lower-level backstop.
+- **Head-side track timeout**: independently of the host, the Pico stops an axis whose TRACK
+  updates stop (`track_timeout_ms`, default 1000) — the backstop for a stalled or dead host
+  process, and for a stop the head refused (a refused stop is retried on the next waiting tick).
 
 ### Rate-jog limit enforcement
 
 The `jog` tool is the one motion path both the dashboard's press-and-hold control and the USB
 joystick drive — there is no third way to command a rate (both post to `/api/control/jog`, which
-calls this exact MCP tool). Before commanding the device, `jog` predicts where the requested rate
+calls this exact MCP tool). Each axis's rate is first capped at `maxJogDps`. Before commanding the device, `jog` predicts where that rate
 would take each axis over the command's own `duration_ms` and, per axis independently, zeroes the
 rate if that prediction would cross the *effective* pan/tilt limit (see "Operator-taught travel
 limits" below) — the same predict-then-zero pattern the tracking session's soft-limit guard uses,
@@ -339,47 +315,21 @@ nears or reaches an edge, and the boresight arrow itself turns red at a limit.
 v1 does not promise a pointing-accuracy figure — the stance here is "measure and report,
 best-effort." `get_tracking_status` reports the measured `pointing_error_deg` every tick; use it
 to judge how well tracking is doing for your rig and calibration. A closed-loop **simulation**
-(not hardware) holds pointing error under 0.5°, but it flatters the rig in two known ways:
+(`test/tracking-sim.test.ts`, not hardware) holds pointing error near 0.03° on a crossing
+pass, but it flatters the head in known ways:
 
-- **Instantaneous rate changes.** The mock's jog model changes rate the moment it is commanded;
-  the real rig ramps to its plateau, and accel/decel share the same firmware constant (`accelmax`),
-  so ramp-up and ramp-down take the same time. How long that is has two disagreeing answers, and
-  this doesn't paper over the gap with a single confident number:
-  - **Derived from firmware source** (the same derivation behind the limit-guard horizon in
-    Safety, above): the velocity accumulator ramps at `accelmax = 65535/20 ≈ 3276.75` per 50ms
-    cycle toward a full-scale value of `(95³/10000)×655.3×0.5 ≈ 28091.9`
-    (`updateMotorVelocities2()`, `src/TB3_Nunchuck.ino`), and the accumulator maps linearly onto
-    rate (`v = 20·speed/65.536`, `src/TB_DF.ino:593`). That's ~8.6 cycles, or **~430-450ms**,
-    0→plateau.
-  - **Measured on the rig** (Task 0, `scripts/jog-probe.mjs 192.168.4.87 100 6`): the instantaneous
-    rate profile suggested roughly **twice that, ~1s**, to plateau. Take that as an upper bound,
-    not a correction — it was sampled from the rig's 5Hz telemetry (200ms resolution), so a 450ms
-    ramp is only ~2 samples wide and easy to over-read on a coarse probe.
-  - **Bench re-measurement** (2026-07-16, full deflection from rest) favours the derivation: the
-    rig averaged 7.96 °/s across [0.20s, 0.40s] and was already at 18.7 °/s by t=0.79s. That is
-    consistent with a ramp appreciably shorter than 1s, though 5Hz sampling still cannot resolve
-    it precisely. Settling it properly needs a temporary firmware build with faster telemetry;
-    until then, treat the ramp as **~0.5s, bounded above by ~1s**.
-
-  The plateau itself is now confirmed on hardware: a 6s full-deflection hold covered **113.19°**,
-  and distance carries no sampling error (accel and decel ramps cancel), giving ≥18.87 °/s; the
-  clean instantaneous samples cluster at 18.7–19.2. `maxJogDps = 19.0` is correct. Note the probe's
-  *median* still reads slightly high (19.6) because 5Hz aliasing spikes are one-sided — trust the
-  distance figure over the profile.
-
-  The bench session should settle which is right; until then, treat ~450ms as the better-supported
-  figure (it falls straight out of firmware constants the rig actually runs) and ~1s as a
-  coarse-probe ceiling. Achievable correction bandwidth is bounded somewhere between those —
-  roughly **1-2Hz**, not a flat "~1Hz".
-- **4× the telemetry rate.** The mock pushes state at **20Hz**; the real rig pushes at **5Hz**
-  (`vTaskDelay(pdMS_TO_TICKS(200))`, `src/tb3_web.cpp`). The control loop ticks at 10Hz, so **on
-  hardware every other tick re-reads a rig position it has already seen**, halving the P-term's
-  effective feedback rate. The sim never sees a stale reading.
+- **The fake head's TRACK servo is a first-order stand-in** (feed-forward plus a 5/s catch-up,
+  capped at its goto speed, `test/fake-head.ts`), not the Pico's real servo, and it accelerates
+  instantly. **The Pico's TRACK has not yet been run against the real mechanics** (design spec
+  §6.2): bring-up has a bench step that drives TRACK with a synthetic moving target and checks
+  following error before the host tracking port is accepted.
+- **Telemetry is fast and fresh.** The fake publishes at 20 Hz over loopback; the soft-limit
+  guard's horizon accounts for older readings, but the following error on hardware will reflect
+  the real link.
 
 Real-hardware error should therefore be expected to run higher than the simulation.
-**No accuracy claim has been validated on the physical rig.** If
-tracking looks off, check layer-2 calibration quality first, then tune `trackKp`, and confirm
-`maxJogDps` still matches the rig (re-run the jog probe if the hardware has changed).
+**No accuracy claim has been validated on the physical rig.** If tracking looks off, check
+layer-2 calibration quality first, then the head's TRACK following on the bench.
 
 ## Sun position and the shadow test
 

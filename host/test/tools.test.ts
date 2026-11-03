@@ -159,12 +159,33 @@ describe("MCP tools", () => {
     expect(frames[frames.length - 1]).toEqual({ pan: 0, tilt: 0 });
   });
 
+  it("jog replies with the rates it actually sent, in deg/s", async () => {
+    const { client } = await harness();
+    const res: any = await client.callTool({ name: "jog", arguments: { pan_dps: -5, tilt_dps: 2.5, duration_ms: 100 } });
+    expect(res.isError).toBeFalsy();
+    expect(textOf(res)).toBe("jogged for 100ms (pan -5°/s tilt 2.5°/s)");
+  });
+
+  it("jog caps each axis at maxJogDps (the manual-jog ceiling)", async () => {
+    const { client, cfg } = await harness({ TB3_PAN_SIGN: "-1" });
+    const frames = captureJogFrames(mock!);
+    const res: any = await client.callTool({ name: "jog", arguments: { pan_dps: 100, tilt_dps: 100, duration_ms: 100 } });
+    expect(textOf(res)).toBe(`jogged for 100ms (pan ${cfg.maxJogDps}°/s tilt ${cfg.maxJogDps}°/s)`);
+    await new Promise((r) => setTimeout(r, 50));
+    // pan_sign -1 mirrors the device frame; the cap applies to the magnitude.
+    expect(frames.some((f) => f.pan === -cfg.maxJogDps && f.tilt === cfg.maxJogDps)).toBe(true);
+    for (const f of frames) {
+      expect(Math.abs(f.pan ?? 0)).toBeLessThanOrEqual(cfg.maxJogDps);
+      expect(Math.abs(f.tilt ?? 0)).toBeLessThanOrEqual(cfg.maxJogDps);
+    }
+  });
+
   // REGRESSION: duration_ms required .positive(), so the dashboard's
   // press-and-hold jog (dashboard/public/jog-hold.js) posting an explicit
   // (0,0,0) stop vector on release was rejected by THIS tool's own schema on
   // every single release -- an MCP error dialog on every jog release, and
   // the designed "stop right away" behaviour never actually ran (motion
-  // only ever stopped via the 500ms jogVectorTtlMs dead-man). duration_ms:0
+  // only ever stopped via the 500ms jog dead-man). duration_ms:0
   // must be accepted, and must actually zero the rig.
   it("REGRESSION: jog accepts duration_ms: 0 as an explicit stop, not rejected", async () => {
     const { client } = await harness();
@@ -288,8 +309,7 @@ describe("jog rate-limit enforcement (Part 1 safety fix)", () => {
     const res: any = await client.callTool({
       name: "jog", arguments: { pan_dps: 10, tilt_dps: 5, duration_ms: 300 },
     });
-    expect(textOf(res)).toMatch(/held at travel limit: pan/);
-    expect(textOf(res)).not.toMatch(/tilt/);
+    expect(textOf(res)).toMatch(/held at travel limit: pan$/);
     await new Promise((r) => setTimeout(r, 50));
     for (const f of frames) expect(f.pan ?? 0).toBe(0);          // pan: fully suppressed
     expect(frames.some((f) => (f.tilt ?? 0) > 0)).toBe(true);        // tilt: still commanded
@@ -332,7 +352,7 @@ describe("jog rate-limit enforcement (Part 1 safety fix)", () => {
   // -> McpDashboardClient.jog() -> this exact MCP tool (traced in tools.ts's
   // jog handler doc comment) — there is no third way to command a rate. Each
   // caller sends a DIFFERENT (rate, duration) shape (a ramped rate refreshed
-  // at ~2/3 of jogVectorTtlMs for the hold; a stick-proportional rate posted
+  // at ~2/3 of the jog dead-man TTL for the hold; a stick-proportional rate posted
   // every ~100ms for the joystick), so exercise both shapes against the same
   // near-limit position rather than assuming one code path stands in for the
   // other.
@@ -342,7 +362,7 @@ describe("jog rate-limit enforcement (Part 1 safety fix)", () => {
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "teach_limit", arguments: { edge: "pan_max" } });
 
-    // jog-hold.js's JogHold posts at holdIntervalMs(jogVectorTtlMs) with a
+    // jog-hold.js's JogHold posts at holdIntervalMs(<dead-man TTL>) with a
     // ramped rate; a mid-ramp value + its own interval, duration-shaped like
     // its keep-alive posts (see jog-hold.js's _tick).
     const holdFrames = captureJogFrames(mock!);

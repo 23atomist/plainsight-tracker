@@ -16,12 +16,11 @@ const ConfigSchema = z
     tiltMin: z.number().default(0),
     tiltMax: z.number().default(90),
     maxSpeedDps: z.number().positive().default(22),
-    // Measured on real hardware (jog-probe.mjs, 2026-07-16): the steady-state
-    // plateau at full deflection is 19.0 deg/s on both pan and tilt (both are
-    // 10000 steps/s, and jog runs through the 20kHz DDS accumulator -- NOT
-    // goto's 22.5 deg/s direct pulse rate; the two ceilings genuinely differ).
-    // This scales the layer-3 servo's feedforward directly: if it is wrong,
-    // the servo is wrong everywhere.
+    // The manual-jog ceiling (deg/s, per axis): the jog tool clamps each
+    // axis to it, and tracking clamps its TRACK feed-forward to it while the
+    // head's own vmax (GET /api/config) is still unknown. 19 deg/s is the
+    // plateau measured on the ESP32 rig (jog-probe.mjs, 2026-07-16), kept as
+    // the operator-facing number the dashboard's jog controls scale to.
     maxJogDps: z.number().positive().default(19),
     panSign: sign.default(1),
     // Pan handedness INTO the geo mount kinematics (separate from panSign, which
@@ -53,6 +52,12 @@ const ConfigSchema = z
     trackStaleTelemetryMs: z.number().positive().default(1000),
     trackDeadmanMs: z.number().positive().default(120000),
     trackReacquireDeg: z.number().positive().max(180).default(10),
+    // The limit guard's stopping time is |rate| / amax, with amax read from
+    // the head's GET /api/config (the Pico's per-axis acceleration). This is
+    // the amax assumed until that config has been read (and whenever the
+    // head reports an unusable one). 10 deg/s^2 is the Pico's current
+    // default; a LOWER value is the safe direction (a longer stopping horizon).
+    trackFallbackAmaxDps2: z.number().positive().default(10),
     // Ceiling on the standing drift-calibration aim-offset (see
     // src/track/offset.ts). Config rather than a bare constant because a
     // rough set_north_zero seed can leave a pointing error bigger than this,
@@ -197,18 +202,13 @@ const ConfigSchema = z
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
   .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" })
-  // TRANSITIONAL: the retired ESP32 keys are no longer configurable, but the
-  // legacy Device / TrackingSession / tools code (rewritten in host Tasks 3-5)
-  // still reads them. Expose their old fixed values until those tasks land,
-  // then delete this transform.
+  // TRANSITIONAL — removed in Task 8: the retired ESP32 host keys are no
+  // longer configurable, but the dashboard (dashboard/server.ts, rig.ts) and
+  // the MCP startup log still read them. Derived from headUrl until then.
   .transform((c) => ({
     ...c,
     deviceHost: new URL(c.headUrl).host,
     deviceIpFallback: undefined as string | undefined,
-    auxSign: 1 as 1 | -1,
-    trackKp: 1.0,
-    trackRateSlewDps: 40,
-    jogVectorTtlMs: 500,
   }));
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -289,6 +289,7 @@ export function loadConfig(
   set("trackStaleTelemetryMs", num(env.TB3_TRACK_STALE_TELEMETRY_MS));
   set("trackDeadmanMs", num(env.TB3_TRACK_DEADMAN_MS));
   set("trackReacquireDeg", num(env.TB3_TRACK_REACQUIRE_DEG));
+  set("trackFallbackAmaxDps2", num(env.TB3_TRACK_FALLBACK_AMAX_DPS2));
   set("maxAimOffsetDeg", num(env.TB3_MAX_AIM_OFFSET_DEG));
   set("sunGuardEnabled", bool(env.TB3_SUN_GUARD_ENABLED));
   set("sunConeDeg", num(env.TB3_SUN_CONE_DEG));

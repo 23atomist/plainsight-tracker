@@ -241,6 +241,33 @@ describe("Device (head API)", () => {
     await waitFor(() => lastJogIsZero(h));
   });
 
+  it("clearJog sends a zero frame only when a jog vector was live", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    d.clearJog();                       // nothing live: nothing to stop
+    await sleep(100);
+    expect(jogBodies(h)).toHaveLength(0);
+
+    d.setJogVector(4, 0, 1000);
+    await waitFor(() => jogBodies(h).length >= 1);
+    d.clearJog();                       // live: one zero frame
+    await waitFor(() => lastJogIsZero(h));
+    const afterFirst = jogBodies(h).length;
+    d.clearJog();                       // already cleared: nothing more
+    await sleep(100);
+    expect(jogBodies(h)).toHaveLength(afterFirst);
+  });
+
+  it("stop(axes) stops only the named axes; stop() stops all", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    await d.stop(["pan"]);
+    expect(h.calls.filter((c) => c.path === "/api/stop").at(-1)?.body).toEqual({ axes: ["pan"] });
+    await d.stop();
+    expect(h.calls.filter((c) => c.path === "/api/stop").at(-1)?.body).toBeUndefined();
+    expect(h.stopCount).toBe(2);
+  });
+
   it("estop/clearEstop/home/setPos/reference hit their routes", async () => {
     const h = await startHead();
     const d = await startDevice(h);

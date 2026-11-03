@@ -13,10 +13,11 @@
 // 503 while the Pico link is down; 409 for setpos on a moving axis or while a
 // reference run is busy; 503 from GET /api/imu while the IMU is not ok.
 //
-// Motion is a simple simulation (constant-speed goto, integrated jog/track
-// rates), stepped by the auto-tick timer or by advance(); the model is public
-// and mutable so a test can put the head in any state and publish it with
-// tick().
+// Motion is a simple simulation (constant-speed goto, integrated jog rate,
+// and a TRACK servo: the setpoint is extrapolated at the commanded rate and the
+// axis is pulled onto it, stopping on the Pico's track timeout), stepped by
+// the auto-tick timer or by advance(); the model is public and mutable so a
+// test can put the head in any state and publish it with tick().
 import { createServer, Server } from "node:http";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -33,6 +34,11 @@ const SCHEMA_NAMES = ["tick", "event", "goto", "track", "jog", "setpos", "config
 
 const G = 9.80665;
 const SIM_DPS = 90; // simulated goto/home speed, fast for tests
+// TRACK servo: feed-forward at the commanded rate plus this much catch-up per
+// degree of error (1/s), capped at SIM_DPS. A first-order stand-in for the
+// Pico's servo, so a host that sends a wrong rate or setpoint shows a
+// following error instead of teleporting onto the target.
+const TRACK_GAIN_PER_S = 5;
 const IMU_BURST_MAX = 1000;
 
 type Validate = (schema: string, data: unknown) => string[];
@@ -132,6 +138,8 @@ export class FakeHead {
   private seq = 0;
   private port = 0;
   private savedImu: HeadImu = okImu();
+  /** Simulated ms since the last TRACK, per axis (the Pico's track timeout). */
+  private trackAgeMs: Partial<Record<"pan" | "tilt", number>> = {};
   private readonly validate = headSchemaValidator();
 
   get url(): string { return `http://127.0.0.1:${this.port}`; }
@@ -283,11 +291,29 @@ export class FakeHead {
         const step = SIM_DPS * dt;
         if (Math.abs(d) <= step) this.model.axes[name] = { ...a, pos: a.tgt, vel: 0, mode: "I" };
         else this.model.axes[name] = { ...a, pos: a.pos + Math.sign(d) * step, vel: Math.sign(d) * SIM_DPS };
-      } else if (a.mode === "V" || a.mode === "T") {
-        const pos = a.pos + a.vel * dt;
-        this.model.axes[name] = { ...a, pos, tgt: a.mode === "T" ? pos : a.tgt };
+      } else if (a.mode === "V") {
+        this.model.axes[name] = { ...a, pos: a.pos + a.vel * dt };
+      } else if (a.mode === "T" && (name === "pan" || name === "tilt")) {
+        this.advanceTrack(name, ms);
       }
     }
+  }
+
+  // The Pico extrapolates the TRACK setpoint at the commanded rate and servos
+  // the axis onto it; with no TRACK for track_timeout_ms it stops the axis and
+  // says so.
+  private advanceTrack(name: "pan" | "tilt", ms: number): void {
+    const a = this.model.axes[name];
+    const age = (this.trackAgeMs[name] ?? 0) + ms;
+    this.trackAgeMs[name] = age;
+    if (age > (this.config.global?.track_timeout_ms ?? 1000)) {
+      this.model.axes[name] = { ...a, vel: 0, tgt: a.pos, mode: "I" };
+      this.event("track_timeout", name, null);
+      return;
+    }
+    const dt = ms / 1000;
+    const rate = Math.max(-SIM_DPS, Math.min(SIM_DPS, a.vel + TRACK_GAIN_PER_S * (a.tgt - a.pos)));
+    this.model.axes[name] = { ...a, pos: a.pos + rate * dt, tgt: a.tgt + a.vel * dt };
   }
 
   // --- wire --------------------------------------------------------------------
@@ -398,7 +424,9 @@ export class FakeHead {
       this.lastTrack = structuredClone(b) as HeadTrackCmd;
       for (const name of ["pan", "tilt"] as const) {
         const cmd = this.lastTrack[name];
-        if (cmd) this.model.axes[name] = { ...this.model.axes[name], pos: cmd.pos, tgt: cmd.pos, vel: cmd.vel, mode: "T" };
+        if (!cmd) continue;
+        this.model.axes[name] = { ...this.model.axes[name], tgt: cmd.pos, vel: cmd.vel, mode: "T" };
+        this.trackAgeMs[name] = 0;
       }
       ok(res);
     });

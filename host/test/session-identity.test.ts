@@ -42,8 +42,6 @@ class FakeDevice {
       lastUpdateMs: this.lastUpdateMs,
     };
   }
-  setJogVector() {}
-  clearJog() {}
   async track(cmd: HeadTrackCmd) { this.tracks.push(cmd); }
   async gotoAngle() { return new Promise<void>(() => { /* never resolves; unused here */ }); }
   async waitForArrival() { return this.getState(); }

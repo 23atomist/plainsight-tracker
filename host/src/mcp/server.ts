@@ -543,9 +543,11 @@ export async function main(): Promise<MainHandle> {
   console.error(`agent target policy file: ${policyFile} (${policyStore.get().rules.filter((r) => r.enabled).length} enabled rules)`);
   const session = new TrackingSession(
     device, cfg, store, Date.now, realScheduler, () => sectorStore.get(), () => limitsStore.get(),
-    () => aimTrimStore.get(), () => floorStore.get(),
+    () => aimTrimStore.get(), () => floorStore.get(), () => device.getAxisConfig(),
   );
-  const supervisor = new SunSupervisor(device, cfg, store, session, Date.now, realScheduler, () => limitsStore.get());
+  const supervisor = new SunSupervisor(
+    device, cfg, store, session, Date.now, realScheduler, () => limitsStore.get(), () => device.getAxisConfig(),
+  );
   supervisor.start();
   const follower = new AdsbFollower(session, cfg.adsbAltSource, cfg.adsbLostSec * 1000);
   const source = new AdsbSource(cfg, { onSnapshot: (s) => follower.onSnapshot(s) });

@@ -3,7 +3,7 @@ import type { ZodError } from "zod";
 import { Config } from "./config.js";
 import { DeviceState } from "./types.js";
 import {
-  HeadAxisConfig, HeadAxisConfigResponseZ, HeadEvent, HeadEventZ, HeadImuBurstZ, HeadRef,
+  HeadAxisConfig, HeadAxisConfigResponseZ, HeadAxisName, HeadEvent, HeadEventZ, HeadImuBurstZ, HeadRef,
   HeadTick, HeadTickZ, HeadTrackCmd, PanReferenceDetailZ,
 } from "./head-types.js";
 import { Vec3, normalize } from "./geo/vec3.js";
@@ -376,13 +376,20 @@ export class Device {
     await this.post("/api/track", cmd);
   }
 
+  // `signal` lets a caller that has given up on this arrival (the goto was
+  // superseded: a tracking session retargeted the head, a park was aborted)
+  // end the wait now instead of polling out the whole timeout. It rejects.
   async waitForArrival(
-    targetPanDeg: number, targetTiltDeg: number, timeoutMs: number,
+    targetPanDeg: number, targetTiltDeg: number, timeoutMs: number, signal?: AbortSignal,
   ): Promise<DeviceState> {
     const t0 = this.now();
+    const abandoned = (): void => {
+      if (signal?.aborted) throw new Error("arrival wait abandoned: the goto was superseded");
+    };
     // allow the head a moment to report moving before we test for arrival
     await new Promise((res) => setTimeout(res, 150));
     while (this.now() - t0 < timeoutMs) {
+      abandoned();
       const s = this.state;
       if (!s.moving &&
           Math.abs(s.panDeg - targetPanDeg) < ARRIVAL_TOL_DEG &&
@@ -397,9 +404,9 @@ export class Device {
     );
   }
 
-  /** `POST /api/stop`: all axes. Not guarded by the E-STOP latch. */
-  async stop(): Promise<void> {
-    await this.post("/api/stop");
+  /** `POST /api/stop`: the named axes, or all of them. Not guarded by the E-STOP latch. */
+  async stop(axes?: readonly HeadAxisName[]): Promise<void> {
+    await this.post("/api/stop", axes && axes.length > 0 ? { axes: [...axes] } : undefined);
   }
 
   /** `POST /api/estop`: latches the head; every motion route returns 423 until cleared. */
@@ -524,10 +531,14 @@ export class Device {
     }
   }
 
+  // Sends the zero frame only when a vector was live: a caller that clears
+  // defensively (lockJog, a jog()'s end after the TTL already zeroed it) must
+  // not spray stop frames at a head nobody was jogging.
   clearJog(): void {
+    const live = this.jogVec !== null;
     this.jogVec = null;
     this.stopJogTimer();
-    this.sendJog(0, 0);
+    if (live) this.sendJog(0, 0);
   }
 
   // Driven by SunSupervisor's lock state (see setLocked). While latched, any

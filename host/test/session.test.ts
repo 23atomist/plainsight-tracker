@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { Mat3 } from "../src/shared/geo/vec3.js";
+import { Mat3, Vec3 } from "../src/shared/geo/vec3.js";
 import { TrackingSession, COAST_ENTER_MS, type Scheduler } from "../src/shared/track/session.js";
 import type { DeviceState } from "../src/shared/types.js";
-import type { HeadTrackCmd } from "../src/shared/head-types.js";
-import { DeviceHttpError } from "../src/shared/device.js";
+import type { HeadAxisConfig, HeadTrackCmd } from "../src/shared/head-types.js";
+import { Device, DeviceHttpError } from "../src/shared/device.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
 import { loadConfig, type Config } from "../src/shared/config.js";
+import { targetAimAt } from "../src/shared/track/control.js";
+import { emptyEstimator, withFix } from "../src/shared/track/estimator.js";
+import { reachablePanTilt } from "../src/mcp/geo-tools.js";
+import { FakeHead } from "./fake-head.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +28,13 @@ function bearingTarget(bearingDeg: number, distM = 10000): typeof RIG {
   const dLat = (distM * Math.cos(brg)) / 111320;
   const dLon = (distM * Math.sin(brg)) / (111320 * Math.cos((RIG.lat * Math.PI) / 180));
   return { lat: RIG.lat + dLat, lon: RIG.lon + dLon, height: 0 };
+}
+
+// The ENU velocity (m/s) that sweeps a target at bearingDeg toward a LARGER
+// azimuth (clockwise), i.e. toward panMax under identity R.
+function clockwiseVel(bearingDeg: number, speedMs: number): Vec3 {
+  const brg = (bearingDeg * Math.PI) / 180;
+  return [speedMs * Math.cos(brg), -speedMs * Math.sin(brg), 0];
 }
 
 // A hand-driven scheduler: tests call fire() instead of waiting.
@@ -45,16 +56,20 @@ interface Deferred {
 class FakeDevice {
   panDeg = 0; tiltDeg = 0; moving = false; estop = false;
   lastUpdateMs = 1_000_000;
-  // Every track() call, in order (the head's TRACK; Task 5 servos through it).
+  // Every track() call, in order (the head's TRACK).
   tracks: HeadTrackCmd[] = [];
-  jogVec: { panDps: number; tiltDps: number; ttlMs: number } | null = null;
-  cleared = 0;
+  // Set to hold every track() unanswered until releaseTracks(): a TRACK still
+  // in flight when the session decides to stop.
+  holdTracks = false;
+  private heldTracks: (() => void)[] = [];
+  // Every stop() call's axes argument, in order (undefined = all axes).
+  stops: (string[] | undefined)[] = [];
+  get stopCalls(): number { return this.stops.length; }
   gotos: { pan: number; tilt: number }[] = [];
   // Each gotoAngle() call parks a deferred here instead of resolving
   // immediately, so tests can drive the goto's settlement (and its timing
   // relative to gate trips / re-start()) by hand.
   gotoDeferreds: Deferred[] = [];
-  stopCalls = 0;
   // Set to make the arrival wait fail, which is where a real goto TIMEOUT comes
   // from. It matters that this is separate from a gotoAngle rejection:
   // moveToUserAngle only wraps the latter, so the two arrive at the session's
@@ -68,9 +83,11 @@ class FakeDevice {
       lastUpdateMs: this.lastUpdateMs,
     };
   }
-  setJogVector(panDps: number, tiltDps: number, ttlMs: number) { this.jogVec = { panDps, tiltDps, ttlMs }; }
-  clearJog() { this.jogVec = null; this.cleared++; }
-  async track(cmd: HeadTrackCmd) { this.tracks.push(cmd); }
+  async track(cmd: HeadTrackCmd) {
+    this.tracks.push(cmd);
+    if (this.holdTracks) await new Promise<void>((resolve) => this.heldTracks.push(resolve));
+  }
+  releaseTracks() { for (const r of this.heldTracks.splice(0)) r(); }
   async gotoAngle(pan: number, tilt: number) {
     this.gotos.push({ pan, tilt });
     return new Promise<void>((resolve, reject) => {
@@ -81,7 +98,7 @@ class FakeDevice {
     if (this.arrivalError) throw this.arrivalError;
     return this.getState();
   }
-  async stop() { this.stopCalls++; }
+  async stop(axes?: string[]) { this.stops.push(axes); }
 }
 
 // Drains the microtask queue (and any already-due macrotasks) so a resolved
@@ -91,14 +108,38 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > timeoutMs) throw new Error("waitFor: condition never became true");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 let clockMs = 1_000_000;
 let store: CalibrationStore;
 let cfg: Config;
 let dev: FakeDevice;
 let sched: ReturnType<typeof manualScheduler>;
 
-function newSession(): TrackingSession {
-  return new TrackingSession(dev as never, cfg, store, () => clockMs, sched);
+type AxisConfig = Record<"pan" | "tilt", HeadAxisConfig>;
+
+function newSession(c: Config = cfg, axisConfig: AxisConfig | null = null): TrackingSession {
+  return new TrackingSession(
+    dev as never, c, store, () => clockMs, sched,
+    undefined, undefined, undefined, undefined, () => axisConfig,
+  );
+}
+
+// What the session must compute for a target started at clockMs, recomputed
+// here independently of the session (same estimator, same lead, same limits).
+function expectedAim(target: typeof RIG, vel: Vec3, c: Config = cfg) {
+  const est = withFix(emptyEstimator(), RIG, target, clockMs, vel);
+  const limits = { panMin: c.panMin, panMax: c.panMax, tiltMin: c.tiltMin, tiltMax: c.tiltMax };
+  const aim = targetAimAt(est, I, clockMs + c.trackLeadMs, [0, 1, 0], c.geoPanSign, limits)!;
+  const reach = reachablePanTilt(aim.panDeg, aim.tiltDeg, c.panMin, c.panMax, c.tiltMin, c.tiltMax);
+  if ("error" in reach) throw new Error(reach.error);
+  return { aim, reach };
 }
 
 beforeEach(() => {
@@ -133,13 +174,156 @@ describe("TrackingSession lifecycle", () => {
     expect(dev.gotos[0].pan).toBeCloseTo(0, 1);
   });
 
-  it("stop clears the jog vector and cancels the tick", () => {
+  it("stop halts the head exactly once and cancels the tick", () => {
     const s = newSession();
     s.start(NORTH, null, null);
     s.stop();
     expect(s.status().state).toBe("stopped");
-    expect(dev.cleared).toBeGreaterThan(0);
+    expect(dev.stops).toEqual([undefined]);   // all axes
     expect(sched.cancelled()).toBe(true);
+    s.stop();                                  // nothing is moving any more
+    expect(dev.stopCalls).toBe(1);
+  });
+});
+
+describe("TrackingSession servo: the head's TRACK", () => {
+  // Put the session in `tracking`, pointing straight at the target.
+  function trackingAt(target: typeof RIG, vel: Vec3, c: Config = cfg, axisConfig: AxisConfig | null = null) {
+    const s = newSession(c, axisConfig);
+    s.start(target, vel, null);
+    s.forceStateForTest("tracking");
+    const { aim, reach } = expectedAim(target, vel, c);
+    dev.panDeg = reach.pan * c.panSign;
+    dev.tiltDeg = reach.tilt * c.tiltSign;
+    return { s, aim, reach };
+  }
+
+  it("tracking sends TRACK with reach setpoint and aim feedforward every tick", () => {
+    // pan_sign -1: the device frame is mirrored, and BOTH pos and vel must
+    // cross the boundary with the sign applied.
+    const c = { ...cfg, panSign: -1 as const };
+    const { aim, reach } = trackingAt(NORTH, [120, 0, 0], c);
+    expect(Math.abs(aim.ratePanDps)).toBeGreaterThan(0.5);   // a genuinely moving target
+
+    sched.fire();
+    expect(dev.tracks).toHaveLength(1);
+    expect(dev.tracks[0]).toEqual({
+      pan: { pos: expect.closeTo(-reach.pan, 9), vel: expect.closeTo(-aim.ratePanDps, 9) },
+      tilt: { pos: expect.closeTo(reach.tilt, 9), vel: expect.closeTo(aim.rateTiltDps, 9) },
+    });
+
+    sched.fire();
+    expect(dev.tracks).toHaveLength(2);
+  });
+
+  it("status reports the feed-forward rates actually sent, in the user frame", () => {
+    const c = { ...cfg, panSign: -1 as const };
+    const { s, aim } = trackingAt(NORTH, [120, 0, 0], c);
+    sched.fire();
+    expect(s.status().commandedPanDps).toBeCloseTo(aim.ratePanDps, 9);
+    expect(s.status().commandedTiltDps).toBeCloseTo(aim.rateTiltDps, 9);
+  });
+
+  it("clamps the feed-forward to the head's vmax when the axis config is known", () => {
+    const axisConfig: AxisConfig = {
+      pan: { min: -180, max: 180, vmax: 0.25, amax: 10 },
+      tilt: { min: -90, max: 90, vmax: 0.25, amax: 10 },
+    };
+    const { s, aim } = trackingAt(NORTH, [120, 0, 0], cfg, axisConfig);
+    expect(aim.ratePanDps).toBeGreaterThan(0.25);
+    sched.fire();
+    expect(dev.tracks[0].pan!.vel).toBe(0.25);
+    expect(s.status().commandedPanDps).toBe(0.25);
+  });
+
+  it("clamps the feed-forward to maxJogDps while the axis config is unknown", () => {
+    // ~1km out at 400 m/s: ~23 deg/s of azimuth rate, past the 19 deg/s cap.
+    const { s, aim } = trackingAt(bearingTarget(0, 1000), [400, 0, 0]);
+    expect(aim.ratePanDps).toBeGreaterThan(cfg.maxJogDps);
+    sched.fire();
+    expect(dev.tracks[0].pan!.vel).toBe(cfg.maxJogDps);
+    expect(s.status().commandedPanDps).toBe(cfg.maxJogDps);
+  });
+
+  it("no TRACK is sent while waiting", () => {
+    const { s } = trackingAt(NORTH, [0, 0, 0]);
+    dev.estop = true;
+    for (let i = 0; i < 5; i++) sched.fire();
+    expect(s.status().state).toBe("waiting");
+    expect(dev.tracks).toHaveLength(0);
+  });
+
+  it("no TRACK is sent while acquiring", () => {
+    const s = newSession();
+    s.start(NORTH, [0, 0, 0], null);
+    for (let i = 0; i < 5; i++) sched.fire();
+    expect(s.status().state).toBe("acquiring");
+    expect(dev.tracks).toHaveLength(0);
+  });
+
+  it("a stop chases a TRACK that was still in flight, so a late TRACK cannot restart the axis", async () => {
+    const { s } = trackingAt(NORTH, [0, 0, 0]);
+    dev.holdTracks = true;
+    sched.fire();                 // a TRACK goes out and is not yet answered
+    expect(dev.tracks).toHaveLength(1);
+
+    dev.estop = true;
+    sched.fire();                 // enters waiting: one stop, at once
+    expect(s.status().state).toBe("waiting");
+    expect(dev.stopCalls).toBe(1);
+
+    dev.releaseTracks();          // the TRACK lands -- possibly AFTER the stop
+    await flush();
+    expect(dev.stopCalls).toBe(2);   // so the stop is sent again behind it
+  });
+
+  it("no chase stop once the session has commanded motion again", async () => {
+    const { s } = trackingAt(NORTH, [0, 0, 0]);
+    dev.holdTracks = true;
+    sched.fire();
+    dev.estop = true;
+    sched.fire();
+    expect(dev.stopCalls).toBe(1);
+
+    // E-STOP clears and the session re-acquires before the old TRACK settles:
+    // a chase stop now would kill the fresh goto.
+    dev.estop = false;
+    sched.fire();
+    expect(s.status().state).toBe("acquiring");
+    dev.releaseTracks();
+    await flush();
+    expect(dev.stopCalls).toBe(1);
+  });
+
+  it("the re-acquire goto waits for an in-flight TRACK so the TRACK cannot replace it", async () => {
+    const { s } = trackingAt(NORTH, [0, 0, 0]);
+    dev.holdTracks = true;
+    sched.fire();
+    const gotosBefore = dev.gotos.length;
+
+    dev.panDeg = 90;              // way off: reacquire
+    sched.fire();
+    expect(s.status().state).toBe("acquiring");
+    expect(dev.gotos.length).toBe(gotosBefore);   // held back
+
+    dev.releaseTracks();
+    await flush();
+    expect(dev.gotos.length).toBe(gotosBefore + 1);
+  });
+
+  it("the re-acquire goto waits for an unanswered STOP so the STOP cannot cancel it", async () => {
+    const { s } = trackingAt(NORTH, [0, 0, 0]);
+    dev.estop = true;
+    sched.fire();                 // waiting: STOP sent, not yet answered
+    const gotosBefore = dev.gotos.length;
+
+    dev.estop = false;
+    sched.fire();                 // reacquire in the same turn
+    expect(s.status().state).toBe("acquiring");
+    expect(dev.gotos.length).toBe(gotosBefore);
+
+    await flush();                // the STOP is answered; the goto follows it
+    expect(dev.gotos.length).toBe(gotosBefore + 1);
   });
 });
 
@@ -153,21 +337,47 @@ describe("TrackingSession safety gates", () => {
     return s;
   }
 
-  it("commands a jog vector while tracking", () => {
-    const s = tracking();
-    dev.panDeg = 5;   // 5 deg of error
-    sched.fire();
-    expect(dev.jogVec).not.toBeNull();
-    expect(dev.jogVec!.panDps).toBeLessThan(0);   // drive back toward pan 0
-  });
-
   it("stops and waits on stale telemetry", () => {
     const s = tracking();
     dev.lastUpdateMs = clockMs - (cfg.trackStaleTelemetryMs + 1);
     sched.fire();
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("telemetry_stale");
-    expect(dev.jogVec).toBeNull();
+    expect(dev.tracks).toHaveLength(0);
+    expect(dev.stopCalls).toBe(1);
+  });
+
+  it("a tick without axes makes telemetry stale and the session waits", async () => {
+    // Against the real Device and FakeHead: while the Pico link is down the
+    // head keeps publishing IMU-only ticks. They must NOT count as fresh
+    // telemetry, or the session would servo on a frozen position.
+    const head = new FakeHead();
+    await head.start({ tickMs: 0 });
+    const c = loadConfig(undefined, { TB3_HEAD_URL: head.url, TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" });
+    const device = new Device(c, () => clockMs);
+    device.start();
+    const s = new TrackingSession(device, c, store, () => clockMs, sched);
+    try {
+      await waitFor(() => device.getState().lastUpdateMs === clockMs);
+      const lastAxesTickMs = clockMs;
+      s.start(NORTH, [0, 0, 0], null);
+      s.forceStateForTest("tracking");
+
+      clockMs += c.trackStaleTelemetryMs + 1;
+      head.model.link.pico = false;
+      head.tickNoAxes();
+      await waitFor(() => device.getState().link.pico === false);
+      expect(device.getState().lastUpdateMs).toBe(lastAxesTickMs);
+
+      sched.fire();
+      expect(s.status().state).toBe("waiting");
+      expect(s.status().reason).toBe("telemetry_stale");
+      expect(head.lastTrack).toBeNull();
+    } finally {
+      s.stop();
+      device.close();
+      await head.stop();
+    }
   });
 
   it("stops and waits on a stale target fix", () => {
@@ -177,16 +387,18 @@ describe("TrackingSession safety gates", () => {
     sched.fire();
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("target_stale");
-    expect(dev.jogVec).toBeNull();
+    expect(dev.tracks).toHaveLength(0);
+    expect(dev.stopCalls).toBe(1);
   });
 
-  it("yields while the head's E-STOP is latched", () => {
+  it("head estop puts the session in waiting with reason estop", () => {
     const s = tracking();
     dev.estop = true;
     sched.fire();
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("estop");
-    expect(dev.jogVec).toBeNull();
+    expect(dev.tracks).toHaveLength(0);
+    expect(dev.stopCalls).toBe(1);
   });
 
   it("waits when the target is below the tilt limit", () => {
@@ -199,7 +411,7 @@ describe("TrackingSession safety gates", () => {
     sched.fire();
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("below_tilt_limit");
-    expect(dev.jogVec).toBeNull();
+    expect(dev.tracks).toHaveLength(0);
   });
 
   it("the deadman ends the session outright", () => {
@@ -208,14 +420,15 @@ describe("TrackingSession safety gates", () => {
     dev.lastUpdateMs = clockMs;
     sched.fire();
     expect(s.status().state).toBe("stopped");
-    expect(dev.cleared).toBeGreaterThan(0);
+    expect(dev.stopCalls).toBe(1);
   });
 
-  it("auto-reacquires when a waiting target becomes reachable again", () => {
+  it("auto-reacquires when a waiting target becomes reachable again", async () => {
     const s = tracking();
     dev.estop = true;
     sched.fire();
     expect(s.status().state).toBe("waiting");
+    await flush();   // the head answers the STOP (ticks are 100ms apart)
 
     dev.estop = false;
     dev.lastUpdateMs = clockMs;
@@ -233,7 +446,10 @@ describe("TrackingSession safety gates", () => {
     sched.fire();
     expect(s.status().state).toBe("acquiring");
     expect(dev.gotos.length).toBe(before + 1);
-    expect(dev.jogVec).toBeNull();
+    expect(dev.tracks).toHaveLength(0);
+    // The head retargets an accepted goto, so nothing is stopped first: a
+    // stop racing the fresh goto could land after it and cancel it.
+    expect(dev.stopCalls).toBe(0);
   });
 
   it("reports pointing error in status", () => {
@@ -264,10 +480,11 @@ describe("TrackingSession goto cancellation (generation stamp)", () => {
     const stale = dev.gotoDeferreds[0];
 
     // A second start() arrives while the first goto is still in flight. It
-    // must cancel the stale attempt (device.stop(), generation bump) and
-    // issue a fresh one rather than let two gotos race on the firmware.
+    // must abandon the stale attempt (generation bump) and issue a fresh
+    // goto. No stop: the head retargets an accepted goto, and a stop sent
+    // alongside the fresh goto could land after it and cancel it.
     s.start(NORTH, null, null);
-    expect(dev.stopCalls).toBe(1);
+    expect(dev.stopCalls).toBe(0);
     expect(dev.gotoDeferreds.length).toBe(2);
     expect(s.status().state).toBe("acquiring");
 
@@ -291,28 +508,40 @@ describe("TrackingSession goto cancellation (generation stamp)", () => {
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("estop");
     expect(dev.stopCalls).toBe(1);
+
+    // Edge-triggered: further waiting ticks send nothing.
+    sched.fire();
+    sched.fire();
+    expect(dev.stopCalls).toBe(1);
   });
 
-  it("does not call device.stop() on a gate trip once genuinely tracking (no goto in flight)", async () => {
+  it("a gate trip while tracking stops the head once, not on every waiting tick", async () => {
     const s = newSession();
     s.start(NORTH, null, null);
     dev.gotoDeferreds[0].resolve();
     await flush();
     expect(s.status().state).toBe("tracking");
+    sched.fire();
+    expect(dev.tracks).toHaveLength(1);
+    await flush();
 
     dev.estop = true;
     sched.fire();
-
     expect(s.status().state).toBe("waiting");
-    expect(dev.stopCalls).toBe(0);
+    expect(dev.stopCalls).toBe(1);
+
+    sched.fire();
+    sched.fire();
+    await flush();
+    expect(dev.stopCalls).toBe(1);
   });
 });
 
-// The rig's goto endpoint is gated on tb3_goto_safe() == !Program_Engaged &&
-// motorMoving == 0, and updateMotorVelocities2() sets motorMoving for a JOG
-// just as it does for a goto. So a rig that is tracking is, by definition,
-// "moving" -- and every reacquire is issued from exactly that state.
-describe("TrackingSession reacquire vs. the rig's deceleration", () => {
+// The ESP32 refused a goto while motorMoving was set (a 409), so the session
+// used to sit in a busy wait for the rig to come to rest before every
+// reacquire. The head accepts a goto while moving and retargets, so that dance
+// is gone.
+describe("TrackingSession reacquire on the head", () => {
   function trackingWithError(): TrackingSession {
     const s = newSession();
     s.start(NORTH, [0, 0, 0], null);
@@ -321,55 +550,30 @@ describe("TrackingSession reacquire vs. the rig's deceleration", () => {
     return s;
   }
 
-  it("waits for the rig to stop instead of POSTing a goto that can only 409", () => {
-    const s = trackingWithError();
-    dev.moving = true;                   // still decelerating out of the jog
-    const before = dev.gotos.length;
-
-    sched.fire();
-
-    // No doomed POST, and the rate is dropped so the rig can actually stop.
-    expect(dev.gotos.length).toBe(before);
-    expect(s.status().state).toBe("waiting");
-    expect(s.status().reason).toBe("device_busy");
-    expect(dev.jogVec).toBeNull();
-  });
-
-  it("acquires as soon as the rig has come to rest", () => {
+  it("no busy wait: a goto is issued while the head reports moving", () => {
     const s = trackingWithError();
     dev.moving = true;
-    sched.fire();
-    expect(s.status().state).toBe("waiting");
-
-    dev.moving = false;                  // decel complete
     const before = dev.gotos.length;
+
     sched.fire();
 
     expect(s.status().state).toBe("acquiring");
+    expect(s.status().reason).toBeNull();
     expect(dev.gotos.length).toBe(before + 1);
   });
 
-  // The bug: a 409 is routine and self-healing, but it was reported as
-  // "telemetry_stale" -- blaming a perfectly healthy subsystem, on the most
-  // common catch-up path there is. Covers the .catch() branch's gotoInFlight
-  // clearing too, which previously had no test at all.
-  it("REGRESSION: a 409 from the rig reports device_busy, not telemetry_stale", async () => {
+  it("a refused goto reports goto_failed, not telemetry_stale", async () => {
     const s = newSession();
     s.start(NORTH, null, null);
     expect(s.status().state).toBe("acquiring");
 
-    // Exactly what Device.gotoAngle throws when the firmware refuses because
-    // motorMoving is still set. moveToUserAngle re-wraps this for the operator
-    // ("device rejected goto: ...") but carries it through as `cause`, which is
-    // the only reason the session can still tell a 409 from a real fault.
-    dev.gotoDeferreds[0].reject(new DeviceHttpError("busy - motors still moving", 409));
+    dev.gotoDeferreds[0].reject(new DeviceHttpError("injected failure 409", 409));
     await flush();
 
     expect(s.status().state).toBe("waiting");
-    expect(s.status().reason).toBe("device_busy");
+    expect(s.status().reason).toBe("goto_failed");
     // Telemetry is perfectly healthy here; saying otherwise sends the operator
     // hunting a network fault that does not exist.
-    expect(s.status().reason).not.toBe("telemetry_stale");
     expect(s.status().telemetryAgeMs).toBe(0);
   });
 
@@ -378,25 +582,22 @@ describe("TrackingSession reacquire vs. the rig's deceleration", () => {
     s.start(NORTH, null, null);
 
     // A real timeout surfaces from waitForArrival, not from the POST: the rig
-    // accepted the goto and then never arrived. Distinct cause, distinct reason.
+    // accepted the goto and then never arrived. Distinct cause, same reason.
     dev.arrivalError = new Error("goto timed out after 5000ms at pan=1.00° tilt=0.00°");
     dev.gotoDeferreds[0].resolve();
     await flush();
 
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("goto_failed");
-    expect(s.status().reason).not.toBe("telemetry_stale");
   });
 
-  it("recovers on the next tick after a 409 (the churn is bounded, not a wedge)", async () => {
+  it("recovers on the next tick after a refused goto (the churn is bounded, not a wedge)", async () => {
     const s = newSession();
     s.start(NORTH, null, null);
-    dev.gotoDeferreds[0].reject(new DeviceHttpError("busy - motors still moving", 409));
+    dev.gotoDeferreds[0].reject(new DeviceHttpError("injected failure 503", 503));
     await flush();
-    expect(s.status().reason).toBe("device_busy");
+    expect(s.status().reason).toBe("goto_failed");
 
-    // Rig has now stopped: the waiting session must retry rather than sit there.
-    dev.moving = false;
     s.updateTarget(NORTH, null);
     const before = dev.gotos.length;
     sched.fire();
@@ -406,34 +607,37 @@ describe("TrackingSession reacquire vs. the rig's deceleration", () => {
   });
 });
 
-// limitGuard() (src/track/control.ts) already zeroes a blocked axis and
-// returns panBlocked/tiltBlocked -- the session discarded both, so a held
-// axis looked identical to "the servo is happy": state stays "tracking",
-// reason stays null, only commanded_*_dps quietly drops to zero. With the
-// horizon rework this fires more often, and it can self-perpetuate: an
-// aggressive trackKp (>= ~2.0) near a legal-but-close-to-limit target
-// produces a commanded rate whose predicted stopping point overshoots the
-// limit, the guard zeroes it, the rig never moves, and the frozen error
-// reproduces the exact same block next tick, forever.
-describe("TrackingSession limit guard visibility", () => {
-  it("REGRESSION: a guard-blocked axis is surfaced in status(), not discarded", () => {
-    // Target at pan ~179deg (legal -- inside the default [-180,180] range).
-    // Rig sits at pan 170, 9deg of legal room short of the limit. trackKp=2.0
-    // turns that into a ~18deg/s commanded rate; with 200ms of telemetry lag
-    // (realistic 5Hz) the guard's horizon predicts overshooting panMax, so it
-    // must zero pan -- verified against control.ts's own model before writing
-    // this (raw.panDps ~= 17.99, guard.panBlocked === true).
-    const aggressiveCfg = { ...cfg, trackKp: 2.0 };
-    const s = new TrackingSession(dev as never, aggressiveCfg, store, () => clockMs, sched);
-    s.start(bearingTarget(179), [0, 0, 0], null);
+// limitGuard() (src/track/control.ts) zeroes a blocked axis and returns
+// panBlocked/tiltBlocked. A held axis must be visible: state stays
+// "tracking", reason stays null, and only commanded_*_dps / *Limited say why
+// the rig is not following. And a block is a STOP of that axis on the head,
+// not a clamped TRACK: the Pico extrapolates a TRACK, so anything but a stop
+// would keep it moving toward the limit.
+describe("TrackingSession limit guard", () => {
+  // panMax 30, target at bearing 28 sweeping clockwise at ~1.15 deg/s.
+  // Horizon at 200ms telemetry age: 200 + 100 (tick) + 115 (stop at amax 10)
+  // = 415ms, ~0.48 deg. Rig at 29.6 predicts 30.08: past panMax, blocked.
+  // Rig at 28.2 predicts 28.68: fine.
+  const c = (): Config => ({ ...cfg, panMax: 30 });
+  const BLOCKED_PAN = 29.6;
+  const FREE_PAN = 28.2;
+
+  function nearLimit(axisConfig: AxisConfig | null = null): TrackingSession {
+    const s = newSession(c(), axisConfig);
+    s.start(bearingTarget(28), clockwiseVel(28, 200), null);
     s.forceStateForTest("tracking");
-    dev.panDeg = 170;
-    dev.lastUpdateMs = clockMs - 200;   // realistic 5Hz telemetry lag, not stale
-
+    return s;
+  }
+  function tickAt(panDeg: number): void {
+    dev.panDeg = panDeg;
+    dev.lastUpdateMs = clockMs - 200;   // realistic telemetry lag, not stale
     sched.fire();
+  }
 
-    // Not an error, not a wait reason -- exactly the silent-looking state the
-    // operator cannot currently tell apart from a converging servo.
+  it("REGRESSION: a guard-blocked axis is surfaced in status(), not discarded", () => {
+    const s = nearLimit();
+    tickAt(BLOCKED_PAN);
+
     expect(s.status().state).toBe("tracking");
     expect(s.status().reason).toBeNull();
     expect(s.status().commandedPanDps).toBe(0);
@@ -442,65 +646,79 @@ describe("TrackingSession limit guard visibility", () => {
     expect(s.status().tiltLimited).toBe(false);
   });
 
-  it("panLimited/tiltLimited reset once motion stops", () => {
-    const aggressiveCfg = { ...cfg, trackKp: 2.0 };
-    const s = new TrackingSession(dev as never, aggressiveCfg, store, () => clockMs, sched);
-    s.start(bearingTarget(179), [0, 0, 0], null);
+  it("a blocked axis sends stop once and reports commanded 0 until unblocked", async () => {
+    const s = nearLimit();
+    tickAt(BLOCKED_PAN);
+    expect(dev.stops).toEqual([["pan"]]);
+    // The tilt axis keeps tracking; pan is left out of the TRACK entirely.
+    expect(dev.tracks).toHaveLength(1);
+    expect(dev.tracks[0].pan).toBeUndefined();
+    expect(dev.tracks[0].tilt).toBeDefined();
+    await flush();
+
+    tickAt(BLOCKED_PAN);
+    tickAt(BLOCKED_PAN);
+    await flush();
+    expect(dev.stops).toEqual([["pan"]]);          // once per block edge
+    expect(dev.tracks.every((t) => t.pan === undefined)).toBe(true);
+    expect(s.status().commandedPanDps).toBe(0);
+
+    tickAt(FREE_PAN);                                // unblocked
+    expect(dev.tracks[dev.tracks.length - 1].pan).toBeDefined();
+    expect(s.status().commandedPanDps).toBeGreaterThan(1);
+    expect(s.status().panLimited).toBe(false);
+    await flush();
+
+    tickAt(BLOCKED_PAN);                             // a fresh edge
+    expect(dev.stops).toEqual([["pan"], ["pan"]]);
+  });
+
+  it("a block stops a STANDING TRACK on the same tick (a stop, not a ramp)", () => {
+    const s = nearLimit();
+    tickAt(FREE_PAN);
+    const standing = dev.tracks[dev.tracks.length - 1].pan!;
+    expect(standing.vel).toBeGreaterThan(1);         // the setup really armed it
+
+    tickAt(BLOCKED_PAN);
+    expect(dev.stops).toEqual([["pan"]]);
+    expect(s.status().commandedPanDps).toBe(0);
+  });
+
+  it("the horizon uses the head's amax: a gentler amax blocks earlier", () => {
+    // Rig at 27.5: with amax 10 the prediction is ~27.98 (free); with amax
+    // 0.5 stopping alone takes ~2.3s, predicting ~30.5 (blocked).
+    const gentle: AxisConfig = {
+      pan: { min: -180, max: 180, vmax: 5, amax: 0.5 },
+      tilt: { min: -90, max: 90, vmax: 5, amax: 0.5 },
+    };
+    const fallback = nearLimit();
+    tickAt(27.5);
+    expect(fallback.status().panLimited).toBe(false);
+    fallback.stop();
+
+    dev = new FakeDevice();
+    const s = nearLimit(gentle);
+    tickAt(27.5);
+    expect(s.status().panLimited).toBe(true);
+  });
+
+  it("without the head's config the horizon uses trackFallbackAmaxDps2", () => {
+    const s = newSession({ ...c(), trackFallbackAmaxDps2: 0.5 });
+    s.start(bearingTarget(28), clockwiseVel(28, 200), null);
     s.forceStateForTest("tracking");
-    dev.panDeg = 170;
-    dev.lastUpdateMs = clockMs - 200;
-    sched.fire();
+    tickAt(27.5);
+    expect(s.status().panLimited).toBe(true);
+  });
+
+  it("panLimited/tiltLimited reset once motion stops", () => {
+    const s = nearLimit();
+    tickAt(BLOCKED_PAN);
     expect(s.status().panLimited).toBe(true);
 
     s.stop();
 
     expect(s.status().panLimited).toBe(false);
     expect(s.status().tiltLimited).toBe(false);
-  });
-
-  // REGRESSION: the rate slew must not outrank the guard.
-  //
-  // The test above blocks on the FIRST tick, when lastCmdPanDps is still null
-  // -- slewTowards(null, 0, ...) short-circuits to 0, so a guard that no
-  // longer stops instantly still passes it. The dangerous shape is a rig
-  // already slewing at speed when the guard trips: there IS a standing
-  // command, and the slew would ramp it down over several ticks instead.
-  //
-  // That matters because the guard's stopping reserve (limitHorizonMs ->
-  // decelMs) is sized for the FIRMWARE's ramp and assumes a block zeroes the
-  // command at once. Modelling the firmware ramp, stopping distance from
-  // saturation measured 3.4deg unslewed and 3.6deg at the default 40 deg/s/s,
-  // but 11.5deg at 25 and 17.1deg at 10 -- past panMax. trackRateSlewDps is
-  // operator-facing (TB3_TRACK_RATE_SLEW_DPS) and the tempting direction,
-  // lower for smoother video, is the unsafe one.
-  it("REGRESSION: a guard block zeroes a STANDING command on the same tick", () => {
-    const c = { ...cfg, trackKp: 2.0, trackReacquireDeg: 60 };
-    const s = new TrackingSession(dev as never, c, store, () => clockMs, sched);
-    s.start(bearingTarget(179), [0, 0, 0], null);
-    s.forceStateForTest("tracking");
-
-    // Rig starts well clear of panMax and drives toward it, so a real
-    // standing command is established before the guard ever trips.
-    let panDeg = 150;
-    const tickSec = 1 / c.trackTickHz;
-    let sawStandingCommand = false;
-
-    for (let i = 0; i < 60; i++) {
-      dev.panDeg = panDeg;
-      dev.lastUpdateMs = clockMs - 200;   // realistic 5Hz telemetry lag
-      sched.fire();
-      const cmd = s.status().commandedPanDps ?? 0;
-
-      if (s.status().panLimited === true) {
-        // The guard said stop. It must be a stop, not a ramp.
-        expect(sawStandingCommand).toBe(true);   // the setup actually armed it
-        expect(cmd).toBe(0);
-        return;
-      }
-      if (Math.abs(cmd) > 5) sawStandingCommand = true;
-      panDeg += cmd * tickSec;
-    }
-    throw new Error("guard never tripped -- test setup no longer reaches panMax");
   });
 });
 
@@ -523,7 +741,7 @@ describe("TrackingSession dropout coasting", () => {
     dev.lastUpdateMs = clockMs;
     sched.fire();
     expect(s.status().state).toBe("tracking");
-    expect(dev.jogVec).not.toBeNull();
+    expect(dev.tracks.length).toBeGreaterThan(0);
 
     // Past the budget, the hard stop still applies.
     clockMs += 1_500;
@@ -531,7 +749,7 @@ describe("TrackingSession dropout coasting", () => {
     sched.fire();
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("target_stale");
-    expect(dev.jogVec).toBeNull();
+    expect(dev.stopCalls).toBe(1);
   });
 
   it("reports coasting in status once the newest accepted fix ages past ~two reports", () => {
@@ -581,44 +799,3 @@ describe("TrackingSession dropout coasting", () => {
   });
 });
 
-// Commanded-rate slew: discontinuities from noisy fixes/predictor corrections
-// are shaved upstream of the firmware's cubic curve instead of reaching the
-// glass as jerks.
-describe("TrackingSession rate slew", () => {
-  it("bounds tick-to-tick commanded-rate change to trackRateSlewDps / tickHz", () => {
-    const s = newSession();
-    s.start(NORTH, [0, 0, 0], null);
-    s.forceStateForTest("tracking");
-
-    sched.fire();   // establishes the standing command (error 0 -> rate 0)
-    expect(s.status().commandedPanDps).toBeCloseTo(0, 6);
-
-    // Rig parked 5deg off: Kp=1 demands -5 deg/s (pan error is commanded
-    // negative -- see "commands a jog vector" above). 5deg stays under
-    // trackReacquireDeg so the servo branch runs; the slew must shave the
-    // 5 deg/s jump down to the per-tick budget.
-    dev.panDeg = 5;
-    sched.fire();
-    const cmd = s.status().commandedPanDps!;
-    expect(cmd).toBeCloseTo(-cfg.trackRateSlewDps / cfg.trackTickHz, 6);
-    expect(Math.abs(cmd)).toBeLessThan(5);   // clearly NOT the raw demand
-
-    // And it converges: repeated ticks walk toward the demand without
-    // overshooting it.
-    for (let i = 0; i < 10; i++) { dev.lastUpdateMs = clockMs; sched.fire(); }
-    const converged = s.status().commandedPanDps!;
-    expect(converged).toBeLessThan(cmd);         // moved further toward demand
-    expect(converged).toBeCloseTo(-5, 6);        // landed on it, no overshoot
-  });
-
-  it("the first command after a stop passes through unslewed (no soft-start lag)", () => {
-    const s = newSession();
-    s.start(NORTH, [0, 0, 0], null);
-    s.forceStateForTest("tracking");
-    dev.panDeg = 3;
-    sched.fire();
-    // No previous command existed (fresh acquire): full demand (-3 deg/s)
-    // immediately, which is what keeps catch-ups snappy.
-    expect(s.status().commandedPanDps).toBeCloseTo(-3, 6);
-  });
-});

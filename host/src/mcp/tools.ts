@@ -36,9 +36,8 @@ function clamp(v: number, lo: number, hi: number): number {
 // (dashboard/public/jog-hold.js) post a genuine (0,0,0) stop vector on
 // release instead of riding out the last pulse's duration_ms.
 export const jogArgsShape = {
-  pan_dps: z.number().describe("pan rate in degrees/second (approx)"),
-  tilt_dps: z.number().describe("tilt rate in degrees/second (approx)"),
-  aux: z.number().optional().describe("aux axis rate, -100..100 joystick units"),
+  pan_dps: z.number().describe("pan rate in degrees/second (capped per axis at maxJogDps, TB3_MAX_JOG_DPS)"),
+  tilt_dps: z.number().describe("tilt rate in degrees/second (capped per axis at maxJogDps, TB3_MAX_JOG_DPS)"),
   duration_ms: z.number().int().nonnegative().max(30000)
     .describe("how long to jog, milliseconds; 0 stops immediately (zero-rate vector, cleared right away)"),
 };
@@ -117,10 +116,10 @@ export function registerTools(
   server.registerTool(
     "jog",
     {
-      description: "Nudge the rig at a rate for a fixed duration (manual framing). Rate is approximate.",
+      description: "Nudge the rig at a rate (degrees/second, user frame, capped per axis at maxJogDps) for a fixed duration (manual framing). An axis that would run past a travel limit is held.",
       inputSchema: jogArgsShape,
     },
-    async ({ pan_dps, tilt_dps, aux, duration_ms }) => {
+    async ({ pan_dps, tilt_dps, duration_ms }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       if (session.isActive()) {
         return errText("tracking active; stop_tracking first");
@@ -140,16 +139,16 @@ export function registerTools(
       // effective range. limitGuard's math already allows motion AWAY from a
       // limit (the prediction lands back inside the range) — it never traps
       // the operator at a stop with no way back.
+      //
+      // maxJogDps is the manual-jog ceiling, applied per axis BEFORE the guard
+      // so the guard predicts on the rate that is actually sent.
       const rig = currentUserPanTilt(device, cfg);
       const horizon: GuardHorizon = { panMs: duration_ms, tiltMs: duration_ms };
-      const guarded = limitGuard(
-        { panDps: pan_dps, tiltDps: tilt_dps }, rig.panDeg, rig.tiltDeg, effLimits(), horizon,
-      );
-      const x = clamp(Math.round((guarded.out.panDps / cfg.maxJogDps) * 100 * cfg.panSign), -100, 100);
-      const y = clamp(Math.round((guarded.out.tiltDps / cfg.maxJogDps) * 100 * cfg.tiltSign), -100, 100);
-      const a = clamp(Math.round((aux ?? 0) * cfg.auxSign), -100, 100);
-      // TRANSITIONAL — Task 5 rewrites this tool (jog in dps, no aux, no joy reply);
-      // the head takes deg/s, so the joystick deflection above is reply-only until then.
+      const capped = {
+        panDps: clamp(pan_dps, -cfg.maxJogDps, cfg.maxJogDps),
+        tiltDps: clamp(tilt_dps, -cfg.maxJogDps, cfg.maxJogDps),
+      };
+      const guarded = limitGuard(capped, rig.panDeg, rig.tiltDeg, effLimits(), horizon);
       await device.jog(guarded.out.panDps * cfg.panSign, guarded.out.tiltDps * cfg.tiltSign, duration_ms);
       // Surfaced so "I stopped because I'm at the limit" is distinguishable
       // from "the control is broken" — silence here is what makes an operator
@@ -158,7 +157,7 @@ export function registerTools(
       if (guarded.panBlocked) held.push("pan");
       if (guarded.tiltBlocked) held.push("tilt");
       const limitNote = held.length > 0 ? ` — held at travel limit: ${held.join(", ")}` : "";
-      return text(`jogged for ${duration_ms}ms (joy x=${x} y=${y} aux=${a})${limitNote}`);
+      return text(`jogged for ${duration_ms}ms (pan ${guarded.out.panDps}°/s tilt ${guarded.out.tiltDps}°/s)${limitNote}`);
     },
   );
 

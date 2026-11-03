@@ -7,7 +7,7 @@ import { CalibrationStore } from "../src/shared/calibration.js";
 import { loadConfig, type Config } from "../src/shared/config.js";
 import { MAX_OFFSET_DEG } from "../src/shared/track/offset.js";
 import { reachablePanTilt } from "../src/mcp/geo-tools.js";
-import { targetAimAt, controlRate } from "../src/shared/track/control.js";
+import { targetAimAt } from "../src/shared/track/control.js";
 import { emptyEstimator, withFix } from "../src/shared/track/estimator.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,8 +30,7 @@ class FakeDevice {
   lastUpdateMs = 1_000_000;
   // Every track() call, in order (the head's TRACK; Task 5 servos through it).
   tracks: HeadTrackCmd[] = [];
-  jogVec: { panDps: number; tiltDps: number; ttlMs: number } | null = null;
-  cleared = 0;
+  stopCalls = 0;
   gotos: { pan: number; tilt: number }[] = [];
   gotoDeferreds: { resolve: () => void; reject: (e: Error) => void }[] = [];
   getState(): DeviceState {
@@ -42,15 +41,13 @@ class FakeDevice {
       lastUpdateMs: this.lastUpdateMs,
     };
   }
-  setJogVector(panDps: number, tiltDps: number, ttlMs: number) { this.jogVec = { panDps, tiltDps, ttlMs }; }
-  clearJog() { this.jogVec = null; this.cleared++; }
   async track(cmd: HeadTrackCmd) { this.tracks.push(cmd); }
   async gotoAngle(pan: number, tilt: number) {
     this.gotos.push({ pan, tilt });
     return new Promise<void>((resolve, reject) => { this.gotoDeferreds.push({ resolve, reject }); });
   }
   async waitForArrival() { return this.getState(); }
-  async stop() {}
+  async stop() { this.stopCalls++; }
 }
 
 let clockMs = 1_000_000;
@@ -84,66 +81,73 @@ beforeEach(() => {
   sched = manualScheduler();
 });
 
-// Independently recomputes the commanded rate the PRE-offset formula would
-// produce: targetAimAt -> controlRate, with NO applyOffset/reachablePanTilt
-// shift anywhere in the chain -- the literal computation session.tick() used
-// to do (see git history around track/session.ts before this feature). This
-// is the reference "today's behavior" the offset feature must reduce to
-// exactly at offset=(0,0), and must equal baseline + kp*offset otherwise --
-// NOT a hardcoded 0, since a due-north target's tilt (and even pan, via
-// floating residue put through the firmware's cubic rateToDeflection curve)
-// is only ever "close to" zero, never exactly zero. See NORTH's own comment.
-function baselineRates(rigPanDeg = 0, rigTiltDeg = 0) {
+// Independently recomputes the zero-offset setpoint and feed-forward:
+// targetAimAt -> reachablePanTilt, with NO applyOffset anywhere in the chain.
+// This is the reference the offset feature must reduce to exactly at
+// offset=(0,0), and must equal baseline + offset otherwise -- NOT a hardcoded
+// 0, since a due-north target's tilt is only ever "close to" zero. The offset
+// moves the TRACK setpoint (pos) only: it is a constant correction, so it
+// contributes no rate of its own and the feed-forward (vel) is unchanged.
+function baseline() {
   const est = withFix(emptyEstimator(), RIG, NORTH, clockMs, [0, 0, 0]);
   const aim = targetAimAt(est, I, clockMs + cfg.trackLeadMs, [0, 1, 0], cfg.geoPanSign, {
     panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
   })!;
-  return controlRate(aim, rigPanDeg, rigTiltDeg, cfg.trackKp, cfg.maxJogDps);
+  const reach = reachablePanTilt(aim.panDeg, aim.tiltDeg, cfg.panMin, cfg.panMax, cfg.tiltMin, cfg.tiltMax);
+  if ("error" in reach) throw new Error(reach.error);
+  return { aim, reach };
+}
+
+function lastTrack(): Required<HeadTrackCmd> {
+  const t = dev.tracks[dev.tracks.length - 1];
+  if (!t?.pan || !t.tilt) throw new Error("expected a two-axis TRACK");
+  return t as Required<HeadTrackCmd>;
 }
 
 describe("TrackingSession aim-offset — applied to the setpoint", () => {
-  it("zero offset is IDENTICAL to today's behavior (strict extension, pinned)", () => {
+  it("zero offset is IDENTICAL to the unshifted setpoint (strict extension, pinned)", () => {
     const s = tracking();
     expect(s.getOffset()).toEqual({ panDeg: 0, tiltDeg: 0 });
     sched.fire();
-    const base = baselineRates();
-    expect(s.status().commandedPanDps).toBeCloseTo(base.panDps, 9);
-    expect(s.status().commandedTiltDps).toBeCloseTo(base.tiltDps, 9);
+    const base = baseline();
+    expect(lastTrack().pan.pos).toBeCloseTo(base.reach.pan, 9);
+    expect(lastTrack().tilt.pos).toBeCloseTo(base.reach.tilt, 9);
+    expect(s.status().commandedPanDps).toBeCloseTo(base.aim.ratePanDps, 9);
+    expect(s.status().commandedTiltDps).toBeCloseTo(base.aim.rateTiltDps, 9);
   });
 
-  it("a positive pan offset shifts the setpoint, producing a commanded rate kp*offset ABOVE the zero-offset baseline", () => {
-    const base = baselineRates();
+  it("a positive pan offset shifts the TRACK setpoint by exactly the offset, and leaves the feed-forward alone", () => {
+    const base = baseline();
     const s = tracking();
     s.nudgeOffset(3, 0);
     expect(s.getOffset().panDeg).toBeCloseTo(3, 9);
     sched.fire();
-    // errPan = (targetPan + offsetPanDeg) - rigPan, so the offset adds
-    // exactly kp*3 on top of whatever the unshifted baseline already was.
-    expect(s.status().commandedPanDps).toBeCloseTo(base.panDps + cfg.trackKp * 3, 6);
-    expect(s.status().commandedPanDps!).toBeGreaterThan(base.panDps);
+    expect(lastTrack().pan.pos).toBeCloseTo(base.reach.pan + 3, 6);
+    expect(lastTrack().tilt.pos).toBeCloseTo(base.reach.tilt, 6);
+    expect(s.status().commandedPanDps).toBeCloseTo(base.aim.ratePanDps, 9);
   });
 
-  it("a negative tilt offset shifts the setpoint, producing a commanded rate kp*offset BELOW the zero-offset baseline", () => {
-    const base = baselineRates();
+  it("a negative tilt offset shifts the TRACK setpoint BELOW the zero-offset baseline", () => {
+    const base = baseline();
     const s = tracking();
     s.nudgeOffset(0, -2);
     sched.fire();
-    expect(s.status().commandedTiltDps).toBeCloseTo(base.tiltDps + cfg.trackKp * -2, 6);
-    expect(s.status().commandedTiltDps!).toBeLessThan(base.tiltDps);
+    expect(lastTrack().tilt.pos).toBeCloseTo(base.reach.tilt - 2, 6);
+    expect(lastTrack().tilt.pos).toBeLessThan(base.reach.tilt);
   });
 
   it("magnitude scales with the offset (not just direction)", () => {
     const s1 = tracking();
     s1.nudgeOffset(1, 0);
     sched.fire();
-    const small = s1.status().commandedPanDps!;
+    const small = lastTrack().pan.pos;
 
     // Fresh session, same setup, bigger offset.
     dev = new FakeDevice(); dev.lastUpdateMs = clockMs;
     const s2 = tracking();
     s2.nudgeOffset(MAX_OFFSET_DEG, 0);
     sched.fire();
-    const big = s2.status().commandedPanDps!;
+    const big = lastTrack().pan.pos;
 
     expect(big).toBeGreaterThan(small);
   });
@@ -173,15 +177,15 @@ describe("TrackingSession aim-offset — clamped, never an unbounded slew", () =
     expect(result.tiltClamped).toBe(true);
   });
 
-  it("an absurd nudge does not produce an absurd commanded rate — bounded by the SAME clamp a legitimate offset uses", () => {
-    const base = baselineRates();
+  it("an absurd nudge does not produce an absurd setpoint — bounded by the SAME clamp a legitimate offset uses", () => {
+    const base = baseline();
     const s = tracking();
     s.nudgeOffset(500, 0); // clamps to MAX_OFFSET_DEG internally
     sched.fire();
-    // Bounded to baseline + kp*MAX_OFFSET_DEG -- nowhere near what an
-    // unclamped 500° offset would have demanded (kp*500 == 500 dps at kp=1).
-    expect(s.status().commandedPanDps).toBeCloseTo(base.panDps + cfg.trackKp * MAX_OFFSET_DEG, 6);
-    expect(s.status().commandedPanDps!).toBeLessThan(50);
+    // Bounded to baseline + MAX_OFFSET_DEG -- nowhere near the 500° an
+    // unclamped offset would have sent the head to.
+    expect(lastTrack().pan.pos).toBeCloseTo(base.reach.pan + MAX_OFFSET_DEG, 6);
+    expect(s.status().commandedPanDps).toBeCloseTo(base.aim.ratePanDps, 9);
   });
 });
 
@@ -212,7 +216,7 @@ describe("TrackingSession aim-offset — safety: cannot bypass pan/tilt limits",
     sched.fire();
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("below_tilt_limit");
-    expect(dev.jogVec).toBeNull();
+    expect(dev.tracks).toHaveLength(0);
   });
 
   it("REGRESSION: the offset genuinely changes the reachability verdict — the unshifted target passes the SAME gate the shifted one fails", () => {
@@ -249,17 +253,18 @@ describe("TrackingSession aim-offset — safety: cannot bypass pan/tilt limits",
 });
 
 describe("TrackingSession aim-offset — safety: E-STOP/stop() still halts motion regardless of offset", () => {
-  it("stop() clears jog + cancels the tick even with a large standing offset", () => {
+  it("stop() halts the head + cancels the tick even with a large standing offset", () => {
     const s = tracking();
     s.nudgeOffset(MAX_OFFSET_DEG, MAX_OFFSET_DEG);
     sched.fire();
-    expect(dev.jogVec).not.toBeNull();
+    expect(dev.tracks).toHaveLength(1);
 
     s.stop(); // what stop_tracking (and the dashboard's E-STOP fan-out) calls
 
     expect(s.status().state).toBe("stopped");
-    expect(dev.cleared).toBeGreaterThan(0);
-    expect(dev.jogVec).toBeNull();
+    expect(dev.stopCalls).toBe(1);
+    sched.fire();                              // the tick is cancelled: no more TRACKs
+    expect(dev.tracks).toHaveLength(1);
   });
 });
 
