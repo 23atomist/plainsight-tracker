@@ -213,7 +213,12 @@ empty. The schema lists the names the plainsight-ptz firmware sends.
   same physical position in the old and the new frame, so the host can shift
   its calibration by `n - m`. `m` is `null` when pan had no frame to shift
   from: no Pico status was known, or pan was not homed (for example after a
-  Pico reboot, where only the persisted position is known).
+  Pico reboot, where only the persisted position is known). A restore of the
+  persisted position adds `"reason": "restored"`: it is the frame the host
+  already had coming back, not a new reference. Other renames carry no
+  `reason`. The IMU north value is the heading's equivalent (`+ 360k`) nearest
+  the Pico's current pan counter, so it never moves the counter, and the soft
+  limits, a full turn across the ±180 seam.
 - **Dropped** (rule 2, unknown origin): `{"source": "none", "reason":
   "pan unhomed" or "enable off"}`. Pan lost its homed flag (the Pico rebooted),
   or `POST /api/enable` turned the drivers off. Sent only when a reference was
@@ -221,6 +226,10 @@ empty. The schema lists the names the plainsight-ptz firmware sends.
 
 ```json event
 {"type": "event", "t": 1762150003000, "name": "pan_reference", "axis": null, "detail": {"source": "imu", "pan": 123.4, "previous": 121.9}}
+```
+
+```json event
+{"type": "event", "t": 1762150003050, "name": "pan_reference", "axis": null, "detail": {"source": "host", "pan": 12.5, "previous": null, "reason": "restored"}}
 ```
 
 ```json event
@@ -380,7 +389,7 @@ Guards: 423, 503. Also:
 ### POST /api/reference
 
 Re-runs the IMU north reference in the background. It moves tilt to the
-reference angle, so it fails with reason `estop latched` if the latch is set
+reference angle (`HEAD_REF_TILT_DEG`, default 2°, just off the tilt endstop), so it fails with reason `estop latched` if the latch is set
 before the move or while tilt settles (the boot-time `HOME tilt` is skipped
 under the latch too). Body optional:
 `{"timeoutS": 30}`. `timeoutS` must be a positive finite number; it defaults

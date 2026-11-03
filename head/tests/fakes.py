@@ -293,6 +293,11 @@ class FakeBNO055:
         self.closed = True
 
 
+# FakeSerial's MOVE sets only the target; the fake tilt stays where it is (0 after homing).
+# Pin the IMU-north reference tilt there so the settle wait succeeds; the real default (2.0,
+# off the endstop) is covered by test_config.
+FAKE_ENV = {"HEAD_REF_TILT_DEG": "0"}
+
 _CTX_STREAM_S = 0.02  # the real Pico streams every 100 ms; faster keeps tests short
 
 
@@ -311,7 +316,7 @@ class HeadCtx:
     pico_version = "plainsight-ptz 0.1.0"
 
     def __init__(self, env: dict, tmp_path) -> None:
-        self.cfg = HeadConfig.from_env(env)
+        self.cfg = HeadConfig.from_env({**FAKE_ENV, **env})
         self.fake = FakeSerial()
         self.imu_fake = FakeBNO055()
         self.state = HeadState(self.cfg)

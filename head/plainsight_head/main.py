@@ -5,12 +5,13 @@ import asyncio
 import logging
 import os
 import signal
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiohttp import web
 
-from .api import HeadContext, make_app, pico_stop_axes
+from .api import AccessLog, HeadContext, make_app, pico_stop_axes
 from .config import HeadConfig
 from .deadman import JogDeadman
 from .imu import BNO055, OFFSETS_LEN, ImuReader
@@ -33,6 +34,9 @@ HTTP_SHUTDOWN_S = 0.5  # aiohttp waits this twice per busy connection (finish, t
 HTTP_FORCE_S = 0.1  # must be > 0: aiohttp treats a 0 timeout as "wait forever"
 HTTP_CLOSE_CAP_S = 2.0  # the whole server close, so it can never hold back STOP
 STATUS_POLL_S = 0.05
+PICO_EVENT_WARN = ("home_failed", "driver_fault")
+PICO_EVENT_RATE_LIMITED = ("track_timeout", "endstop_hit")
+PICO_EVENT_LOG_EVERY_S = 10.0
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _HOME_DONE = ("homed", "home_failed")
 
@@ -49,6 +53,8 @@ class Head:
         factory = {} if serial_factory is None else {"serial_factory": serial_factory}  # else pyserial
         self._restore_task: asyncio.Task | None = None  # reconnect restore, off the supervisor
         self._orphan_logged: str | None = None  # last _stop_orphans warning, until a stream status
+        self._event_log: dict[str, tuple[float, int]] = {}  # name -> (last logged, suppressed since)
+        self._clock: Callable[[], float] = time.monotonic
         self.link = PicoLink(cfg.serial, cfg.baud, on_status=self._on_stream_status,
                              on_event=self._on_pico_event, on_link=self._on_pico_link,
                              on_reconnect=self._reinit_pico, **factory)
@@ -74,10 +80,27 @@ class Head:
         self.ref.on_status(st)
 
     def _on_pico_event(self, ev: PicoEvent) -> None:
+        self._log_pico_event(ev)
         self.state.publish_event(ev.name, ev.axis, ev.detail)
         fut = self._tilt_home
         if ev.axis == "tilt" and ev.name in _HOME_DONE and fut is not None and not fut.done():
             fut.set_result(ev.name)
+
+    def _log_pico_event(self, ev: PicoEvent) -> None:
+        """Every Pico event reaches the log; the ones a stuck state repeats, at most every 10 s."""
+        level = logging.WARNING if ev.name in PICO_EVENT_WARN else logging.INFO
+        text = f"pico event: {ev.name}" + (f" {ev.axis}" if ev.axis else "") + (f" {ev.detail}" if ev.detail else "")
+        if ev.name in PICO_EVENT_RATE_LIMITED:
+            now = self._clock()
+            last, suppressed = self._event_log.get(ev.name, (None, 0))
+            if last is not None and now - last < PICO_EVENT_LOG_EVERY_S:
+                self._event_log[ev.name] = (last, suppressed + 1)
+                log.debug(text)
+                return
+            self._event_log[ev.name] = (now, 0)
+            if suppressed:
+                text += f" (+{suppressed} more in the last {PICO_EVENT_LOG_EVERY_S:.0f} s)"
+        log.log(level, text)
 
     def _on_pico_link(self, up: bool) -> None:
         self.state.set_pico_link(up)
@@ -309,7 +332,8 @@ async def run(cfg: HeadConfig, *, serial_factory: Callable[[str, int], Any] | No
     head = Head(cfg, serial_factory,
                 imu_open or (lambda: BNO055(cfg.i2c_bus, cfg.imu_address)),
                 store if store is not None else JsonStore(cfg.data_dir))
-    runner = web.AppRunner(make_app(head.ctx), shutdown_timeout=HTTP_SHUTDOWN_S)
+    runner = web.AppRunner(make_app(head.ctx), shutdown_timeout=HTTP_SHUTDOWN_S,
+                           access_log_class=AccessLog)
     tasks: dict[str, asyncio.Task] = {}
     try:
         log.info("startup 1/6: Pico link on %s", cfg.serial)

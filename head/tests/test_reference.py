@@ -250,7 +250,8 @@ async def test_imu_north_reports_previous_and_failure_keeps_the_current_source(c
 async def test_boot_restore_from_file_emits_pan_reference(ctx):
     ctx.store.write(REF, {"pos": 40.5, "source": "imu", "t": ctx.now() - 100})
     await ctx.ref.restore_at_boot()
-    assert ctx.events == [("pan_reference", {"source": "imu", "pan": 40.5, "previous": None})]
+    assert ctx.events == [("pan_reference", {"source": "imu", "pan": 40.5, "previous": None,
+                                             "reason": "restored"})]
 
 
 async def test_boot_restore_failure_emits_pan_reference_failed(ctx):
@@ -283,7 +284,8 @@ async def test_restore_after_reconnect_restores_a_fresh_file(ctx):
     r = await ctx.ref.restore_after_reconnect()  # pan unhomed, as after a Pico reboot
     assert r == ReferenceResult("host", 33.0, None)
     assert ctx.fake.sent[-1] == "SETPOS pan 33.00000" and ctx.state.ref.source == "host"
-    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 33.0, "previous": None})
+    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 33.0, "previous": None,
+                                                "reason": "restored"})
 
 
 @pytest.mark.parametrize("age_s,restore", [(10**7, "persisted"), (60, "imu"), (None, "persisted")])
@@ -353,3 +355,42 @@ async def test_reconnect_restore_queued_behind_imu_north_keeps_the_newer_referen
     assert r.reason == "referenced meanwhile" and r.source == "imu"
     assert [s for s in c.fake.sent if s.startswith("SETPOS")] == ["SETPOS pan 42.00000"]
     assert c.state.ref.source == "imu"
+
+
+# --- host pan-reference review ------------------------------------------------------------
+
+async def test_file_restore_is_tagged_restored_and_host_setpos_is_not(ctx):
+    ctx.store.write(REF, {"pos": 40.5, "source": "imu", "t": ctx.now() - 100})
+    await ctx.ref.restore_at_boot()
+    assert ctx.events[-1] == ("pan_reference", {"source": "imu", "pan": 40.5, "previous": None,
+                                                "reason": "restored"})
+    await ctx.status_now()
+    await ctx.ref.set_from_host(10.0)
+    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 10.0, "previous": 40.5})
+    assert "reason" not in ctx.events[-1][1]
+
+
+async def test_reconnect_restore_is_tagged_restored(ctx):
+    ctx.store.write(REF, {"pos": 33.0, "source": "host", "t": ctx.now() - 60})
+    await ctx.ref.restore_after_reconnect()
+    assert ctx.events[-1][1]["reason"] == "restored"
+
+
+async def test_imu_north_keeps_the_pan_turn_nearest_the_counter(ctx_imu_ready):
+    c = ctx_imu_ready
+    c.fake.model["pan"].update(pos=170.0, homed=True)
+    await c.status_now()
+    c.imu_fake.heading = 185.0  # wraps to -175
+    r = await c.ref.reference_from_imu(1.0)
+    assert r.pan == pytest.approx(185.0)
+    assert c.fake.sent[-1] == "SETPOS pan 185.00000"  # not -175: a 360 deg jump of the counter
+    assert c.events[-1] == ("pan_reference", {"source": "imu", "pan": pytest.approx(185.0), "previous": 170.0})
+
+
+def test_nearest_turn():
+    from plainsight_head.reference import nearest_turn
+
+    assert nearest_turn(-175.0, 170.0) == 185.0
+    assert nearest_turn(175.0, -170.0) == -185.0
+    assert nearest_turn(10.0, 0.0) == 10.0
+    assert nearest_turn(10.0, 700.0) == 730.0
