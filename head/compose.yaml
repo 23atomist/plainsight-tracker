@@ -1,0 +1,26 @@
+services:
+  head:
+    build: .
+    image: plainsight-head
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 5s
+    ports:
+      - "${HEAD_PORT:-8780}:8780"
+    devices:
+      - "${HEAD_SERIAL_BY_ID}:/dev/ttyACM0"
+      - "/dev/i2c-${HEAD_I2C_BUS}:/dev/i2c-${HEAD_I2C_BUS}"
+    group_add:
+      - "${DIALOUT_GID}"
+      - "${I2C_GID}"
+    volumes:
+      - "./data:/data"
+    env_file: .env
+    environment:
+      - HEAD_I2C_BUS=${HEAD_I2C_BUS}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8780/healthz', timeout=2).status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
