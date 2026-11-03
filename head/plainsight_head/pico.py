@@ -32,6 +32,17 @@ def _pyserial_factory(port: str, baud: int) -> Any:
 
 
 class PicoLink:
+    """Serial link to the Pico.
+
+    Any link loss (read error or a stale status stream) closes the port and
+    retries `serial_factory` every `reconnect_s`. After a read error the link
+    is up as soon as the port opens; after a stale stream it is up once a
+    status line arrives on the reopened port (re-probed every `stale_s` if none
+    does). On coming up, `on_link(True)` fires, `expect_stream` is cleared, and
+    `await on_reconnect()` runs. `on_reconnect` MUST re-send STREAM and set
+    `expect_stream = True` again; the caller owns that.
+    """
+
     def __init__(
         self,
         port: str,
@@ -61,6 +72,9 @@ class PicoLink:
         self._gen = 0
         self._reader_died = False
         self._needs_reopen = False
+        self._probe_after_open = False
+        self._probing = False
+        self._probe_started = 0.0
         self._last_status = 0.0
         self._down_at = 0.0
         self._next_try = 0.0
@@ -71,6 +85,7 @@ class PicoLink:
         self._loop = asyncio.get_running_loop()
         self._serial = await asyncio.to_thread(self._factory, self._port, self._baud)
         self._begin_reading()
+        self._last_status = self._loop.time()
         self.connected = True
         self._on_link(True)
         self._supervisor = asyncio.create_task(self._supervise(), name="pico-supervisor")
@@ -87,7 +102,6 @@ class PicoLink:
     def _begin_reading(self) -> None:
         self._gen += 1
         self._reader_died = False
-        self._last_status = self._loop.time()
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._read_loop, args=(self._serial, self._stop, self._gen),
@@ -167,18 +181,27 @@ class PicoLink:
                 if self._reader_died:
                     await self._go_down("reader died", reopen=True)
                 elif self.expect_stream and now - self._last_status > self._stale_s:
-                    await self._go_down("status stream stale", reopen=False)
+                    await self._go_down("status stream stale", reopen=True, probe=True)
             elif self._needs_reopen:
                 if now >= self._next_try:
                     await self._try_reopen()
-            elif self._last_status > self._down_at:
-                await self._come_up()  # port stayed open; the stream resumed
+            elif self._probing:
+                if self._last_status > self._down_at:
+                    self._probing = False
+                    await self._come_up()
+                elif now - self._probe_started > self._stale_s:
+                    log.warning("no status after reopen; reopening again")
+                    self._probing = False
+                    await asyncio.to_thread(self._end_reading)
+                    self._needs_reopen = True
+                    self._next_try = now + self._reconnect_s
 
-    async def _go_down(self, why: str, *, reopen: bool) -> None:
+    async def _go_down(self, why: str, *, reopen: bool, probe: bool = False) -> None:
         log.warning("pico link down: %s", why)
         self.connected = False
         self._down_at = self._loop.time()
         self._needs_reopen = reopen
+        self._probe_after_open = probe
         self._next_try = self._down_at + self._reconnect_s
         if reopen:
             await asyncio.to_thread(self._end_reading)
@@ -193,10 +216,15 @@ class PicoLink:
             return
         self._needs_reopen = False
         self._begin_reading()
-        await self._come_up()
+        if self._probe_after_open:
+            self._probing = True
+            self._probe_started = self._loop.time()
+        else:
+            await self._come_up()
 
     async def _come_up(self) -> None:
         self.connected = True
+        self._last_status = self._loop.time()
         self.expect_stream = False  # the stream died with the link; on_reconnect re-arms it
         self._on_link(True)
         if self._on_reconnect is not None:

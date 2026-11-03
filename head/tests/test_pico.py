@@ -65,3 +65,12 @@ async def test_link_loss_and_reconnect():
     fake.emit_status(); await asyncio.sleep(0.2)  # factory returns the same fake; it reconnects
     assert seen["link"][-1] is True and reconnected == [1]
     await link.close()
+
+
+async def test_read_error_closes_reopens_and_commands_work_again():
+    fake = FakeSerial(); link, seen = await make_link(fake, reconnect_s=0.05)
+    fake.fail_next_reads(1)
+    await asyncio.sleep(0.3)
+    assert seen["link"] == [True, False, True] and link.connected
+    assert await link.command("VER") == ["V plainsight-ptz 0.1.0"]
+    await link.close()
