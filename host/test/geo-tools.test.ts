@@ -832,3 +832,79 @@ describe("reachablePanTilt (reachability)", () => {
     expect(r.error).toMatch(/pan/i);
   });
 });
+
+// Fix round E3: a sighting or a geo-point taken while pan's origin is unknown
+// records (or aims by) a pan that means nothing. solve_calibration stays
+// allowed -- it only re-fits what is already stored.
+describe("geo tools while pan is unreferenced", () => {
+  async function unreferenced() {
+    const h = await harness();
+    await h.client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    h.store.setOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], new Date(0).toISOString());
+    mock!.model.ref = { pan: "none", persisted: false, ageS: null };
+    const t0 = Date.now();
+    while (dev!.getState().ref.pan !== "none" && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 20));
+    return h;
+  }
+
+  for (const [name, args] of [
+    ["sight_landmark", { lat: 46, lon: 10, height_m: 100 }],
+    ["sight_aircraft", { hex: "a1b2c3" }],
+    ["point_at", { lat: 46, lon: 10, height_m: 100 }],
+    ["point_at_azel", { azimuth_deg: 10, elevation_deg: 20 }],
+  ] as const) {
+    it(`${name} refuses with the re-reference hint and records/moves nothing`, async () => {
+      const { client, store } = await unreferenced();
+      const sightings = store.get().sightings.length;
+      const gotos = mock!.gotoCount;
+      const res: any = await client.callTool({ name, arguments: args as Record<string, unknown> });
+      expect(res.isError).toBe(true);
+      expect(textOf(res)).toBe("pan unreferenced — run reference_pan or set_position");
+      expect(store.get().sightings.length).toBe(sightings);
+      expect(mock!.gotoCount).toBe(gotos);
+    });
+  }
+});
+
+describe("calibration frame verification (fix round E1)", () => {
+  it("confirm_pan_frame clears the flag and says so; a second call reports nothing to confirm", async () => {
+    const { client, store } = await harness();
+    store.markFrameUnverified("pan referenced by imu with no previous frame");
+    let res: any = await client.callTool({ name: "confirm_pan_frame", arguments: {} });
+    expect(res.isError).toBeFalsy();
+    expect(store.isFrameUnverified()).toBe(false);
+    expect(textOf(res)).toMatch(/confirmed/i);
+    res = await client.callTool({ name: "confirm_pan_frame", arguments: {} });
+    expect(textOf(res)).toMatch(/already verified|nothing to confirm/i);
+  });
+
+  it("solve_calibration clears the flag only once a sighting taken after it is in the solve", async () => {
+    const { client, store } = await harness();
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    mock!.setPosition(0, 2);
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "sight_landmark", arguments: { lat: 46, lon: 10, height_m: 100, label: "N" } });
+    store.markFrameUnverified("test");
+
+    // Only the pre-flag sighting (+ the TRIAD fallback needs two): solve
+    // refuses for lack of sightings, flag stays.
+    await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(store.isFrameUnverified()).toBe(true);
+
+    mock!.setPosition(80, 1);
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "sight_landmark", arguments: { lat: 45, lon: 11.4, height_m: 100, label: "E" } });
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError).toBeFalsy();
+    expect(store.isFrameUnverified()).toBe(false);
+    expect(textOf(res)).toMatch(/frame verified/i);
+  });
+
+  it("get_calibration reports frame_verified and the reason", async () => {
+    const { client, store } = await harness();
+    store.markFrameUnverified("pan referenced by host with no previous frame");
+    const body = JSON.parse(textOf(await client.callTool({ name: "get_calibration", arguments: {} })));
+    expect(body.frame_verified).toBe(false);
+    expect(body.frame_unverified_reason).toMatch(/host/);
+  });
+});

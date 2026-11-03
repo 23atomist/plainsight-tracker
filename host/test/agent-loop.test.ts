@@ -17,7 +17,7 @@ function client(over: Partial<RigMcpClient> = {}): { c: RigMcpClient; calls: str
   const c: RigMcpClient = {
     scanAircraft: async () => [brief("aaa"), brief("bbb")],
     getTracked: async () => ({ hex: null }),
-    getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: true }),
+    getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: true, calibrationVerified: true }),
     track: async (h) => { calls.push(`track:${h}`); },
     stop: async () => { calls.push("stop"); },
     parkIdle: async () => { calls.push("parkIdle"); return { parked: true, reason: "parked" }; },
@@ -36,7 +36,7 @@ describe("runOnce", () => {
   it("keeps without asking the LLM when the rig's pan is unreferenced", async () => {
     const { c, calls } = client({
       getTracked: async () => ({ hex: "aaa" }),
-      getStatus: async () => ({ state: "waiting", label: "x", pointingErrorDeg: null, panReferenced: false }),
+      getStatus: async () => ({ state: "waiting", label: "x", pointingErrorDeg: null, panReferenced: false, calibrationVerified: true }),
     });
     const choose = vi.fn(async () => ({ action: "track" as const, hex: "bbb", reason: "" }));
     const out = await runOnce(deps(c, choose), { lastSwitchMs: 5 });
@@ -46,10 +46,22 @@ describe("runOnce", () => {
     expect(out.state.lastSwitchMs).toBe(5);
   });
 
+  it("keeps without asking the LLM while the calibration frame is unverified", async () => {
+    const { c, calls } = client({
+      scanAircraft: async () => [],
+      getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: true, calibrationVerified: false }),
+    });
+    const choose = vi.fn(async () => ({ action: "keep" as const, reason: "" }));
+    const out = await runOnce(deps(c, choose), { lastSwitchMs: 0 });
+    expect(choose).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    expect(out.action).toEqual({ kind: "keep", reason: "calibration_unverified" });
+  });
+
   it("does not idle-park an unreferenced rig even with nothing to track", async () => {
     const { c, calls } = client({
       scanAircraft: async () => [],
-      getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: false }),
+      getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: false, calibrationVerified: true }),
     });
     const out = await runOnce(deps(c, async () => ({ action: "keep", reason: "" })), { lastSwitchMs: 0 });
     expect(calls).toEqual([]);

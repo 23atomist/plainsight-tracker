@@ -149,6 +149,21 @@ describe("track tools", () => {
     expect(mock.gotoCount).toBe(0);
   });
 
+  it("start_tracking refuses while the calibration frame is unverified; status reports calibration_verified", async () => {
+    const session = await harness();
+    let body = JSON.parse(textOf(await client.callTool({ name: "get_tracking_status", arguments: {} })));
+    expect(body.calibration_verified).toBe(true);
+    store.markFrameUnverified("test");
+    body = JSON.parse(textOf(await client.callTool({ name: "get_tracking_status", arguments: {} })));
+    expect(body.calibration_verified).toBe(false);
+    const r: any = await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toMatch(/^calibration frame unverified/);
+    expect(textOf(r)).toMatch(/confirm_pan_frame/);
+    expect(session.isActive()).toBe(false);
+    expect(mock.gotoCount).toBe(0);
+  });
+
   it("stop_tracking ends the session", async () => {
     const session = await harness();
     await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });

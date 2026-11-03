@@ -682,3 +682,80 @@ describe("pan unreferenced", () => {
     expect(mock!.stopCount).toBeGreaterThan(stopsBefore);
   });
 });
+
+// Fix round E1: an unverified calibration frame gates the parks exactly like
+// an unreferenced pan -- the sun-path check would use a solve that may be
+// off by the whole rename.
+describe("calibration frame unverified", () => {
+  const NIGHT_MS = Date.UTC(2026, 0, 1, 8, 0);
+  const NOON_MS = Date.UTC(2026, 6, 17, 19, 30);
+
+  it("idle park refuses with calibration_unverified", async () => {
+    const { cfg, store } = await harness(25, NIGHT_MS);
+    await new Promise((r) => setTimeout(r, 200));
+    store.markFrameUnverified("test");
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NIGHT_MS, manualScheduler().sched);
+    const before = motionCalls(mock!).length;
+    expect(await sup.parkIdle()).toEqual({ parked: false, reason: "calibration_unverified" });
+    expect(motionCalls(mock!).slice(before)).toEqual([]);
+  });
+
+  it("a sun trip halts and locks with calibration_unverified, and flies no park", async () => {
+    const { cfg, store } = await harness(25, NOON_MS);
+    mock!.setPosition(175, 77);
+    await new Promise((r) => setTimeout(r, 200));
+    store.markFrameUnverified("test");
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NOON_MS, manualScheduler().sched);
+    const gotosBefore = mock!.gotoCount;
+    sup.tickForTest();
+    expect(sup.status()).toMatchObject({ state: "fault", reason: "calibration_unverified", locked: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(mock!.gotoCount).toBe(gotosBefore);
+  });
+});
+
+// Minor fix: a pan rename moves the counter by up to hundreds of degrees
+// between two sun-guard ticks. Read as motion that is an absurd rate whose
+// predicted boresight lands anywhere -- here, on the sun -- and false-trips.
+describe("onPanRenamed resets the rate history", () => {
+  const NOON_MS = Date.UTC(2026, 6, 17, 19, 30);
+
+  function stubDevice(pose: { pan: number; tilt: number; t: number }) {
+    const state = () => ({
+      connected: true, panDeg: pose.pan, tiltDeg: pose.tilt, zoomDeg: 0, focusDeg: 0, moving: false,
+      enabled: true, estop: false, tiltDisagreeDeg: null, ref: { pan: "host", persisted: true, ageS: 0 },
+      link: { pico: true, imu: true }, lastUpdateMs: pose.t,
+    });
+    return {
+      getState: state, lockJog() {}, unlockJog() {}, clearJog() {},
+      async stop() {}, async gotoAngle() {}, async waitForArrival() { return state(); },
+    };
+  }
+
+  for (const reset of [true, false]) {
+    it(reset ? "after onPanRenamed a rename is not motion: no trip" : "control: without the reset the same rename false-trips", () => {
+      const cfg = { ...loadConfig(undefined, { TB3_SUN_GUARD_TICK_HZ: "10" }), sunConeDeg: 20, sunGuardEnabled: true };
+      const store = calibratedStore();   // identity R: pan == azimuth
+      const { azDeg, elDeg } = sunAzEl({ lat: 33.4484, lon: -112.074, height: 0 }, NOON_MS);
+      // Identity R, tilt at the sun's elevation: 120 deg of azimuth away is
+      // ~22.5 deg off the sun (outside the 20 deg cone); the rename moves the
+      // counter by +120, and the old rate history would extrapolate one more
+      // +120 over the 100 ms horizon -- straight onto the sun.
+      const pose = { pan: azDeg - 240, tilt: elDeg, t: NOON_MS };
+      const dev = stubDevice(pose);
+      let now = NOON_MS;
+      const session = { stop() {}, isActive: () => false };
+      const sup = new SunSupervisor(dev as never, cfg, store, session as never, () => now, manualScheduler().sched,
+        () => ({}), () => ({ pan: { amax: 1e9 }, tilt: { amax: 1e9 } }) as never);
+      sup.tickForTest();
+      expect(sup.status().state).toBe("monitoring");
+      now += 100; pose.t = now; pose.pan = azDeg - 120;
+      if (reset) sup.onPanRenamed();
+      sup.tickForTest();
+      if (reset) expect(sup.status().state).toBe("monitoring");
+      expect(sup.isSunLocked()).toBe(!reset);   // the control tripped
+    });
+  }
+});

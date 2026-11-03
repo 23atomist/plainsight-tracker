@@ -515,7 +515,7 @@ describe("Device (head API)", () => {
     expect(changes).toEqual([
       { source: "imu", pan: 123.4, previous: 121.9 },
       { source: "host", pan: 0, previous: null },
-      { source: "none", pan: null, previous: null },
+      { source: "none", pan: null, previous: null, reason: "pan unhomed" },
     ]);
 
     // POST /api/setpos with pan makes the head announce the rename.

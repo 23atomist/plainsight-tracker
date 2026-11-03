@@ -59,6 +59,8 @@ export interface ReferenceChange {
   pan: number | null;
   /** The same position in the old frame (null when there was no frame to shift from). */
   previous: number | null;
+  /** The head's tag: "restored" for a persisted-file restore; the drop reason for source "none". */
+  reason?: string;
 }
 
 export type AxisConfig = Record<"pan" | "tilt", HeadAxisConfig>;
@@ -145,6 +147,10 @@ export class Device {
   private telemetryListeners: ((s: DeviceState) => void)[] = [];
   private eventListeners: ((e: HeadEvent) => void)[] = [];
   private referenceListeners: ((c: ReferenceChange) => void)[] = [];
+  private refTickListeners: ((ref: HeadRef, firstSinceConnect: boolean) => void)[] = [];
+  // Set on every WebSocket open; the next tick is the first of that
+  // connection (see onRefTick).
+  private firstTickPending = false;
   private configListeners: ((c: AxisConfig) => void)[] = [];
 
   constructor(
@@ -220,6 +226,13 @@ export class Device {
   /** `pan_reference` events: the pan frame was renamed (or dropped: source "none"). */
   onReferenceChanged(cb: (c: ReferenceChange) => void): void { this.referenceListeners.push(cb); }
 
+  /**
+   * Every tick's `ref` (with or without axes), flagged when it is the first
+   * tick of a (re)connection -- the moment to compare against what the host
+   * last knew, since a rename while the link was down sent no event we saw.
+   */
+  onRefTick(cb: (ref: HeadRef, firstSinceConnect: boolean) => void): void { this.refTickListeners.push(cb); }
+
   /** After each successful `GET /api/config` (on connect and on every `config` event). */
   onConfig(cb: (c: AxisConfig) => void): void { this.configListeners.push(cb); }
 
@@ -241,6 +254,7 @@ export class Device {
     this.ws = ws;
     ws.on("open", () => {
       this.state.connected = true;
+      this.firstTickPending = true;
       void this.refreshConfig();
     });
     ws.on("message", (buf) => this.onMessage(buf.toString()));
@@ -291,6 +305,11 @@ export class Device {
     s.tiltDisagreeDeg = t.tiltDisagreeDeg;
     s.ref = { ...t.ref };
     s.link = { ...t.link };
+    const first = this.firstTickPending;
+    this.firstTickPending = false;
+    for (const cb of this.refTickListeners) {
+      try { cb({ ...t.ref }, first); } catch { /* isolated, see onTelemetry */ }
+    }
     if (!t.axes) return; // IMU-only tick: no motion telemetry (see DeviceState)
     s.axes = {
       pan: { ...t.axes.pan }, tilt: { ...t.axes.tilt },
@@ -330,8 +349,8 @@ export class Device {
     if (e.name === "pan_reference") {
       const d = PanReferenceDetailZ.parse(e.detail);
       const change: ReferenceChange = "pan" in d
-        ? { source: d.source, pan: d.pan, previous: d.previous }
-        : { source: d.source, pan: null, previous: null };
+        ? { source: d.source, pan: d.pan, previous: d.previous, ...(d.reason !== undefined ? { reason: d.reason } : {}) }
+        : { source: d.source, pan: null, previous: null, reason: d.reason };
       for (const cb of this.referenceListeners) {
         try { cb({ ...change }); } catch { /* isolated, see onTelemetry */ }
       }

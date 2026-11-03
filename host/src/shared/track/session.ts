@@ -31,11 +31,25 @@ export type WaitReason =
   // spec 6.8 rule 2. Every pan the session would compute is against a zero
   // that no longer exists, so it holds without moving until a reference is
   // back (set_position / reference_pan, or the head's own restore).
-  | "pan_unreferenced";
+  | "pan_unreferenced"
+  // Pan IS referenced, but by a reference with no known offset from the
+  // frame the calibration was solved in (CalibrationStore.frameUnverified):
+  // every aim could be off by the whole rename. Held like pan_unreferenced
+  // until a re-solve with a fresh sighting or confirm_pan_frame.
+  | "calibration_unverified";
 
 /** True when the head reports pan's origin as unknown (ref.pan "none"). */
 export function isPanUnreferenced(s: DeviceState): boolean {
   return s.ref.pan === "none";
+}
+
+/** The rig-state gates on ALL automated motion (spec 6.8 rule 2 + the frame check). */
+export type AutomationBlock = "pan_unreferenced" | "calibration_unverified";
+
+export function automationBlock(s: DeviceState, store: { isFrameUnverified(): boolean }): AutomationBlock | null {
+  if (isPanUnreferenced(s)) return "pan_unreferenced";
+  if (store.isFrameUnverified()) return "calibration_unverified";
+  return null;
 }
 
 export interface TrackStatus {
@@ -291,6 +305,16 @@ export class TrackingSession {
     return !isPanUnreferenced(this.device.getState());
   }
 
+  /** False while the calibration's pan frame is unverified (CalibrationStore.frameUnverified). */
+  calibrationVerified(): boolean {
+    return !this.store.isFrameUnverified();
+  }
+
+  /** Why automated motion is refused right now, or null (tools, status). */
+  automationBlock(): AutomationBlock | null {
+    return automationBlock(this.device.getState(), this.store);
+  }
+
   status(): TrackStatus {
     const dev = this.device.getState();
     const fixMs = lastFixMs(this.est);
@@ -467,9 +491,11 @@ export class TrackingSession {
       this.wait("telemetry_stale"); return;
     }
     // A rig-state gate, not a policy predicate (policy is per-aircraft): with
-    // pan's zero unknown no aim is meaningful. After telemetry_stale on
-    // purpose -- a stale snapshot's ref is as untrustworthy as its pan.
-    if (isPanUnreferenced(dev)) { this.wait("pan_unreferenced"); return; }
+    // pan's zero unknown -- or of unknown offset from the calibration's frame
+    // -- no aim is meaningful. After telemetry_stale on purpose: a stale
+    // snapshot's ref is as untrustworthy as its pan.
+    const block = automationBlock(dev, this.store);
+    if (block) { this.wait(block); return; }
     const fixMs = lastFixMs(this.est);
     if (fixMs === null || t - fixMs > this.cfg.trackMaxTargetAgeMs) { this.wait("target_stale"); return; }
 
@@ -627,7 +653,8 @@ export class TrackingSession {
     // start() -> beginAcquire() slews before tick()'s gate ever runs (same
     // reasoning as the sector/floor checks below), so the unreferenced gate
     // must be here too or the first acquire would fly blind.
-    if (isPanUnreferenced(this.device.getState())) { this.wait("pan_unreferenced"); return; }
+    const block = this.automationBlock();
+    if (block) { this.wait(block); return; }
     const aim = targetAimAt(this.est, R, this.now() + this.cfg.trackLeadMs, this.cHead(), this.cfg.geoPanSign, this.limits());
     if (!aim) { this.wait("target_stale"); return; }
     // Azimuth-sector filter: refuse to dispatch the initial goto toward an

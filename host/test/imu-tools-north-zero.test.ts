@@ -66,6 +66,18 @@ afterEach(async () => {
 });
 
 describe("set_north_zero", () => {
+  it("refuses while pan is unreferenced (fix round E3)", async () => {
+    const { client, store } = await harness();
+    store.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
+    mock!.model.ref = { pan: "none", persisted: false, ageS: null };
+    const t0 = Date.now();
+    while (dev!.getState().ref.pan !== "none" && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 20));
+    const res: any = await client.callTool({ name: "set_north_zero", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe("pan unreferenced — run reference_pan or set_position");
+    expect(store.getOrientation()).toBeUndefined();
+  });
+
   it("refuses without an IMU characterisation (no characterize_imu run)", async () => {
     const { client } = await harness();
     const res: any = await client.callTool({ name: "set_north_zero", arguments: {} });

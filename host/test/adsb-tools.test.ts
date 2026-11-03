@@ -310,6 +310,31 @@ describe("toPolicyTarget", () => {
 // follower slews and servos on its own), so it is refused while pan's origin
 // is unknown -- before the follower is ever bound.
 describe("track_aircraft while pan is unreferenced", () => {
+  it("refuses with the calibration-unverified hint and never binds the follower", async () => {
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-adsb-")), "cal.json"));
+    store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
+    store.setOrientation(I, new Date(0).toISOString());
+    const bound: string[] = [];
+    const server = new McpServer({ name: "t", version: "0" });
+    registerAdsbTools(
+      server,
+      { getSnapshot: () => ({ nowSec: NIGHT / 1000, aircraft: [] }) } as never,
+      { bind: (h: string) => { bound.push(h); }, onSnapshot: () => {}, status: () => ({ hex: null, lostMs: null, lastError: null }) } as never,
+      store, cfg,
+      { automationBlock: () => "calibration_unverified", isActive: () => false } as never,
+      { isSunLocked: () => false } as never,
+      { get: () => ({ enabled: false, startDeg: 0, endDeg: 360 }) } as never,
+    );
+    const client = new Client({ name: "c", version: "0" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(b), client.connect(a)]);
+    const r: any = await client.callTool({ name: "track_aircraft", arguments: { hex: "a1b2c3" } });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/^calibration frame unverified/);
+    expect(bound).toEqual([]);
+    await client.close();
+  });
+
   it("refuses with the re-reference hint and never binds the follower", async () => {
     const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-adsb-")), "cal.json"));
     store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
@@ -321,7 +346,7 @@ describe("track_aircraft while pan is unreferenced", () => {
       { getSnapshot: () => ({ nowSec: NIGHT / 1000, aircraft: [] }) } as never,
       { bind: (h: string) => { bound.push(h); }, onSnapshot: () => {}, status: () => ({ hex: null, lostMs: null, lastError: null }) } as never,
       store, cfg,
-      { panReferenced: () => false, isActive: () => false } as never,
+      { automationBlock: () => "pan_unreferenced", isActive: () => false } as never,
       { isSunLocked: () => false } as never,
       { get: () => ({ enabled: false, startDeg: 0, endDeg: 360 }) } as never,
     );

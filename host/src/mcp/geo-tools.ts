@@ -3,7 +3,7 @@ import { z } from "zod";
 import { Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
 import { applySign } from "../shared/angles.js";
-import { CalibrationStore } from "../shared/calibration.js";
+import { CalibrationStore, type Sighting } from "../shared/calibration.js";
 import { Geodetic, enuDirection, azElRange, geodeticToEcef } from "../shared/geo/wgs84.js";
 import { solveOrientation, separationDeg, resolvePanInRange } from "../shared/geo/orientation.js";
 import { panTiltToMount } from "../shared/geo/boresight.js";
@@ -13,9 +13,9 @@ import {
 } from "../shared/geo/imu-orientation.js";
 import { residualRmsBoundDeg, MAX_CHEAD_OFF_AXIS_DEG } from "../shared/geo/calibration-fit.js";
 import { moveToUserAngle } from "./move.js";
-import { TrackingSession } from "../shared/track/session.js";
+import { TrackingSession, isPanUnreferenced } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
-import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
+import { text, errText, SUN_LOCKED_MSG, PAN_UNREFERENCED_MSG } from "./tool-helpers.js";
 import { AdsbSource } from "../shared/adsb/source.js";
 import { extrapolateSightingPosition } from "../shared/adsb/extrapolate.js";
 import { LimitsStore, effectiveLimits, CeilingLimits } from "../shared/limits-store.js";
@@ -101,6 +101,29 @@ export function registerGeoTools(
   // teach_limit/clear_taught_limits between two point_at calls must take
   // effect on the very next one.
   const effLimits = (): CeilingLimits => effectiveLimits(cfgCeiling, limitsStore.get());
+  // After a successful solve: the calibration-frame flag clears only if the
+  // solve used a sighting aimed in the CURRENT frame (taken since the flag).
+  const verifyFrameNote = (used: readonly Sighting[]): string => {
+    if (!store.isFrameUnverified()) return "";
+    return store.clearFrameUnverifiedIfResighted(used)
+      ? " Pan frame verified: this solve includes a sighting taken since the pan re-reference; automated motion is allowed again."
+      : " Pan frame STILL UNVERIFIED: every sighting in this solve predates the pan re-reference, so it is still in the old frame. Take a new sighting and solve again, or confirm_pan_frame if the head was not moved.";
+  };
+
+  server.registerTool(
+    "confirm_pan_frame",
+    {
+      description:
+        "declare that the current pan reference is the same frame the calibration was solved in — use after a Pico reboot when the head was not moved",
+      inputSchema: {},
+    },
+    async () => {
+      const reason = store.frameUnverifiedReason();
+      if (!store.confirmFrame()) return text("pan frame already verified — nothing to confirm");
+      return text(`pan frame confirmed by the operator; automated motion is allowed again (it had been held because: ${reason})`);
+    },
+  );
+
   server.registerTool(
     "set_rig_location",
     {
@@ -131,6 +154,9 @@ export function registerGeoTools(
     },
     async ({ lat, lon, height_m, label }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      // A sighting records the CURRENT pan: with pan's origin unknown that
+      // number belongs to no frame and would poison every later solve.
+      if (isPanUnreferenced(device.getState())) return errText(PAN_UNREFERENCED_MSG);
       if (store.get().rig === undefined) {
         return errText("set the rig location first (set_rig_location) before sighting landmarks");
       }
@@ -160,6 +186,8 @@ export function registerGeoTools(
     },
     async ({ hex }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      // Same as sight_landmark: no frame, no sighting.
+      if (isPanUnreferenced(device.getState())) return errText(PAN_UNREFERENCED_MSG);
       if (store.get().rig === undefined) {
         return errText("set the rig location first (set_rig_location) before sighting aircraft");
       }
@@ -290,6 +318,11 @@ export function registerGeoTools(
         // absent (schema tolerates it) on a profile persisted before this
         // field existed.
         imu_mounting: imu ? { rms_deg: imu.rmsDeg ?? null } : null,
+        // False after a pan reference of unknown offset from this solve's
+        // frame; automated motion is held until a re-solve with a fresh
+        // sighting or confirm_pan_frame.
+        frame_verified: !store.isFrameUnverified(),
+        frame_unverified_reason: store.frameUnverifiedReason(),
       }, null, 2));
     },
   );
@@ -448,6 +481,7 @@ export function registerGeoTools(
         store.setBaseDown(dBase);
         const fit = store.getLastFit();
         if (!fit) return errText("solve failed: no usable sightings for the fit");
+        const frameNote = verifyFrameNote(store.get().sightings.filter((_, i) => !fit.rejected[i]));
 
         const imuNote = imuDisagreeDeg > 2
           ? ` WARNING: the live gravity read disagrees with the stored IMU characterization by ${imuDisagreeDeg.toFixed(1)}° — that should be ~0° regardless of posture, so R_s is stale (the IMU moved, or characterize_imu was run on a different setup). Re-run characterize_imu.`
@@ -469,7 +503,7 @@ export function registerGeoTools(
           tilt_spread_deg: Number(fit.tiltSpreadDeg.toFixed(1)),
           rms_deg: Number(fit.rmsDeg.toFixed(3)),
           base_tilt_deg: Number(baseTilt.toFixed(2)),
-          note: `${note}${imuNote}`,
+          note: `${note}${imuNote}${frameNote}`,
         }, null, 2));
       }
 
@@ -501,6 +535,7 @@ export function registerGeoTools(
       }
       const R = solveOrientation(mountA, enuA, mountB, enuB);
       store.setOrientation(R, new Date().toISOString());
+      const frameNote = verifyFrameNote([sa, sb]);
 
       // Heading = ENU azimuth the boresight points at pan=0,tilt=0, i.e. the
       // direction of the mount-forward (+Y) axis = second column of R.
@@ -517,7 +552,7 @@ export function registerGeoTools(
         heading_deg: Number(heading.toFixed(2)),
         base_tilt_deg: Number(baseTilt.toFixed(2)),
         separation_deg: Number(sep.toFixed(1)),
-        note: `solved from 2 sightings.${warn}`,
+        note: `solved from 2 sightings.${warn}${frameNote}`,
       }));
     },
   );
@@ -535,6 +570,9 @@ export function registerGeoTools(
     },
     async ({ lat, lon, height_m, speed_dps }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      // Geo-pointing aims by the calibration, i.e. by pan's zero: unknown zero,
+      // unknown aim. goto_angle/jog stay open for re-referencing.
+      if (isPanUnreferenced(device.getState())) return errText(PAN_UNREFERENCED_MSG);
       if (session.isActive()) {
         return errText("tracking active; stop_tracking first");
       }
@@ -579,6 +617,8 @@ export function registerGeoTools(
     },
     async ({ azimuth_deg, elevation_deg, speed_dps }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      // As point_at.
+      if (isPanUnreferenced(device.getState())) return errText(PAN_UNREFERENCED_MSG);
       if (session.isActive()) {
         return errText("tracking active; stop_tracking first");
       }

@@ -18,16 +18,19 @@ const ScanRow = z.object({
 });
 const ScanBody = z.object({ aircraft: z.array(ScanRow) });
 const TrackedBody = z.object({ hex: z.string().nullable() });
-// pan_referenced is REQUIRED: a status that does not say the rig is
-// referenced must never be read as permission to move it (fail closed).
+// pan_referenced and calibration_verified are REQUIRED: a status that does
+// not say the rig is referenced and verified must never be read as
+// permission to move it (fail closed).
 const StatusBody = z.object({
   state: z.string(), label: z.string().nullable(), pointing_error_deg: z.number().nullable(),
   pan_referenced: z.boolean(),
+  calibration_verified: z.boolean(),
 });
 
 export function parseTrackingStatus(text: string): RigStatus {
   const b = StatusBody.parse(JSON.parse(text));
-  return { state: b.state, label: b.label, pointingErrorDeg: b.pointing_error_deg, panReferenced: b.pan_referenced };
+  return { state: b.state, label: b.label, pointingErrorDeg: b.pointing_error_deg, panReferenced: b.pan_referenced,
+    calibrationVerified: b.calibration_verified };
 }
 const ParkIdleBody = z.object({ parked: z.boolean(), reason: z.string() });
 

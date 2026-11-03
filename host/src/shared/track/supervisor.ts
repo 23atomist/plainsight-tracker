@@ -1,7 +1,7 @@
 import { AxisConfig, Device } from "../device.js";
 import { Config } from "../config.js";
 import { CalibrationStore } from "../calibration.js";
-import { TrackingSession, Scheduler, realScheduler, isPanUnreferenced } from "./session.js";
+import { TrackingSession, Scheduler, realScheduler, automationBlock } from "./session.js";
 import { sunEnu, sunAzEl } from "../geo/sun.js";
 import { checkSun, planPark, ParkPlan } from "./sunguard.js";
 import { boresightEnu, limitHorizonMs, usableOr } from "./control.js";
@@ -24,7 +24,7 @@ export interface SunStatus {
   readonly locked: boolean;
 }
 
-type IdleParkAbort = "estop" | "pan_unreferenced" | "sun_locked" | "tracking_active";
+type IdleParkAbort = "estop" | "pan_unreferenced" | "calibration_unverified" | "sun_locked" | "tracking_active";
 
 interface Boresight { readonly panDeg: number; readonly tiltDeg: number; readonly enu: Vec3 }
 
@@ -101,6 +101,13 @@ export class SunSupervisor {
   stop(): void { this.timer?.cancel(); this.timer = null; }
 
   isSunLocked(): boolean { return this.locked; }
+
+  // The head renamed pan (any pan_reference; server.ts wires it through
+  // wireReferenceShift). The rate history spans the rename, so the next
+  // tick would read the counter jump -- up to hundreds of degrees -- as
+  // motion, extrapolate it over the stopping horizon and could false-trip
+  // anywhere. Drop it: the next tick measures a fresh rate of zero.
+  onPanRenamed(): void { this.prev = null; }
 
   // Mirrors the supervisor's lock flag onto the device's jog latch: engaging
   // the lock must stop an in-flight manual jog from re-arming after
@@ -280,6 +287,11 @@ export class SunSupervisor {
     if (chk.tripped) {
       this.session.stop(); this.device.clearJog();
       this.setLocked(true);
+      // Before planPark, so the fault names the real cause rather than
+      // whatever a path planned from a meaningless pan happens to hit.
+      // driveParkTick() repeats the check for a park already in flight.
+      const block = automationBlock(this.device.getState(), this.store);
+      if (block) { this.enterFault(block); return; }
       const plan = planPark(this.store.getOrientation()!, bore.panDeg, bore.tiltDeg, sEnu, this.coneDeg, this.parkTiltDeg,
         this.limits(), this.cHead(), this.cfg.geoPanSign);
       if (plan.kind === "no-safe-path") { this.enterFault("no_safe_park_path"); return; }
@@ -306,14 +318,16 @@ export class SunSupervisor {
       this.state = "parked"; this.reason = "sun_in_cone"; this.parkInFlight = false;
       return;
     }
-    // Spec 6.8 rule 2: with pan's origin unknown the boresight -- and so the
-    // sun-path validation planPark did -- is a guess. Refuse to fly (or keep
-    // flying) a park from it; halt instead. enterFault stops the session, the
-    // jog and the head and abandons any leg in flight, and holds the lock
-    // until a human clears it: a sun trip still halts the rig, it just cannot
-    // be answered with a slew. The operator re-references with set_position
-    // (no motion) or disables the guard to move manually.
-    if (isPanUnreferenced(this.device.getState())) { this.enterFault("pan_unreferenced"); return; }
+    // Spec 6.8 rule 2: with pan's origin unknown (or of unknown offset from
+    // the calibration's frame) the boresight -- and so the sun-path
+    // validation planPark did -- is a guess. Refuse to fly (or keep flying) a
+    // park from it; halt instead. enterFault stops the session, the jog and
+    // the head and abandons any leg in flight, and holds the lock until a
+    // human clears it: a sun trip still halts the rig, it just cannot be
+    // answered with a slew. The operator re-references with set_position (no
+    // motion) / confirms the frame, or disables the guard to move manually.
+    const block = automationBlock(this.device.getState(), this.store);
+    if (block) { this.enterFault(block); return; }
     if (this.parkInFlight) return;
     const wp = plan.waypoints[this.parkStep];
     const gen = this.parkGen;
@@ -332,21 +346,24 @@ export class SunSupervisor {
   }
 
   // The conditions under which parkIdle() must never command motion:
-  // E-STOP/any engaged firmware program, an unreferenced pan, the sun park
-  // (which always wins), and an active tracking session. Factored out so the SAME check runs both
-  // at entry and again on every leg of a multi-waypoint flight (see
-  // parkIdle()) -- a pan-detour is several seconds of real motion, and any of
-  // these three can become true partway through it.
+  // E-STOP/any engaged firmware program, an unreferenced pan or an unverified
+  // calibration frame, the sun park (which always wins), and an active
+  // tracking session. Factored out so the SAME check runs both at entry and
+  // again on every leg of a multi-waypoint flight (see parkIdle()) -- a
+  // pan-detour is several seconds of real motion, and any of these can
+  // become true partway through it.
   private idleParkAbortReason(): IdleParkAbort | null {
     // NOTE: device.getState() returns the last CACHED WebSocket telemetry
     // snapshot, not a live read of the device -- that is exactly why
     // parkIdle()'s own staleness check exists, rather than trusting this
     // snapshot no matter how old it is.
     if (this.device.getState().estop) return "estop";
-    // Spec 6.8 rule 2: no automated motion without a pan origin -- the park's
-    // own sun-path check would be computed from a pan that means nothing.
-    // Also re-checked on every leg, so a reference lost mid-flight aborts.
-    if (isPanUnreferenced(this.device.getState())) return "pan_unreferenced";
+    // Spec 6.8 rule 2: no automated motion without a pan origin, or with one
+    // of unknown offset from the calibration's frame -- the park's own
+    // sun-path check would be computed from a pan that means nothing. Also
+    // re-checked on every leg, so a reference lost mid-flight aborts.
+    const block = automationBlock(this.device.getState(), this.store);
+    if (block) return block;
     // `locked` is true for the entire parking/parked/fault span (set by
     // setLocked at the exact instant tick() commits to a sun park), so this
     // one check covers all three without needing to know the guard's

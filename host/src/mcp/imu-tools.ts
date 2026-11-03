@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
 import { CalibrationStore } from "../shared/calibration.js";
-import { TrackingSession } from "../shared/track/session.js";
+import { TrackingSession, isPanUnreferenced } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
 import { moveToUserAngle } from "./move.js";
 import { solveImuMounting, GravitySample, dBaseFromGravity, solveNorthZero } from "../shared/geo/imu-orientation.js";
@@ -10,7 +10,7 @@ import { Vec3 } from "../shared/geo/vec3.js";
 import { currentUserPanTilt } from "./geo-tools.js";
 import { LimitsStore, CeilingLimits, effectiveLimits } from "../shared/limits-store.js";
 import { ceilingFrom } from "./limits-tools.js";
-import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
+import { text, errText, SUN_LOCKED_MSG, PAN_UNREFERENCED_MSG } from "./tool-helpers.js";
 
 export interface SweepPosition { panDeg: number; tiltDeg: number; }
 
@@ -196,6 +196,9 @@ export function registerImuTools(
     },
     async () => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+      // The seed is built from the CURRENT pan: with pan's origin unknown it
+      // would be a heading for no frame at all.
+      if (isPanUnreferenced(device.getState())) return errText(PAN_UNREFERENCED_MSG);
       if (session.isActive()) return errText("tracking active; stop_tracking first");
       const imu = store.getImuMounting();
       if (!imu) return errText("run characterize_imu first — set_north_zero needs the IMU mounting solve (R_s)");

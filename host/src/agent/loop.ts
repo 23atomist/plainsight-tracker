@@ -15,6 +15,9 @@ export interface RigStatus {
   readonly label: string | null;
   readonly pointingErrorDeg: number | null;
   readonly panReferenced: boolean;
+  // False while the calibration's pan frame is unverified (a reference of
+  // unknown offset from the solve's frame); the daemon refuses automation.
+  readonly calibrationVerified: boolean;
 }
 
 export interface RigMcpClient {
@@ -72,12 +75,16 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
   const tracked = await deps.client.getTracked();
   const status = await deps.client.getStatus();
 
-  // A rig-state gate, ahead of the model: with pan's origin unknown the daemon
+  // Rig-state gates, ahead of the model: with pan's origin unknown (or of
+  // unknown offset from the calibration's frame) the daemon
   // refuses tracking and idle park anyway, so there is nothing to decide --
   // and a stop would only churn the follower binding the session is holding
   // for when the reference comes back.
   if (!status.panReferenced) {
     return { action: { kind: "keep", reason: "pan_unreferenced" }, state };
+  }
+  if (!status.calibrationVerified) {
+    return { action: { kind: "keep", reason: "calibration_unverified" }, state };
   }
 
   const trackableHexes = new Set(trackable.map((a) => a.hex.toLowerCase()));

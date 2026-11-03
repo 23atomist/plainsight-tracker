@@ -12,7 +12,7 @@ import { enrichAircraft, limitsOf, type PanTiltLimits } from "../shared/adsb/enr
 import { effectiveLimits, type TaughtEdges } from "../shared/limits-store.js";
 import { AdsbSnapshot, EnrichedAircraft } from "../shared/adsb/types.js";
 import { aircraftAltitudeM } from "../shared/adsb/convert.js";
-import { text, errText, SUN_LOCKED_MSG, PAN_UNREFERENCED_MSG } from "./tool-helpers.js";
+import { text, errText, SUN_LOCKED_MSG, automationBlockMsg } from "./tool-helpers.js";
 import { TrackSector, DISABLED_SECTOR } from "../shared/track/sector.js";
 import { SectorStore } from "../shared/sector-store.js";
 import { evaluate, DEFAULT_RULESET, type Ruleset } from "../shared/policy/rules.js";
@@ -264,7 +264,8 @@ export function registerAdsbTools(
     },
     async ({ hex }) => {
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
-      if (!session.panReferenced()) return errText(PAN_UNREFERENCED_MSG);
+      const block = session.automationBlock();
+      if (block) return errText(automationBlockMsg(block));
       const { rig, R } = rigR();
       // onlyEligible stays false: an operator naming a hex explicitly is not
       // subject to the agent's policy.

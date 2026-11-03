@@ -18,14 +18,22 @@
 //     setpoint, not positions against pan's zero, so a rename leaves them
 //     meaning exactly what they meant.
 //
-// Rule 2 (`source: "none"`, the origin is unknown) and a rename with no old
-// frame (`previous: null`, e.g. a restore after a Pico reboot) carry no delta:
-// nothing is shifted, and the unreferenced gates (session/supervisor/tools/
-// agent) keep automated motion off the rig until a reference returns.
+// Rule 2 (`source: "none"`, the origin is unknown) carries no delta: nothing
+// is shifted, and the unreferenced gates (session/supervisor/tools/agent) keep
+// automated motion off the rig until a reference returns.
+//
+// A reference with no old frame (`previous: null` -- the head only knows one
+// while the Pico stayed homed, so EVERY reference after a drop arrives like
+// this) cannot be shifted either, and it may have put pan's zero anywhere:
+// IMU north is off by the compass error, set_position takes whatever value
+// the operator typed. So it flags the calibration frame unverified, which
+// gates automation exactly like an unreferenced pan until a re-solve or
+// confirm_pan_frame. The one exception is the head re-applying its persisted
+// position file (`reason: "restored"`): that IS the old frame.
 import type { ReferenceChange } from "../shared/device.js";
 
 export interface PanZeroStores {
-  readonly calibration: { shiftPanZero(deltaDeg: number): void };
+  readonly calibration: { shiftPanZero(deltaDeg: number): void; markFrameUnverified(reason: string): void };
   readonly limits: { shiftPan(deltaDeg: number): void };
 }
 
@@ -44,9 +52,19 @@ export interface PanZeroStores {
 export function applyPanReferenceChange(
   c: ReferenceChange, panSign: number, stores: PanZeroStores, log: (msg: string) => void,
 ): number | null {
-  if (c.pan === null || c.previous === null) {
-    log(`[reference] pan reference ${c.source === "none" ? "lost" : `set by ${c.source} with no previous frame`}; ` +
+  if (c.pan === null) {
+    log(`[reference] pan reference lost (${c.reason ?? "no reason given"}); ` +
       "nothing to shift — automated motion is held until pan is referenced");
+    return null;
+  }
+  if (c.previous === null) {
+    if (c.reason === "restored") {
+      log(`[reference] pan restored by ${c.source} from the head's persisted position (pan ${c.pan}); same frame, nothing to shift`);
+      return null;
+    }
+    const why = `pan referenced by ${c.source} at ${c.pan} with no previous frame — its offset from the calibration's frame is unknown`;
+    stores.calibration.markFrameUnverified(why);
+    log(`[reference] ${why}; calibration flagged unverified — re-sight and solve_calibration, or confirm_pan_frame if the head was not moved`);
     return null;
   }
   const deltaUser = (c.pan - c.previous) * panSign;
@@ -59,14 +77,20 @@ export function applyPanReferenceChange(
 }
 
 /** Subscribes the stores to the head's `pan_reference` events (server.ts main()). */
+// `onRenamed` runs for EVERY pan_reference (server.ts: SunSupervisor.
+// onPanRenamed): any of them changes what the pan counter means, so a
+// rate derived across it is not motion.
 export function wireReferenceShift(
   device: { onReferenceChanged(cb: (c: ReferenceChange) => void): void },
   panSign: number, stores: PanZeroStores, log: (msg: string) => void = (m) => console.error(m),
+  onRenamed: () => void = () => {},
 ): void {
   device.onReferenceChanged((c) => {
     // Device isolates listener throws silently; a failed shift (e.g. a write
     // error persisting a store) must be loud instead.
     try { applyPanReferenceChange(c, panSign, stores, log); }
     catch (e) { log(`[reference] FAILED to shift stores for a pan rename: ${e instanceof Error ? e.message : String(e)}`); }
+    try { onRenamed(); }
+    catch (e) { log(`[reference] onRenamed hook threw: ${e instanceof Error ? e.message : String(e)}`); }
   });
 }

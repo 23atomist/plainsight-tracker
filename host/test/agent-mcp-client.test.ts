@@ -29,14 +29,16 @@ describe("parseTrackingStatus", () => {
   const body = { state: "waiting", reason: "pan_unreferenced", label: null, pointing_error_deg: null };
 
   it("reads pan_referenced into panReferenced", () => {
-    expect(parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: false })))
-      .toEqual({ state: "waiting", label: null, pointingErrorDeg: null, panReferenced: false });
-    expect(parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: true })).panReferenced).toBe(true);
+    expect(parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: false, calibration_verified: true })))
+      .toEqual({ state: "waiting", label: null, pointingErrorDeg: null, panReferenced: false, calibrationVerified: true });
+    expect(parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: true, calibration_verified: false })))
+      .toMatchObject({ panReferenced: true, calibrationVerified: false });
   });
 
   // Fail closed: a status that does not say the rig is referenced must never
   // be read as permission to move it.
-  it("rejects a status without pan_referenced", () => {
-    expect(() => parseTrackingStatus(JSON.stringify(body))).toThrow();
+  it("rejects a status without pan_referenced or calibration_verified", () => {
+    expect(() => parseTrackingStatus(JSON.stringify({ ...body, calibration_verified: true }))).toThrow();
+    expect(() => parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: true }))).toThrow();
   });
 });

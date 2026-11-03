@@ -145,6 +145,10 @@ export const PanReferenceDetailZ = z.union([
     source: z.enum(["imu", "host"]),
     pan: z.number(),
     previous: z.number().nullable(),
+    // "restored": the head re-applied its persisted position file (same frame
+    // as before the drop). Being added on the head branch; optional so the
+    // current head still parses.
+    reason: z.string().optional(),
   }).strict(),
   z.object({
     source: z.literal("none"),

@@ -49,6 +49,17 @@ const ProfileSchema = z.object({
   // characterization" staleness check keeps its exact meaning.
   baseDown: z.array(z.number()).length(3).optional(),
   cHead: z.array(z.number()).length(3).optional(),
+  // Set when the head took a pan reference with NO known offset from the
+  // frame this calibration was solved in (a re-reference after a drop, or a
+  // rename missed while the telemetry link was down): pan's zero may now be
+  // anywhere relative to R. Automated motion is held until a solve uses a
+  // sighting taken since (one not in priorSightingIds), or the operator
+  // confirms the head was not moved (confirm_pan_frame).
+  frameUnverified: z.object({
+    sinceIso: z.string(),
+    reason: z.string(),
+    priorSightingIds: z.array(z.string()),
+  }).optional(),
 });
 export type CalibrationProfile = z.infer<typeof ProfileSchema>;
 
@@ -320,6 +331,47 @@ export class CalibrationStore {
     this.save();
   }
 
+  /** See ProfileSchema.frameUnverified. Re-arming moves the cut-off to now. */
+  markFrameUnverified(reason: string): void {
+    this.profile = {
+      ...this.profile,
+      frameUnverified: {
+        sinceIso: new Date().toISOString(),
+        reason,
+        priorSightingIds: this.profile.sightings.map((s) => s.id).filter((id): id is string => id !== undefined),
+      },
+    };
+    this.save();
+  }
+
+  isFrameUnverified(): boolean { return this.profile.frameUnverified !== undefined; }
+
+  frameUnverifiedReason(): string | null { return this.profile.frameUnverified?.reason ?? null; }
+
+  /** The operator declares the frame unchanged. Returns whether there was anything to clear. */
+  confirmFrame(): boolean {
+    if (!this.profile.frameUnverified) return false;
+    this.profile = { ...this.profile, frameUnverified: undefined };
+    this.save();
+    return true;
+  }
+
+  /**
+   * After a successful solve: clears the flag iff the solve used at least one
+   * sighting taken since the flag was (last) set -- that sighting was aimed in
+   * the CURRENT frame, so the solve is anchored to it. Ids, not timestamps:
+   * exact, and immune to clock steps. Returns whether it cleared.
+   */
+  clearFrameUnverifiedIfResighted(used: readonly Sighting[]): boolean {
+    const f = this.profile.frameUnverified;
+    if (!f) return false;
+    const prior = new Set(f.priorSightingIds);
+    if (!used.some((s) => s.id !== undefined && !prior.has(s.id))) return false;
+    this.profile = { ...this.profile, frameUnverified: undefined };
+    this.save();
+    return true;
+  }
+
   /**
    * The head renamed pan (spec 6.8 rule 1): the physical pose that read `p`
    * now reads `p + deltaDeg` (USER frame -- the caller maps the head's
@@ -375,7 +427,7 @@ export class CalibrationStore {
   invalidateCalibration(): void {
     this.profile = {
       ...this.profile, sightings: [], orientation: undefined, solvedAt: undefined, cHead: undefined,
-      orientationProvisional: undefined,
+      orientationProvisional: undefined, frameUnverified: undefined,
     };
     this.save();
   }

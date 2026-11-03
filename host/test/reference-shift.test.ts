@@ -84,13 +84,17 @@ describe("shiftPanZero: sightings move with the zero and the fit is unchanged", 
     { lat: 33.20, lon: -112.05, height: 4000, panDeg: 158.4, tiltDeg: 9.1 },
   ];
 
+  // anchor "baseDown": solve_calibration has verified one (it wins over the
+  // IMU's). anchor "imu": only characterize_imu's dBase exists, so a wrong
+  // rotation of imuMounting.dBase alone would show up as a changed fit.
+  for (const anchor of ["baseDown", "imu"] as const)
   for (const gp of [1, -1]) {
     for (const d of [15, -120.5, 345]) {
-      it(`geoPanSign ${gp}, d ${d}: sighting pans shift by +d, residuals unchanged, re-solve agrees`, () => {
+      it(`anchor ${anchor}, geoPanSign ${gp}, d ${d}: sighting pans shift by +d, residuals unchanged, re-solve agrees`, () => {
         const s = new CalibrationStore(tmpFile("cal.json"), gp);
         s.setRigLocation(rig.lat, rig.lon, rig.height);
         s.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], baseDown, 0.4);
-        s.setBaseDown(baseDown);
+        if (anchor === "baseDown") s.setBaseDown(baseDown);
         for (const x of sightings) s.addSighting({ ...x });
         const before = s.previewFit()!;
         expect(before).not.toBeNull();
@@ -103,7 +107,8 @@ describe("shiftPanZero: sightings move with the zero and the fit is unchanged", 
         expect(after.sightings.map((x) => x.id)).toEqual(ids);
         after.sightings.forEach((x, i) => expect(x.panDeg).toBeCloseTo(pansBefore[i] + d, 9));
         // The gravity anchors are mount-frame vectors: rotated, not dropped.
-        expect(after.baseDown).toBeDefined();
+        if (anchor === "baseDown") expect(after.baseDown).toBeDefined();
+        else expect(after.baseDown).toBeUndefined();
         expect(after.imuMounting?.dBase).toBeDefined();
 
         const refit = s.previewFit()!;
@@ -206,17 +211,49 @@ describe("applyPanReferenceChange", () => {
     });
   }
 
-  it("does nothing but log when the reference was dropped or there was no old frame", () => {
+  it("shifts nothing (and logs) when the reference was dropped or there was no old frame", () => {
     const { cal, limits } = stores(1);
-    const calBefore = cal.get(); const limBefore = limits.get();
+    const orientBefore = cal.getOrientation(); const limBefore = limits.get();
     const logs: string[] = [];
     expect(applyPanReferenceChange({ source: "none", pan: null, previous: null }, 1,
       { calibration: cal, limits }, (m) => logs.push(m))).toBeNull();
     expect(applyPanReferenceChange({ source: "host", pan: 12, previous: null }, 1,
       { calibration: cal, limits }, (m) => logs.push(m))).toBeNull();
-    expect(cal.get()).toEqual(calBefore);
+    expect(cal.getOrientation()).toEqual(orientBefore);
     expect(limits.get()).toEqual(limBefore);
     expect(logs).toHaveLength(2);
+  });
+
+  // E1: a reference with no old frame may have put pan's zero anywhere
+  // relative to the frame the calibration was solved in.
+  it("a reference with no previous frame flags the calibration unverified", () => {
+    const { cal, limits } = stores(1);
+    for (const source of ["imu", "host"] as const) {
+      cal.confirmFrame();
+      applyPanReferenceChange({ source, pan: 12, previous: null }, 1, { calibration: cal, limits }, () => {});
+      expect(cal.isFrameUnverified()).toBe(true);
+      expect(cal.frameUnverifiedReason()).toMatch(new RegExp(source));
+    }
+  });
+
+  it("a restore of the persisted position (reason restored) does not flag it", () => {
+    const { cal, limits } = stores(1);
+    applyPanReferenceChange({ source: "imu", pan: 12, previous: null, reason: "restored" }, 1,
+      { calibration: cal, limits }, () => {});
+    expect(cal.isFrameUnverified()).toBe(false);
+  });
+
+  it("a drop (source none) does not flag it -- the unreferenced gate owns that state", () => {
+    const { cal, limits } = stores(1);
+    applyPanReferenceChange({ source: "none", pan: null, previous: null, reason: "pan unhomed" }, 1,
+      { calibration: cal, limits }, () => {});
+    expect(cal.isFrameUnverified()).toBe(false);
+  });
+
+  it("a rename with a known delta does not flag it", () => {
+    const { cal, limits } = stores(1);
+    applyPanReferenceChange({ source: "host", pan: 30, previous: 20 }, 1, { calibration: cal, limits }, () => {});
+    expect(cal.isFrameUnverified()).toBe(false);
   });
 
   it("a zero delta writes nothing", () => {
@@ -253,14 +290,29 @@ describe("wireReferenceShift against the head's pan_reference event", () => {
       cal.setGravityCalibration(R0, CHEAD, new Date(0).toISOString());
       const limits = new LimitsStore(tmpFile("limits.json"));
       limits.setEdge("panMax", 100);
-      wireReferenceShift(device, cfg.panSign, { calibration: cal, limits }, () => {});
+      let renamed = 0;
+      wireReferenceShift(device, cfg.panSign, { calibration: cal, limits }, () => {}, () => { renamed += 1; });
 
       head.emitEvent({ type: "event", t: 1, name: "pan_reference", axis: null, detail: { source: "none", reason: "pan unhomed" } });
       head.emitEvent({ type: "event", t: 2, name: "pan_reference", axis: null, detail: { source: "host", pan: 10, previous: 0 } });
       const expected = 100 + 10 * cfg.panSign;
       await waitFor(() => limits.get().panMax === expected);
+      // Every pan_reference resets the sun guard's rate history (minor fix):
+      // the drop and the rename both moved what "pan" means.
       expectVecClose(boresightEnu(cal.getOrientation()!, 10 * cfg.panSign, 20, CHEAD, cfg.geoPanSign),
         boresightEnu(R0, 0, 20, CHEAD, cfg.geoPanSign), 1e-9);
+      expect(renamed).toBe(2);
+      expect(cal.isFrameUnverified()).toBe(false);
+
+      // The head's restore tag (sent raw: the published event schema gains
+      // `reason` on the head branch).
+      head.sendRaw(JSON.stringify({ type: "event", t: 3, name: "pan_reference", axis: null,
+        detail: { source: "imu", pan: 40, previous: null, reason: "restored" } }));
+      head.emitEvent({ type: "event", t: 4, name: "pan_reference", axis: null, detail: { source: "host", pan: 41, previous: 40 } });
+      await waitFor(() => renamed === 4);
+      expect(cal.isFrameUnverified()).toBe(false);
+      head.emitEvent({ type: "event", t: 5, name: "pan_reference", axis: null, detail: { source: "imu", pan: 7, previous: null } });
+      await waitFor(() => cal.isFrameUnverified());
     });
   }
 });

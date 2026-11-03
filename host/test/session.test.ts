@@ -514,6 +514,40 @@ describe("TrackingSession: pan unreferenced", () => {
     s.stop();
   });
 
+  it("an unverified calibration frame holds the session exactly like an unreferenced pan", async () => {
+    const s = newSession();
+    s.start(NORTH, null, null);
+    dev.gotoDeferreds[0].resolve();
+    await flush();
+    sched.fire();
+    expect(s.status().state).toBe("tracking");
+
+    store.markFrameUnverified("test");
+    sched.fire();
+    sched.fire();
+    expect(s.status().reason).toBe("calibration_unverified");
+    expect(dev.stopCalls).toBe(1);
+    expect(dev.tracks).toHaveLength(1);
+    expect(s.automationBlock()).toBe("calibration_unverified");
+
+    store.confirmFrame();
+    sched.fire();
+    expect(s.status().state).toBe("acquiring");
+    s.stop();
+  });
+
+  it("start() with an unverified frame issues no acquire goto; pan_unreferenced wins when both hold", () => {
+    store.markFrameUnverified("test");
+    const s = newSession();
+    s.start(NORTH, null, null);
+    expect(dev.gotos).toHaveLength(0);
+    expect(s.status().reason).toBe("calibration_unverified");
+    dev.refPan = "none";
+    sched.fire();
+    expect(s.status().reason).toBe("pan_unreferenced");
+    s.stop();
+  });
+
   it("start() while unreferenced issues no acquire goto and waits with pan_unreferenced", () => {
     dev.refPan = "none";
     const s = newSession();

@@ -17,3 +17,13 @@ export const SUN_LOCKED_MSG = "sun guard active; blocked to protect the camera �
 // ENABLE 0), so automated motion is refused. Manual jog/goto stay available;
 // these two tools are how the operator gives pan a zero again.
 export const PAN_UNREFERENCED_MSG = "pan unreferenced — run reference_pan or set_position";
+// The pan reference changed with no known offset from the calibration's frame
+// (see CalibrationStore.frameUnverified).
+export const CALIBRATION_UNVERIFIED_MSG =
+  "calibration frame unverified — pan was re-referenced with no known offset from the frame the calibration was solved in; " +
+  "re-sight and solve_calibration, or confirm_pan_frame if the head was not moved";
+
+/** The tool-facing refusal for a session automation block (session.ts AutomationBlock). */
+export function automationBlockMsg(block: "pan_unreferenced" | "calibration_unverified"): string {
+  return block === "pan_unreferenced" ? PAN_UNREFERENCED_MSG : CALIBRATION_UNVERIFIED_MSG;
+}
