@@ -8,6 +8,7 @@ const SAMPLE = `Encoders:
  ------
  V..... h264_v4l2m2m         V4L2 mem2mem H.264 encoder wrapper (codec h264)
  V....D h264_vulkan          H.264/AVC (Vulkan) (codec h264)
+ V....D h264_vaapi           H.264/AVC (VAAPI) (codec h264)
  A..... aac                  AAC (Advanced Audio Coding)
 `;
 
@@ -31,6 +32,11 @@ describe("assertEncoderAvailable", () => {
 
   it("passes when the encoder is present", () => {
     expect(() => assertEncoderAvailable(cfg("vulkan"), parseEncoderList(SAMPLE))).not.toThrow();
+  });
+
+  it("treats h264_vaapi like the others: present passes, missing throws", () => {
+    expect(() => assertEncoderAvailable(cfg("vaapi"), parseEncoderList(SAMPLE))).not.toThrow();
+    expect(() => assertEncoderAvailable(cfg("vaapi"), new Set(["libx264"]))).toThrow(/h264_vaapi/);
   });
 
   it("throws a remediation message naming the missing encoder", () => {

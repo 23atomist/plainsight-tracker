@@ -141,6 +141,7 @@ const ConfigSchema = z
     // Vulkan encode. "vulkan" is a verified fallback on this hardware. All
     // values are validated against `ffmpeg -encoders` at startup.
     cameraEncoder: z.enum(["vaapi", "nvenc", "vulkan", "x264", "copy"]).default("vaapi"),
+    cameraVaapiDevice: z.string().min(1).default("/dev/dri/renderD128"),
     cameraVideoBitrate: z.string().min(1).default("6M"),
     // Separate from cameraV4l2Size ON PURPOSE: the MJPEG fallback must stay at
     // 720p because its fan-out has no backpressure. 4K is valid here but the
@@ -321,6 +322,7 @@ export function loadConfig(
   set("cameraV4l2Framerate", num(env.TB3_CAMERA_V4L2_FRAMERATE));
   set("cameraFfmpegBin", env.TB3_CAMERA_FFMPEG_BIN);
   set("cameraEncoder", env.TB3_CAMERA_ENCODER);
+  set("cameraVaapiDevice", env.TB3_CAMERA_VAAPI_DEVICE);
   set("cameraVideoBitrate", env.TB3_CAMERA_VIDEO_BITRATE);
   set("cameraMediamtxSize", env.TB3_CAMERA_MEDIAMTX_SIZE);
   set("cameraMediamtxRtspUrl", env.TB3_CAMERA_MEDIAMTX_RTSP_URL);

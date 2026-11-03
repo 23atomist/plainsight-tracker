@@ -127,6 +127,7 @@ describe("ffmpegRtspArgs — plumbing", () => {
 
   it("plumbs device, framerate, bitrate and target", () => {
     const a = ffmpegRtspArgs(cfg({
+      TB3_CAMERA_ENCODER: "x264",   // vaapi (the default) is CQP and takes no -b:v
       TB3_CAMERA_V4L2_DEVICE: "/dev/v4l/by-id/usb-4K_USB_Camera-video-index0",
       TB3_CAMERA_V4L2_FRAMERATE: "25",
       TB3_CAMERA_VIDEO_BITRATE: "12M",
@@ -142,4 +143,55 @@ describe("ffmpegRtspArgs — plumbing", () => {
     const a = ffmpegRtspArgs(cfg());
     expect(a[idx(a, "-input_format") + 1]).toBe("mjpeg");
   });
+});
+
+describe("ffmpegRtspArgs — vaapi", () => {
+  const a = ffmpegRtspArgs(cfg({ TB3_CAMERA_ENCODER: "vaapi" }));
+
+  it("encoderName maps vaapi to h264_vaapi", () => {
+    expect(encoderName(cfg({ TB3_CAMERA_ENCODER: "vaapi" }))).toBe("h264_vaapi");
+  });
+
+  it("puts -vaapi_device before -i, defaulting to renderD128", () => {
+    expect(a[idx(a, "-vaapi_device") + 1]).toBe("/dev/dri/renderD128");
+    expect(idx(a, "-vaapi_device")).toBeLessThan(idx(a, "-i"));
+  });
+
+  it("honours TB3_CAMERA_VAAPI_DEVICE", () => {
+    const b = ffmpegRtspArgs(cfg({ TB3_CAMERA_ENCODER: "vaapi", TB3_CAMERA_VAAPI_DEVICE: "/dev/dri/renderD129" }));
+    expect(b[idx(b, "-vaapi_device") + 1]).toBe("/dev/dri/renderD129");
+  });
+
+  it("uploads nv12 after the input then encodes CQP 23 without B-frames, in order", () => {
+    const i = idx(a, "-i");
+    const vf = idx(a, "-vf");
+    expect(vf).toBeGreaterThan(i);
+    expect(a[vf + 1]).toBe("format=nv12,hwupload");
+    expect(a.slice(vf + 2, vf + 10)).toEqual(["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "23", "-bf", "0"]);
+  });
+
+  it("keeps the keyframe args and the shared rtsp tail, and no software-encoder flags", () => {
+    expect(a[idx(a, "-bsf:v") + 1]).toBe("dump_extra=freq=keyframe");
+    expect(idx(a, "-g")).toBeGreaterThan(idx(a, "-i"));
+    expect(a.slice(-5)).toEqual(["-f", "rtsp", "-rtsp_transport", "tcp", "rtsp://127.0.0.1:8554/tb3"]);
+    expect(a).not.toContain("-pix_fmt");
+    expect(a).not.toContain("-init_hw_device");
+  });
+});
+
+describe("ffmpegRtspArgs — existing branches are pinned (snapshot)", () => {
+  const base = ["-hide_banner", "-loglevel", "error", "-f", "v4l2", "-input_format", "mjpeg",
+    "-video_size", "1920x1080", "-framerate", "30", "-i", "/dev/video0"];
+  const kf = ["-g", "60", "-bsf:v", "dump_extra=freq=keyframe"];
+  const tail = ["-f", "rtsp", "-rtsp_transport", "tcp", "rtsp://127.0.0.1:8554/tb3"];
+  const get = (e: string) => ffmpegRtspArgs(cfg({ TB3_CAMERA_ENCODER: e }));
+
+  it("nvenc", () => expect(get("nvenc")).toEqual([...base,
+    "-c:v", "h264_nvenc", "-preset", "p4", "-tune", "ll", "-b:v", "6M", "-pix_fmt", "yuv420p", ...kf, "-forced-idr", "1", ...tail]));
+  it("x264", () => expect(get("x264")).toEqual([...base,
+    "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-b:v", "6M", "-pix_fmt", "yuv420p", ...kf, ...tail]));
+  it("copy", () => expect(get("copy")).toEqual([...base, "-c:v", "copy", ...tail]));
+  it("vulkan", () => expect(get("vulkan")).toEqual([
+    "-hide_banner", "-loglevel", "error", "-init_hw_device", "vulkan=vk:0", "-filter_hw_device", "vk", ...base.slice(3),
+    "-vf", "format=nv12,hwupload", "-c:v", "h264_vulkan", "-b:v", "6M", ...kf, ...tail]));
 });

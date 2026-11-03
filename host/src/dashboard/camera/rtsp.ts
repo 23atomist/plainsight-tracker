@@ -5,8 +5,7 @@ import { KILL_GRACE_MS, type Spawner } from "./supervisor.js";
 // The ffmpeg encoder id for the configured encoder; null means stream copy.
 export function encoderName(cfg: Config): string | null {
   switch (cfg.cameraEncoder) {
-    // Task 10: real VAAPI args. Until then vaapi (the new default) falls through to the x264 branch.
-    case "vaapi": return "libx264";
+    case "vaapi": return "h264_vaapi";
     case "vulkan": return "h264_vulkan";
     case "nvenc": return "h264_nvenc";
     case "x264": return "libx264";
@@ -45,9 +44,12 @@ function gopSize(cfg: Config): number {
 export function ffmpegRtspArgs(cfg: Config): string[] {
   const enc = encoderName(cfg);
   const vulkan = cfg.cameraEncoder === "vulkan";
+  const vaapi = cfg.cameraEncoder === "vaapi";
 
   const pre: string[] = ["-hide_banner", "-loglevel", "error"];
   if (vulkan) pre.push("-init_hw_device", "vulkan=vk:0", "-filter_hw_device", "vk");
+  // Like the Vulkan device, the VAAPI render node must be declared before the input.
+  if (vaapi) pre.push("-vaapi_device", cfg.cameraVaapiDevice);
 
   const input: string[] = [
     "-f", "v4l2",
@@ -77,6 +79,10 @@ export function ffmpegRtspArgs(cfg: Config): string[] {
   } else if (vulkan) {
     // Vulkan encodes from a GPU-side nv12 frame; -pix_fmt does not apply.
     out.push("-vf", "format=nv12,hwupload", "-c:v", enc, "-b:v", cfg.cameraVideoBitrate, ...keyframeArgs);
+  } else if (vaapi) {
+    // Frames are uploaded to the GPU as nv12; constant-QP rate control and no
+    // B-frames keep latency low for WebRTC. -b:v does not apply under CQP.
+    out.push("-vf", "format=nv12,hwupload", "-c:v", enc, "-rc_mode", "CQP", "-qp", "23", "-bf", "0", ...keyframeArgs);
   } else if (enc === "h264_nvenc") {
     // -forced-idr: NVENC-specific; without it, a forced keyframe becomes a
     // plain (non-IDR) I-frame with no fresh SPS/PPS -- defeats the point.
