@@ -12,7 +12,6 @@ from plainsight_head.imu import ImuReader
 from plainsight_head.persist import JsonStore
 from plainsight_head.pico import PicoLink
 from plainsight_head.protocol import AXES
-from plainsight_head.reference import PanReference
 from plainsight_head.state import HeadState
 
 
@@ -287,7 +286,8 @@ class HeadCtx:
     """A HeadState wired to a started PicoLink (FakeSerial) and ImuReader (FakeBNO055).
 
     A background task streams status lines like the Pico's `STREAM`, so code that
-    waits for a fresh status after a command sees one.
+    waits for a fresh status after a command sees one; `streaming(False)` pauses it.
+    Each status goes to `state.on_pico_status`, then `ref.on_status`.
     """
 
     def __init__(self, env: dict, tmp_path) -> None:
@@ -295,26 +295,39 @@ class HeadCtx:
         self.fake = FakeSerial()
         self.imu_fake = FakeBNO055()
         self.state = HeadState(self.cfg)
-        self.store = JsonStore(str(tmp_path / "data"))
+        self.data_dir = tmp_path / "data"
+        self.store = JsonStore(str(self.data_dir))
         self.events: list[tuple[str, dict]] = []
         self.pico_events: list = []
-        self.link = PicoLink("/dev/fake", 115200, on_status=self.state.on_pico_status,
+        self.link = PicoLink("/dev/fake", 115200, on_status=self._on_status,
                              on_event=self.pico_events.append, on_link=self.state.set_pico_link,
                              serial_factory=lambda p, b: self.fake)
         self.imu = ImuReader(lambda: self.imu_fake, rate_hz=200, on_link=self.state.set_imu_link)
+        self._ref_kw: dict = {"heading_window_s": 0.1}
         self.ref = self._make_ref()
-        self._streamer = None
+        self._streamer: asyncio.Task | None = None
 
     def now(self) -> float:
         return time.time()
 
+    def _on_status(self, st) -> None:
+        self.state.on_pico_status(st)
+        self.ref.on_status(st)
+
     def _make_ref(self):
+        from plainsight_head.reference import PanReference  # deferred: keeps other test modules importable
+
         return PanReference(self.cfg, self.link, self.imu, self.state, self.store,
                             time_fn=self.now, on_event=lambda n, d: self.events.append((n, d)),
-                            heading_window_s=0.1)
+                            **self._ref_kw)
 
     def cfg_override(self, **kw) -> None:
         self.cfg = dataclasses.replace(self.cfg, **kw)
+        self.ref = self._make_ref()
+
+    def ref_override(self, **kw) -> None:
+        """Rebuild `ref` with extra PanReference kwargs (sleep, settle_cap_s, status_wait_s, ...)."""
+        self._ref_kw = {**self._ref_kw, **kw}
         self.ref = self._make_ref()
 
     async def status_now(self, timeout_s: float = 1.0) -> None:
@@ -327,6 +340,14 @@ class HeadCtx:
                 raise AssertionError("fake Pico status never reached HeadState")
             await asyncio.sleep(0.005)
 
+    async def streaming(self, on: bool) -> None:
+        if on and self._streamer is None:
+            self._streamer = asyncio.create_task(self._stream(), name="fake-pico-stream")
+        elif not on and self._streamer is not None:
+            task, self._streamer = self._streamer, None
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def start(self) -> None:
         await self.link.start()
         await self.imu.start()
@@ -336,7 +357,7 @@ class HeadCtx:
             if time.monotonic() > deadline:
                 raise AssertionError("fake IMU never came up")
             await asyncio.sleep(0.005)
-        self._streamer = asyncio.create_task(self._stream(), name="fake-pico-stream")
+        await self.streaming(True)
 
     async def _stream(self) -> None:
         while True:
@@ -344,14 +365,16 @@ class HeadCtx:
             self.fake.emit_status()
 
     async def close(self) -> None:
-        if self._streamer is not None:
-            self._streamer.cancel()
-            await asyncio.gather(self._streamer, return_exceptions=True)
+        await self.streaming(False)
         await self.imu.close()
         await self.link.close()
 
 
 async def make_ctx(env: dict, tmp_path) -> HeadCtx:
     c = HeadCtx(env, tmp_path)
-    await c.start()
+    try:
+        await c.start()
+    except BaseException:
+        await c.close()
+        raise
     return c

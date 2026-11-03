@@ -13,7 +13,7 @@ from .config import HeadConfig
 from .imu import ImuReader
 from .persist import JsonStore
 from .pico import PicoError, PicoLink
-from .protocol import fmt_axes
+from .protocol import AxisStatus, PicoStatus, fmt_axes
 from .state import HeadState, PanRef
 
 log = logging.getLogger(__name__)
@@ -23,6 +23,8 @@ HEADING_WINDOW_S = 2.0
 PERSIST_INTERVAL_S = 5.0
 POLL_S = 0.05
 SETTLE_CAP_S = 30.0
+SETTLE_TOL_DEG = 0.5
+STATUS_WAIT_S = 3.0
 _SOURCES = ("host", "imu")
 _MIN_CAL = 2  # BNO055 calibration level needed for mag and sys
 
@@ -54,18 +56,40 @@ class PanReference:
                  store: JsonStore, *, time_fn: Callable[[], float] = time.time,
                  sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
                  on_event: Callable[[str, dict], None],
-                 heading_window_s: float = HEADING_WINDOW_S) -> None:
+                 heading_window_s: float = HEADING_WINDOW_S, settle_cap_s: float = SETTLE_CAP_S,
+                 status_wait_s: float = STATUS_WAIT_S) -> None:
         self._cfg, self._pico, self._imu, self._state, self._store = cfg, pico, imu, state, store
         self._time, self._sleep, self._on_event = time_fn, sleep, on_event
-        self._window_s = heading_window_s
+        self._window_s, self._settle_cap_s, self._status_wait_s = heading_window_s, settle_cap_s, status_wait_s
+        self._lock = asyncio.Lock()
+        self._busy = False
         self._last_written: float | None = None
+        self._setpos_status: PicoStatus | None = None  # state.pico when the last SETPOS returned
+        self._pan_homed: bool | None = None
+
+    @property
+    def busy(self) -> bool:
+        """True while an IMU north reference is running."""
+        return self._busy
+
+    def on_status(self, st: PicoStatus) -> None:
+        """Feed every Pico status; drops the reference when pan loses its homed flag."""
+        homed = st.axes["pan"].homed
+        was, self._pan_homed = self._pan_homed, homed
+        if was and not homed and self._state.ref.source != "none":
+            log.warning("pan lost its homed flag; pan reference cleared")
+            self._state.set_ref(PanRef("none"))
+            self._on_event("pan_reference", {"source": "none", "reason": "pan unhomed"})
 
     # --- boot -----------------------------------------------------------
     async def restore_at_boot(self) -> ReferenceResult:
+        if self._state.pico is None and not await self._poll(self._status_wait_s, self._has_status):
+            log.warning("pan reference: no Pico status within %ss; pan left unreferenced", self._status_wait_s)
+            return ReferenceResult("none", None, "no pico status")
         saved = self._read_file()
-        pico = self._state.pico
-        if pico is not None and pico.axes["pan"].homed:
-            return self._keep_pico_position(pico.axes["pan"].pos, saved)
+        pan = self._state.pico.axes["pan"]
+        if pan.homed:
+            return self._keep_pico_position(pan.pos, saved)
         cfg = self._cfg
         if cfg.pan_restore == "persisted" and saved is not None \
                 and self._time() - saved["t"] <= cfg.pan_restore_max_age_s:
@@ -86,7 +110,7 @@ class PanReference:
     async def _restore_saved(self, saved: dict) -> ReferenceResult:
         pos, source = saved["pos"], saved["source"]
         try:
-            await self._pico.command("SETPOS " + fmt_axes({"pan": pos}))
+            await self._setpos(pos)
         except PicoError as exc:
             log.warning("pan reference: restoring persisted pan %.3f failed: %s", pos, exc.reason)
             return ReferenceResult("none", None, f"pico: {exc.reason}")
@@ -97,57 +121,64 @@ class PanReference:
 
     # --- IMU north --------------------------------------------------------
     async def reference_from_imu(self, timeout_s: float) -> ReferenceResult:
-        try:
-            reason, pan = await self._imu_north(timeout_s)
-        except PicoError as exc:
-            reason, pan = f"pico: {exc.reason}", None
-        if reason is not None:
-            log.warning("pan reference from IMU failed: %s", reason)
-            self._on_event("pan_reference", {"source": "none", "reason": reason})
-            return ReferenceResult("none", None, reason)
-        persisted = self._write(pan, "imu")
-        self._state.set_ref(PanRef("imu", persisted, self._time()))
-        log.info("pan reference from IMU: pan set to %.3f", pan)
-        self._on_event("pan_reference", {"source": "imu", "pan": pan})
-        return ReferenceResult("imu", pan, None)
+        async with self._lock:
+            self._busy = True
+            try:
+                try:
+                    reason, pan = await self._imu_north(timeout_s)
+                except PicoError as exc:
+                    reason, pan = f"pico: {exc.reason}", None
+            finally:
+                self._busy = False
+            if reason is not None:
+                log.warning("pan reference from IMU failed: %s", reason)
+                self._on_event("pan_reference", {"source": "none", "reason": reason})
+                return ReferenceResult("none", None, reason)
+            persisted = self._write(pan, "imu")
+            self._state.set_ref(PanRef("imu", persisted, self._time()))
+            log.info("pan reference from IMU: pan set to %.3f", pan)
+            self._on_event("pan_reference", {"source": "imu", "pan": pan})
+            return ReferenceResult("imu", pan, None)
 
     async def _imu_north(self, timeout_s: float) -> tuple[str | None, float | None]:
         """Returns (failure reason, None) or (None, pan) after SETPOS succeeded."""
         pico = self._state.pico
-        if pico is None or not pico.axes["tilt"].homed:
+        if pico is None:
+            return "no pico status", None
+        if not pico.axes["tilt"].homed:
             return "tilt not homed", None
         await self._pico.command("MOVE " + fmt_axes({"tilt": self._cfg.ref_tilt_deg}))
-        if not await self._wait_settled():
+        before = self._state.pico
+        if not await self._poll(self._settle_cap_s, lambda: self._settled(before)):
             return "tilt did not settle", None
-        if not await self._wait_imu_ready(timeout_s):
+        if not await self._poll(timeout_s, self._imu_ready):
             return "imu calibration timeout", None
         headings = await self._collect_headings()
         if not headings:
             return "imu lost during heading average", None
         pan = wrap180(circular_mean_deg(headings) - self._cfg.imu_heading_offset_deg)
-        await self._pico.command("SETPOS " + fmt_axes({"pan": pan}))
+        await self._setpos(pan)
         return None, pan
 
-    async def _wait_settled(self) -> bool:
-        """True once a status newer than the MOVE reports nothing moving (30 s cap)."""
-        before = self._state.pico
-        for _ in range(math.ceil(SETTLE_CAP_S / POLL_S)):
-            st = self._state.pico
-            if st is not before and st is not None and not st.moving:
+    async def _poll(self, timeout_s: float, cond: Callable[[], bool]) -> bool:
+        for _ in range(max(1, math.ceil(timeout_s / POLL_S))):
+            if cond():
                 return True
             await self._sleep(POLL_S)
-        return False
+        return cond()
+
+    def _has_status(self) -> bool:
+        return self._state.pico is not None
+
+    def _settled(self, before: PicoStatus | None) -> bool:
+        """A status newer than the MOVE, nothing moving, tilt at the reference angle."""
+        st = self._state.pico
+        return (st is not before and st is not None and not st.moving
+                and abs(st.axes["tilt"].pos - self._cfg.ref_tilt_deg) <= SETTLE_TOL_DEG)
 
     def _imu_ready(self) -> bool:
         s = self._imu.latest
         return self._imu.ok and s is not None and s.cal[3] >= _MIN_CAL and s.cal[0] >= _MIN_CAL
-
-    async def _wait_imu_ready(self, timeout_s: float) -> bool:
-        for _ in range(max(1, math.ceil(timeout_s / POLL_S))):
-            if self._imu_ready():
-                return True
-            await self._sleep(POLL_S)
-        return self._imu_ready()
 
     async def _collect_headings(self) -> list[float]:
         headings: list[float] = []
@@ -158,16 +189,21 @@ class PanReference:
             await self._sleep(POLL_S)
         return headings
 
+    async def _setpos(self, pan: float) -> None:
+        await self._pico.command("SETPOS " + fmt_axes({"pan": pan}))
+        self._setpos_status = self._state.pico
+
     # --- host ---------------------------------------------------------------
     async def set_from_host(self, pan: float) -> None:
         """SETPOS pan from the host. PicoError and ProtocolError propagate to the caller."""
-        pico = self._state.pico
-        previous = pico.axes["pan"].pos if pico is not None else None
-        await self._pico.command("SETPOS " + fmt_axes({"pan": pan}))
-        persisted = self._write(pan, "host")
-        self._state.set_ref(PanRef("host", persisted, self._time()))
-        log.info("pan reference from host: pan %s -> %.3f", previous, pan)
-        self._on_event("pan_reference", {"source": "host", "pan": pan, "previous": previous})
+        async with self._lock:
+            pico = self._state.pico
+            previous = pico.axes["pan"].pos if pico is not None else None
+            await self._setpos(pan)
+            persisted = self._write(pan, "host")
+            self._state.set_ref(PanRef("host", persisted, self._time()))
+            log.info("pan reference from host: pan %s -> %.3f", previous, pan)
+            self._on_event("pan_reference", {"source": "host", "pan": pan, "previous": previous})
 
     def note_enable_off(self) -> None:
         log.info("drivers disabled: pan reference cleared")
@@ -177,17 +213,22 @@ class PanReference:
     async def run_persistence(self) -> None:
         while True:
             await self._sleep(PERSIST_INTERVAL_S)
-            pico = self._state.pico
-            if pico is None or self._state.ref.source == "none":
-                continue
-            pan = pico.axes["pan"]
-            if pan.vel == 0 and pan.pos != self._last_written:
+            pan = self._persistable_pan()
+            if pan is not None and pan.vel == 0 and pan.pos != self._last_written:
                 self._write(pan.pos, self._state.ref.source)
 
     async def persist_now(self) -> None:
+        pan = self._persistable_pan()
+        if pan is not None:
+            self._write(pan.pos, self._state.ref.source)
+
+    def _persistable_pan(self) -> AxisStatus | None:
+        """Pan's status if it is referenced, homed, and reported since the last SETPOS."""
         pico = self._state.pico
-        if pico is not None and self._state.ref.source != "none":
-            self._write(pico.axes["pan"].pos, self._state.ref.source)
+        if pico is None or pico is self._setpos_status or self._state.ref.source == "none":
+            return None
+        pan = pico.axes["pan"]
+        return pan if pan.homed else None
 
     def _write(self, pos: float, source: str) -> bool:
         try:
