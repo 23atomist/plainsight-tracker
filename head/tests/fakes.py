@@ -196,6 +196,9 @@ class FakeSerial:
             self._reply("err unknown command")
 
 
+_FAKE_MODE_CONFIG, _FAKE_MODE_NDOF = 0x00, 0x0C
+
+
 class FakeBNO055:
     """In-memory stand-in for plainsight_head.imu.BNO055 (settable readings, injectable failures)."""
 
@@ -209,7 +212,10 @@ class FakeBNO055:
         self.cal, self.quat, self.gravity, self.linacc, self.temp = cal, quat, gravity, linacc, temp
         self.offsets: bytes = bytes(range(22))
         self.closed = False
+        self.mode = _FAKE_MODE_NDOF
+        self.offsets_writes: list[bytes] = []
         self._fail = 0
+        self._fail_offsets = 0
 
     def fail_next(self, n: int) -> None:
         self._fail = n
@@ -243,13 +249,25 @@ class FakeBNO055:
         self._maybe_fail()
         return self.temp
 
+    def fail_offsets(self, n: int) -> None:
+        """Make the next n OFFSETS-register reads raise OSError (after entering CONFIG mode)."""
+        self._fail_offsets = n
+
     def get_offsets(self) -> bytes:
         self._maybe_fail()
-        return self.offsets
+        self.mode = _FAKE_MODE_CONFIG
+        try:
+            if self._fail_offsets > 0:
+                self._fail_offsets -= 1
+                raise OSError("fake OFFSETS read failure")
+            return self.offsets
+        finally:
+            self.mode = _FAKE_MODE_NDOF
 
     def set_offsets(self, data: bytes) -> None:
         self._maybe_fail()
         self.offsets = bytes(data)
+        self.offsets_writes.append(self.offsets)
 
     def close(self) -> None:
         self.closed = True

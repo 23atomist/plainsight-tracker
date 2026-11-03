@@ -139,16 +139,26 @@ class BNO055:
     # -- calibration offsets (only writable in CONFIG mode) -----------------
     def get_offsets(self) -> bytes:
         self._mode(MODE_CONFIG)
-        data = self.read(OFFSETS, OFFSETS_LEN)
-        self._mode(self.fusion_mode)
-        return data
+        try:
+            return self.read(OFFSETS, OFFSETS_LEN)
+        finally:
+            self._restore_fusion()
 
     def set_offsets(self, data: bytes) -> None:
         if len(data) != OFFSETS_LEN:
             raise IMUError("bad calibration data")
         self._mode(MODE_CONFIG)
-        self.write(OFFSETS, *data)
-        self._mode(self.fusion_mode)
+        try:
+            self.write(OFFSETS, *data)
+        finally:
+            self._restore_fusion()
+
+    def _restore_fusion(self) -> None:
+        """Always leave CONFIG mode; a failed restore must not mask the original error."""
+        try:
+            self._mode(self.fusion_mode)
+        except OSError:
+            log.exception("could not restore fusion mode after offsets access")
 
     # -- head-controller addition -----------------------------------------
     def read_sample(self, now: float) -> ImuSample:
@@ -176,12 +186,14 @@ class ImuReader:
     def __init__(self, open_fn: Callable[[], Any], *, rate_hz: float = 20,
                  on_fully_calibrated: Callable[[bytes], None] | None = None,
                  on_link: Callable[[bool], None] | None = None,
-                 time_fn: Callable[[], float] = time.monotonic) -> None:
+                 time_fn: Callable[[], float] = time.monotonic,
+                 reopen_s: float = _REOPEN_S) -> None:
         self._open_fn = open_fn
         self._period = 1.0 / rate_hz
         self._on_cal = on_fully_calibrated
         self._on_link = on_link
         self._time = time_fn
+        self._reopen_s = reopen_s
         self._dev: Any = None
         self._task: asyncio.Task | None = None
         self._cal_fired = False
@@ -225,8 +237,9 @@ class ImuReader:
         self._dev.set_offsets(data)
 
     async def burst(self, n: int) -> list[ImuSample]:
+        """Read up to n (max 1000) samples back-to-back; returns [] if the sensor is not open."""
         if self._dev is None:
-            raise OSError("IMU not open")
+            return []
         out: list[ImuSample] = []
         for i in range(min(n, _BURST_MAX)):
             out.append(self._dev.read_sample(self._time()))
@@ -246,11 +259,16 @@ class ImuReader:
     def _maybe_fire_calibrated(self, sample: ImuSample) -> None:
         if self._cal_fired or self._on_cal is None or sample.cal != (3, 3, 3, 3):
             return
+        try:
+            offsets = self._dev.get_offsets()
+        except Exception:
+            log.exception("reading calibration offsets failed; will retry on a later sample")
+            return
         self._cal_fired = True
         try:
-            self._on_cal(self._dev.get_offsets())
+            self._on_cal(offsets)
         except Exception:
-            log.exception("on_fully_calibrated handling failed")
+            log.exception("on_fully_calibrated callback failed")
 
     async def _run(self) -> None:
         fails = 0
@@ -261,7 +279,7 @@ class ImuReader:
                     self._set_link(True)
                 else:
                     self._set_link(False)
-                    await asyncio.sleep(_REOPEN_S)
+                    await asyncio.sleep(self._reopen_s)
                     continue
             try:
                 sample = self._dev.read_sample(self._time())
@@ -273,7 +291,7 @@ class ImuReader:
                     log.warning("IMU link down after %d failed reads: %s", fails, e)
                     self._close_dev()
                     self._set_link(False)
-                    await asyncio.sleep(_REOPEN_S)
+                    await asyncio.sleep(self._reopen_s)
                     continue
             else:
                 fails = 0
