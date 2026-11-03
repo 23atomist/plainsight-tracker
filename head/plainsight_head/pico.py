@@ -7,6 +7,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from .outage import OutageLog
 from .protocol import PicoEvent, PicoStatus, ProtocolError, classify_line, parse_event, parse_status
 
 log = logging.getLogger(__name__)
@@ -80,6 +81,8 @@ class PicoLink:
         self._stop: threading.Event | None = None
         self._gen = 0
         self._reader_died = False
+        self._reader_error = ""
+        self._outage = OutageLog(log, f"pico link ({port})")
         self._last_status = 0.0
         self._next_try = 0.0
         self._supervisor: asyncio.Task | None = None
@@ -149,9 +152,9 @@ class PicoLink:
         while not stop.is_set():
             try:
                 chunk = ser.read(_READ_CHUNK)
-            except OSError:
-                log.warning("pico serial read failed", exc_info=True)
-                self._post(self._reader_failed, gen)
+            except OSError as exc:
+                log.debug("pico serial read failed", exc_info=True)
+                self._post(self._reader_failed, gen, f"read failed: {exc}")
                 return
             if not chunk:
                 continue
@@ -184,11 +187,13 @@ class PicoLink:
         if gen != self._gen:
             return
         self._last_status = self._loop.time()
+        self._outage.recovered()  # the first status after an outage, not the reopen, ends it
         self._on_status(status)
 
-    def _reader_failed(self, gen: int) -> None:
+    def _reader_failed(self, gen: int, why: str) -> None:
         if gen == self._gen:
             self._reader_died = True
+            self._reader_error = why
 
     # --- supervision --------------------------------------------------------
     async def _supervise(self) -> None:
@@ -198,7 +203,7 @@ class PicoLink:
             now = self._loop.time()
             if self.connected:
                 if self._reader_died:
-                    self._go_down("reader died")
+                    self._go_down(f"reader died ({self._reader_error})")
                 elif self.expect_stream and now - self._last_status > self._stale_s:
                     self._go_down("status stream stale")
             elif self._serial is None and now >= self._next_try:
@@ -208,7 +213,7 @@ class PicoLink:
                     await self._come_up()
 
     def _go_down(self, why: str) -> None:
-        log.warning("pico link down: %s", why)
+        self._outage.failure(why)
         self.connected = False
         self._next_try = self._loop.time() + self._reconnect_s
         self._replies.put_nowait(None)  # wake any command waiting on a reply
@@ -223,8 +228,10 @@ class PicoLink:
         except asyncio.CancelledError:
             fut.add_done_callback(self._close_orphan)
             raise
-        except Exception:
-            log.warning("pico open failed; retrying in %ss", self._reconnect_s, exc_info=True)
+        except Exception as exc:
+            log.debug("pico open failed", exc_info=True)
+            self._outage.failure(f"open failed ({type(exc).__name__}: {exc}); retrying every "
+                                 f"{self._reconnect_s:g} s")
             self._next_try = self._loop.time() + self._reconnect_s
             return False
         try:
@@ -282,7 +289,7 @@ class PicoLink:
         try:
             await asyncio.to_thread(ser.write, (line + "\n").encode())
         except OSError as exc:
-            self._reader_died = True
+            self._reader_died, self._reader_error = True, f"write failed: {exc}"
             raise PicoError(f"write failed: {exc}") from exc
         data: list[str] = []
         deadline = self._loop.time() + timeout_s

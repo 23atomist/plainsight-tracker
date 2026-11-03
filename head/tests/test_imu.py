@@ -258,3 +258,41 @@ def test_real_driver_restores_fusion_mode_when_offsets_access_fails(monkeypatch)
     except OSError:
         pass
     assert writes == [(0x3D, (0x00,)), (0x3D, (0x0C,))]
+
+
+def _imu_warnings(caplog):
+    return [r for r in caplog.records if r.name == "plainsight_head.imu" and r.levelno >= logging.WARNING]
+
+
+async def test_absent_imu_for_3s_logs_at_most_two_warnings(caplog):
+    fake, t_end = FakeBNO055(), time.monotonic() + 3.0
+
+    def open_fn():
+        if time.monotonic() < t_end:
+            raise FileNotFoundError("/dev/i2c-3")
+        return fake
+
+    r = ImuReader(open_fn, rate_hz=200, reopen_s=0.02)
+    await r.start()
+    await asyncio.sleep(3.2)
+    assert r.ok
+    await r.close()
+    warnings = _imu_warnings(caplog)
+    assert 1 <= len(warnings) <= 2 and not any(w.exc_info for w in warnings), warnings
+
+
+async def test_imu_failing_reads_for_3s_log_at_most_two_warnings(caplog):
+    caplog.set_level(logging.INFO, logger="plainsight_head.imu")
+    fake = FakeBNO055()
+    r = ImuReader(lambda: fake, rate_hz=200, reopen_s=0.02)
+    await r.start()
+    await until_open(r)
+    fake.fail_next(10**9)
+    await asyncio.sleep(3.0)
+    fake.fail_next(0)
+    await asyncio.sleep(0.2)
+    assert r.ok
+    await r.close()
+    warnings = _imu_warnings(caplog)
+    assert 1 <= len(warnings) <= 2, [w.getMessage() for w in warnings]
+    assert any("IMU back after" in rec.getMessage() for rec in caplog.records)

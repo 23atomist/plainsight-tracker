@@ -14,6 +14,7 @@ from .api import HeadContext, make_app, pico_stop_axes
 from .config import HeadConfig
 from .deadman import JogDeadman
 from .imu import BNO055, OFFSETS_LEN, ImuReader
+from .outage import OutageLog
 from .persist import JsonStore
 from .pico import PicoError, PicoLink
 from .protocol import AXES, PicoEvent, PicoStatus, ProtocolError, parse_cfg_lines
@@ -44,6 +45,7 @@ class Head:
         self.cfg, self.store = cfg, store
         self.state = HeadState(cfg)
         self._tilt_home: asyncio.Future[str] | None = None
+        self._init_outage = OutageLog(log, "pico init")  # a silent Pico fails init every cycle
         factory = {} if serial_factory is None else {"serial_factory": serial_factory}  # else pyserial
         self.link = PicoLink(cfg.serial, cfg.baud, on_status=self._on_status,
                              on_event=self._on_pico_event, on_link=self._on_pico_link,
@@ -125,8 +127,9 @@ class Head:
             await link.command(f"CFG global track_timeout_ms {cfg.track_timeout_ms}")
             await link.command(f"STREAM {cfg.stream_ms}")
             log.info("pico: initialised, streaming every %d ms", cfg.stream_ms)
+            self._init_outage.recovered()
         except (PicoError, ProtocolError) as exc:
-            log.warning("pico init failed (%s); the link supervisor will retry", exc)
+            self._init_outage.failure(f"{exc}; the link supervisor will retry")
             return
         finally:
             # Also after a failure: no stream then goes stale, the link recycles, init re-runs.

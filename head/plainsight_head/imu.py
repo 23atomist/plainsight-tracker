@@ -12,6 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from .outage import OutageLog
+
 log = logging.getLogger(__name__)
 
 # Copied from plainsight/host/imu.py (2026-11); keep in sync by hand.
@@ -206,6 +208,7 @@ class ImuReader:
         self._cal_fired = False
         self._cal_retry_at: float | None = None
         self._cal_retry_s = CAL_RETRY_FIRST_S
+        self._outage = OutageLog(log, "IMU")
         self.latest: ImuSample | None = None
         self.ok = False
 
@@ -277,7 +280,9 @@ class ImuReader:
         try:
             self._dev = await self._io(self._open_fn, orphan=_close_quietly)
         except Exception as e:
-            log.warning("IMU open failed: %s", e)
+            log.debug("IMU open failed", exc_info=True)
+            self._outage.failure(f"open failed ({type(e).__name__}: {e}); retrying every "
+                                 f"{self._reopen_s:g} s")
             self._dev = None
             return False
         return True
@@ -316,17 +321,18 @@ class ImuReader:
             try:
                 sample = await self._io(self._dev.read_sample, self._time())
             except Exception as e:
-                if not isinstance(e, OSError):
-                    log.exception("unexpected IMU read error")
+                if not isinstance(e, OSError) and not self._outage.down:
+                    log.exception("unexpected IMU read error")  # once per outage, not per read
                 fails += 1
                 if fails >= _FAIL_LIMIT:
-                    log.warning("IMU link down after %d failed reads: %s", fails, e)
+                    self._outage.failure(f"{fails} failed reads ({type(e).__name__}: {e})")
                     await self._close_dev()
                     self._set_link(False)
                     await asyncio.sleep(self._reopen_s)
                     continue
             else:
                 fails = 0
+                self._outage.recovered()  # a good sample, not a reopen, ends an outage
                 self.latest = sample
                 await self._maybe_fire_calibrated(sample)
             await asyncio.sleep(self._period)

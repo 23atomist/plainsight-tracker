@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import time
 
 import pytest
 
@@ -235,3 +237,32 @@ def test_pyserial_is_opened_with_a_write_timeout(monkeypatch):
     assert seen["args"] == ("/dev/ttyACM0", 115200)
     assert seen["kw"]["write_timeout"] == pico.WRITE_TIMEOUT_S == 1.0
     assert issubclass(serial.SerialTimeoutException, OSError)  # so command() maps it to PicoError
+
+
+def _warnings(caplog, logger):
+    return [r for r in caplog.records if r.name == logger and r.levelno >= logging.WARNING]
+
+
+async def test_absent_pico_for_3s_logs_at_most_two_warnings_and_no_traceback(caplog):
+    fake, gone = FakeSerial(), {"until": None}
+
+    def factory(port, baud):
+        if time.monotonic() < gone["until"]:  # runs in a worker thread
+            raise FileNotFoundError(port)
+        fake.is_open = True
+        return fake
+
+    gone["until"] = time.monotonic() + 3.0
+    caplog.set_level(logging.INFO, logger="plainsight_head.pico")
+    link = PicoLink("/dev/fake", 115200, on_status=lambda s: None, on_event=lambda e: None,
+                    on_link=lambda up: None, serial_factory=factory, reconnect_s=0.05)
+    await link.start()
+    await asyncio.sleep(3.2)
+    assert link.connected
+    fake.emit_status()
+    await asyncio.sleep(0.05)
+    await link.close()
+    warnings = _warnings(caplog, "plainsight_head.pico")
+    assert 1 <= len(warnings) <= 2, [r.getMessage() for r in warnings]
+    assert not any(r.exc_info for r in warnings)
+    assert any("back after" in r.getMessage() for r in caplog.records)
