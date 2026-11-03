@@ -131,6 +131,10 @@ class Head:
         finally:
             # Also after a failure: no stream then goes stale, the link recycles, init re-runs.
             link.expect_stream = True
+        if reconnect:  # the first connect leaves this to boot()'s restore_at_boot
+            result = await self.ref.restore_after_reconnect()
+            log.info("pico reconnect: pan reference %s%s", result.source,
+                     f" ({result.reason})" if result.reason else "")
 
     async def _reinit_pico(self) -> None:
         await self.init_pico(reconnect=True)

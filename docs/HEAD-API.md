@@ -122,52 +122,124 @@ Tick fields:
 
 ## Events
 
-Events share the socket with ticks. They never advance `seq`.
+Events share the socket with ticks. They never advance `seq`. Every event has
+`type`, `t`, `name`, `axis` and `detail`. Schema:
+[event.json](head-api/schemas/event.json), which types `axis` and `detail` per
+`name`. Each event below has a tagged example that the contract test validates.
+
+### Events from the Pico
+
+`*E` lines from the firmware, forwarded as they arrive. `axis` is the axis
+named on the line. `detail` is the rest of the line as a string, or `null` if
+empty. The schema lists the names the plainsight-ptz firmware sends.
+
+| Name | Meaning | `detail` |
+|---|---|---|
+| `homed` | Homing finished. | `null` |
+| `home_failed` | Homing failed or was aborted (a `STOP` aborts it). | string or `null` |
+| `endstop_hit` | An endstop triggered. | string or `null` |
+| `track_timeout` | Tracking updates stopped; the axis stopped. | string or `null` |
+| `driver_online`, `driver_offline`, `driver_fault`, `driver_config_failed` | TMC driver state changes. | string or `null` |
 
 ```json event
 {"type": "event", "t": 1762150000123, "name": "homed", "axis": "tilt", "detail": null}
 ```
 
 ```json event
-{"type": "event", "t": 1762150001000, "name": "pan_reference", "axis": null, "detail": {"source": "imu", "pan": 123.4}}
+{"type": "event", "t": 1762150000124, "name": "home_failed", "axis": "tilt", "detail": "aborted"}
 ```
 
-Schema: [event.json](head-api/schemas/event.json). `axis` is a string or
-`null`. `detail` is `null`, a string, or an object.
+```json event
+{"type": "event", "t": 1762150000125, "name": "endstop_hit", "axis": "tilt", "detail": null}
+```
 
-Events from the Pico (`*E` lines). `axis` is the axis named on the line, or
-`null`. `detail` is the rest of the line as a string, or `null` if empty.
+```json event
+{"type": "event", "t": 1762150000126, "name": "track_timeout", "axis": "pan", "detail": null}
+```
 
-| Name | Meaning | `detail` |
-|---|---|---|
-| `homed` | Homing finished. | `null` |
-| `home_failed` | Homing failed. | string or `null` |
-| `endstop_hit` | An endstop triggered. | string or `null` |
-| `track_timeout` | Tracking updates stopped; the axis stopped. | string or `null` |
-| `driver_online`, `driver_offline`, `driver_fault`, `driver_config_failed` | TMC driver state changes. | string or `null` |
+```json event
+{"type": "event", "t": 1762150000127, "name": "driver_online", "axis": "zoom", "detail": null}
+```
 
-The names come from the Pico firmware. Any name the Pico sends is forwarded.
+```json event
+{"type": "event", "t": 1762150000128, "name": "driver_offline", "axis": "zoom", "detail": null}
+```
 
-Events from the head:
+```json event
+{"type": "event", "t": 1762150000129, "name": "driver_fault", "axis": "pan", "detail": "drv_status=0x00000002"}
+```
 
-| Name | `axis` | `detail` |
-|---|---|---|
-| `estop` | `null` | `null`. The latch was set. |
-| `estop_cleared` | `null` | `null`. The latch was cleared. |
-| `config` | `null` | `{"scope": string, "key": string, "value": number}`. A setting was written through `POST /api/config`. |
-| `pico_link` | `null` | `{"up": boolean}`. The Pico serial link went down (`false`) or came up (`true`). |
-| `pan_reference` | `null` | `{"source": "imu" or "host" or "none", "pan"?: number, "previous"?: number or null, "reason"?: string}`. See below. |
+```json event
+{"type": "event", "t": 1762150000130, "name": "driver_config_failed", "axis": "focus", "detail": null}
+```
+
+### Events from the head
+
+`axis` is always `null`.
+
+| Name | `detail` |
+|---|---|
+| `estop` | `null`. The latch was set. |
+| `estop_cleared` | `null`. The latch was cleared. |
+| `config` | `{"scope": string, "key": string, "value": number}`. A setting was written through `POST /api/config`. |
+| `pico_link` | `{"up": boolean}`. The Pico serial link went down (`false`) or came up (`true`). |
+| `pan_reference` | The pan reference changed. Two shapes, below. |
+| `pan_reference_failed` | `{"reason": string, "source": "none" or "imu" or "host"}`. An attempt to set the reference failed. `source` is the current reference, unchanged by the failure. |
+
+```json event
+{"type": "event", "t": 1762150001000, "name": "estop", "axis": null, "detail": null}
+```
+
+```json event
+{"type": "event", "t": 1762150001100, "name": "estop_cleared", "axis": null, "detail": null}
+```
+
+```json event
+{"type": "event", "t": 1762150001200, "name": "config", "axis": null, "detail": {"scope": "pan", "key": "max_vel", "value": 90}}
+```
 
 ```json event
 {"type": "event", "t": 1762150002000, "name": "pico_link", "axis": null, "detail": {"up": false}}
 ```
 
-`pan_reference` detail by case:
+`pan_reference` follows spec 6.8:
 
-- `{"source": "imu", "pan": n}`: IMU north reference succeeded.
-- `{"source": "host", "pan": n, "previous": m}`: `POST /api/setpos` set pan. `m` is `null` if no Pico status was known.
-- `{"source": "none", "reason": text}`: no reference. For example
-  `"pan unhomed"`, `"pico: <reason>"`, or an IMU failure reason.
+- **Renamed** (rule 1, known delta): `{"source": "imu" or "host", "pan": n,
+  "previous": m}`. Sent by every `SETPOS pan` the head makes: `POST
+  /api/setpos` (`host`), the IMU north reference at boot or by `POST
+  /api/reference` (`imu`), and restoring the persisted position at boot or
+  after a Pico reboot (the source stored in the file). `m` and `n` name the
+  same physical position in the old and the new frame, so the host can shift
+  its calibration by `n - m`. `m` is `null` when pan had no frame to shift
+  from: no Pico status was known, or pan was not homed (for example after a
+  Pico reboot, where only the persisted position is known).
+- **Dropped** (rule 2, unknown origin): `{"source": "none", "reason":
+  "pan unhomed" or "enable off"}`. Pan lost its homed flag (the Pico rebooted),
+  or `POST /api/enable` turned the drivers off. Sent only when a reference was
+  set.
+
+```json event
+{"type": "event", "t": 1762150003000, "name": "pan_reference", "axis": null, "detail": {"source": "imu", "pan": 123.4, "previous": 121.9}}
+```
+
+```json event
+{"type": "event", "t": 1762150003100, "name": "pan_reference", "axis": null, "detail": {"source": "none", "reason": "pan unhomed"}}
+```
+
+`pan_reference_failed` reasons include `"pico: <reason>"`, `"no pico
+status"`, `"tilt not homed"`, `"estop latched"`, `"tilt did not settle"`,
+`"imu calibration timeout"` and `"imu lost during heading average"`.
+
+```json event
+{"type": "event", "t": 1762150004000, "name": "pan_reference_failed", "axis": null, "detail": {"reason": "imu calibration timeout", "source": "host"}}
+```
+
+When the Pico link comes back after a drop and the Pico reports pan unhomed
+(it rebooted), the head applies rule 2 only: if `pan-reference.json` is fresh
+(younger than `HEAD_PAN_RESTORE_MAX_AGE_S`) and `HEAD_PAN_RESTORE` is
+`persisted`, it sends `SETPOS pan` with the stored position (no motion) and
+restores `ref.pan`; otherwise pan stays `none`. It never runs the IMU north
+reference on a reconnect.
 
 ## Commands
 
@@ -272,8 +344,9 @@ Returns **200**. Safe to call when not latched.
 
 Pico line: `ENABLE 0` or `ENABLE 1`. Body: `{"on": true}`. `on` must be a
 boolean; it is required. Returns **200**. Disabling clears the Pico's homed
-flags, so the head marks `ref.pan` as `none` until re-referenced. This
-happens even when the `ENABLE 0` fails or times out.
+flags, so the head marks `ref.pan` as `none` until re-referenced and
+publishes `pan_reference` with reason `enable off`. This happens even when the
+`ENABLE 0` fails or times out.
 
 ### POST /api/home
 
@@ -309,7 +382,7 @@ before the move or while tilt settles (the boot-time `HOME tilt` is skipped
 under the latch too). Body optional:
 `{"timeoutS": 30}`. `timeoutS` must be a positive finite number; it defaults
 to the head's `ref_timeout_s`. Returns **202** at once. The result arrives as
-a `pan_reference` event. Guards: 423, 503. **409** `reference busy` if a
+a `pan_reference` or `pan_reference_failed` event. Guards: 423, 503. **409** `reference busy` if a
 reference run is already in progress. 400 for unknown keys or a bad
 `timeoutS`.
 
@@ -431,7 +504,9 @@ The code wins. Where it differs from section 4 of the design spec:
   case-insensitive.
 - 404, 405 and 413 use the JSON error envelope too.
 - While the Pico link is down, a tick without `axes` is published at 2 Hz.
-- `pan_reference` events carry `{"source", "pan"?, "previous"?, "reason"?}`.
+- `pan_reference` events carry `{"source", "pan", "previous"}` or
+  `{"source": "none", "reason"}`; failed attempts are a separate
+  `pan_reference_failed` event.
 - The `config` event carries `{"scope", "key", "value"}`.
 - `estop` and `estop_cleared` events carry no detail.
 - `GET /healthz` always returns 200; read `pico` and `imu` for link health.

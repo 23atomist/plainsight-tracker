@@ -35,9 +35,12 @@ async def test_imu_reference_requires_tilt_homed_and_times_out_on_cal(ctx):
     assert (await ctx.ref.reference_from_imu(0.1)).reason == "imu calibration timeout" and ctx.state.ref.source == "none"
 
 async def test_set_from_host_persists_and_reports_previous(ctx):
-    await ctx.ref.set_from_host(10.0)
-    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 10.0, "previous": 0.0})
+    await ctx.ref.set_from_host(10.0)  # pan was unhomed: its position named no frame
+    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 10.0, "previous": None})
     assert ctx.store.read("pan-reference.json")["source"] == "host"
+    await ctx.status_now()  # SETPOS homed pan at 10
+    await ctx.ref.set_from_host(25.0)
+    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 25.0, "previous": 10.0})
 
 
 # --- review round 1: required behaviour -------------------------------------------------
@@ -145,7 +148,7 @@ async def test_pico_error_during_imu_north_returns_none_and_emits(ctx_imu_ready)
     c.fake.reply_override["MOVE"] = "err not homed"
     r = await c.ref.reference_from_imu(1.0)
     assert r == ReferenceResult("none", None, "pico: not homed")
-    assert c.events[-1] == ("pan_reference", {"source": "none", "reason": "pico: not homed"})
+    assert c.events[-1] == ("pan_reference_failed", {"reason": "pico: not homed", "source": "none"})
     assert not c.ref.busy
 
 
@@ -227,3 +230,69 @@ async def test_estop_during_the_tilt_settle_aborts_at_once(ctx_imu_ready):
     r = await asyncio.wait_for(task, 1.0)  # not the 30 s settle cap
     assert r.reason == "estop latched"
     assert not any(s.startswith("SETPOS") for s in c.fake.sent)
+
+
+# --- final review: spec 6.8 rule 1 events on every SETPOS pan path ------------------------
+
+async def test_imu_north_reports_previous_and_failure_keeps_the_current_source(ctx_imu_ready):
+    c = ctx_imu_ready
+    await c.ref.set_from_host(10.0)
+    await c.status_now()
+    c.imu_fake.heading = 42.0
+    assert (await c.ref.reference_from_imu(1.0)).pan == pytest.approx(42.0)
+    assert c.events[-1] == ("pan_reference", {"source": "imu", "pan": pytest.approx(42.0), "previous": 10.0})
+    c.imu_fake.cal = (0, 0, 0, 0)
+    await c.ref.reference_from_imu(0.1)
+    assert c.events[-1] == ("pan_reference_failed", {"reason": "imu calibration timeout", "source": "imu"})
+    assert c.state.ref.source == "imu"  # a failed attempt leaves the reference alone
+
+
+async def test_boot_restore_from_file_emits_pan_reference(ctx):
+    ctx.store.write(REF, {"pos": 40.5, "source": "imu", "t": ctx.now() - 100})
+    await ctx.ref.restore_at_boot()
+    assert ctx.events == [("pan_reference", {"source": "imu", "pan": 40.5, "previous": None})]
+
+
+async def test_boot_restore_failure_emits_pan_reference_failed(ctx):
+    ctx.store.write(REF, {"pos": 40.5, "source": "imu", "t": ctx.now()})
+    ctx.fake.reply_override["SETPOS"] = "err axis_moving"
+    await ctx.ref.restore_at_boot()
+    assert ctx.events == [("pan_reference_failed", {"reason": "pico: axis_moving", "source": "none"})]
+
+
+async def test_enable_off_emits_once_when_a_reference_is_dropped(ctx):
+    await ctx.ref.set_from_host(10.0)
+    ctx.ref.note_enable_off()
+    assert ctx.events[-1] == ("pan_reference", {"source": "none", "reason": "enable off"})
+    n = len(ctx.events)
+    ctx.ref.note_enable_off()  # already unreferenced: nothing changed, nothing to report
+    assert len(ctx.events) == n
+
+
+async def test_restore_after_reconnect_keeps_a_still_homed_pan(ctx):
+    await ctx.ref.set_from_host(10.0)
+    await ctx.status_now()
+    n_sent, n_events = len(ctx.fake.sent), len(ctx.events)
+    r = await ctx.ref.restore_after_reconnect()
+    assert r == ReferenceResult("host", 10.0, None)
+    assert len(ctx.fake.sent) == n_sent and len(ctx.events) == n_events
+
+
+async def test_restore_after_reconnect_restores_a_fresh_file(ctx):
+    ctx.store.write(REF, {"pos": 33.0, "source": "host", "t": ctx.now() - 60})
+    r = await ctx.ref.restore_after_reconnect()  # pan unhomed, as after a Pico reboot
+    assert r == ReferenceResult("host", 33.0, None)
+    assert ctx.fake.sent[-1] == "SETPOS pan 33.00000" and ctx.state.ref.source == "host"
+    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 33.0, "previous": None})
+
+
+@pytest.mark.parametrize("age_s,restore", [(10**7, "persisted"), (60, "imu"), (None, "persisted")])
+async def test_restore_after_reconnect_without_a_fresh_file_stays_unreferenced(ctx_imu_ready, age_s, restore):
+    c = ctx_imu_ready
+    if age_s is not None:
+        c.store.write(REF, {"pos": 33.0, "source": "host", "t": c.now() - age_s})
+    c.cfg_override(pan_restore=restore)
+    r = await c.ref.restore_after_reconnect()
+    assert r.source == "none" and c.state.ref.source == "none"
+    assert not any(s.startswith(("SETPOS", "MOVE")) for s in c.fake.sent)  # rule 2 only: no IMU north
+    assert c.events == []

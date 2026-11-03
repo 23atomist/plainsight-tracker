@@ -210,27 +210,52 @@ def async_imu_up(rig):
     return check
 
 
-async def test_reconnect_reinits_without_homing_and_drops_ref_if_pico_rebooted(tmp_path, caplog):
+async def _boot_referenced_then_reboot_pico(rig: Rig, caplog, *, stale_file: bool):
+    """Boot restoring pan 12.5 from the file, then power-cycle the Pico; returns (mark, events)."""
+    await until(lambda: booted(caplog), "boot complete")
+    assert rig.fake.sent == [*INIT, "SETPOS pan 12.50000"]
+
+    async def pan_homed() -> bool:
+        st = await rig.get("/api/state")
+        return st["ref"]["pan"] == "host" and st["axes"]["pan"]["homed"]
+    await until(pan_homed, "pan referenced and homed")
+    if stale_file:
+        rig.seed("pan-reference.json", {"pos": 12.5, "source": "host", "t": time.time() - 10**7})
+    sock = await rig.http.ws_connect("/ws")
+    events = []
+    try:
+        mark = len(rig.fake.sent)
+        rig.fake.fail_next_reads(1)  # the link drops ...
+        rig.fake.reboot()            # ... because the Pico power-cycled
+        await until(lambda: "STREAM 100" in rig.fake.sent[mark:], "re-init after reconnect")
+        events.append(await next_event(sock, "pan_reference"))
+        if not stale_file:
+            events.append(await next_event(sock, "pan_reference"))
+    finally:
+        await sock.close()
+    return mark, [e["detail"] for e in events]
+
+
+async def test_reconnect_after_pico_reboot_restores_a_fresh_persisted_reference(tmp_path, caplog):
     rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0"})
     rig.seed("pan-reference.json", {"pos": 12.5, "source": "host", "t": time.time()})
     async with rig:
-        await until(lambda: booted(caplog), "boot complete")
-        assert rig.fake.sent == [*INIT, "SETPOS pan 12.50000"]
+        mark, details = await _boot_referenced_then_reboot_pico(rig, caplog, stale_file=False)
+        assert details == [{"source": "none", "reason": "pan unhomed"},
+                           {"source": "host", "pan": 12.5, "previous": None}]
+        state = await rig.get("/api/state")
+        assert state["ref"]["pan"] == "host" and state["link"]["pico"] is True
+        await asyncio.sleep(0.2)  # rule 2 only: a SETPOS (no motion), no homing, no IMU north
+        assert rig.fake.sent[mark:] == [*INIT, "SETPOS pan 12.50000"]
+    assert_no_leaked_tasks()
 
-        async def pan_homed() -> bool:
-            st = await rig.get("/api/state")
-            return st["ref"]["pan"] == "host" and st["axes"]["pan"]["homed"]
-        await until(pan_homed, "pan referenced and homed")
-        sock = await rig.http.ws_connect("/ws")
-        try:
-            mark = len(rig.fake.sent)
-            rig.fake.fail_next_reads(1)  # the link drops ...
-            rig.fake.reboot()            # ... because the Pico power-cycled
-            await until(lambda: "STREAM 100" in rig.fake.sent[mark:], "re-init after reconnect")
-            event = await next_event(sock, "pan_reference")
-        finally:
-            await sock.close()
-        assert event["detail"]["source"] == "none"
+
+async def test_reconnect_after_pico_reboot_without_a_fresh_file_drops_the_reference(tmp_path, caplog):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0"})
+    rig.seed("pan-reference.json", {"pos": 12.5, "source": "host", "t": time.time()})
+    async with rig:
+        mark, details = await _boot_referenced_then_reboot_pico(rig, caplog, stale_file=True)
+        assert details == [{"source": "none", "reason": "pan unhomed"}]
         state = await rig.get("/api/state")
         assert state["ref"]["pan"] == "none" and state["link"]["pico"] is True
         await asyncio.sleep(0.2)  # nothing else follows the re-init: no homing, no referencing

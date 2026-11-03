@@ -79,7 +79,7 @@ class PanReference:
         if was and not homed and self._state.ref.source != "none":
             log.warning("pan lost its homed flag; pan reference cleared")
             self._state.set_ref(PanRef("none"))
-            self._on_event("pan_reference", {"source": "none", "reason": "pan unhomed"})
+            self._dropped("pan unhomed")
 
     # --- boot -----------------------------------------------------------
     async def restore_at_boot(self) -> ReferenceResult:
@@ -91,8 +91,7 @@ class PanReference:
         if pan.homed:
             return self._keep_pico_position(pan.pos, saved)
         cfg = self._cfg
-        if cfg.pan_restore == "persisted" and saved is not None \
-                and self._time() - saved["t"] <= cfg.pan_restore_max_age_s:
+        if cfg.pan_restore == "persisted" and self._fresh(saved):
             return await self._restore_saved(saved)
         if cfg.pan_restore in ("persisted", "imu"):
             return await self.reference_from_imu(cfg.ref_timeout_s)
@@ -107,17 +106,62 @@ class PanReference:
         log.info("pan reference: Pico still homed at %.3f; keeping source %s", pos, source)
         return ReferenceResult(source, pos, None)
 
+    def _fresh(self, saved: dict | None) -> bool:
+        return saved is not None and self._time() - saved["t"] <= self._cfg.pan_restore_max_age_s
+
+    async def restore_after_reconnect(self) -> ReferenceResult:
+        """Spec 6.8 rule 2 only, after the Pico link came back (never IMU north: no motion).
+
+        Call it once `state.pico` holds a status read after the reconnect. If the Pico kept pan
+        homed (a USB glitch, not a reboot) nothing changes. If pan came back unhomed, restore
+        the persisted position when the file is fresh; otherwise pan stays unreferenced.
+        """
+        pico = self._state.pico
+        if pico is None:
+            return ReferenceResult("none", None, "no pico status")
+        pan = pico.axes["pan"]
+        if pan.homed:
+            return ReferenceResult(self._state.ref.source, pan.pos, None)
+        if self._cfg.pan_restore != "persisted":
+            log.info("pan reference: Pico reconnected with pan unhomed; HEAD_PAN_RESTORE=%s, "
+                     "pan left unreferenced", self._cfg.pan_restore)
+            return ReferenceResult("none", None, f"pan_restore={self._cfg.pan_restore}")
+        saved = self._read_file()
+        if not self._fresh(saved):
+            log.warning("pan reference: Pico reconnected with pan unhomed and no fresh %s; "
+                        "pan left unreferenced", REF_FILE)
+            return ReferenceResult("none", None, "no fresh persisted reference")
+        log.info("pan reference: Pico reconnected with pan unhomed; restoring the persisted position")
+        return await self._restore_saved(saved)
+
     async def _restore_saved(self, saved: dict) -> ReferenceResult:
         pos, source = saved["pos"], saved["source"]
-        try:
-            await self._setpos(pos)
-        except PicoError as exc:
-            log.warning("pan reference: restoring persisted pan %.3f failed: %s", pos, exc.reason)
-            return ReferenceResult("none", None, f"pico: {exc.reason}")
-        self._last_written = pos
-        self._state.set_ref(PanRef(source, True, self._time()))
-        log.info("pan reference: restored persisted pan %.3f (source %s)", pos, source)
-        return ReferenceResult(source, pos, None)
+        async with self._lock:
+            try:
+                previous = await self._setpos(pos)
+            except PicoError as exc:
+                reason = f"pico: {exc.reason}"
+                log.warning("pan reference: restoring persisted pan %.3f failed: %s", pos, exc.reason)
+                self._failed(reason)
+                return ReferenceResult("none", None, reason)
+            self._last_written = pos
+            self._state.set_ref(PanRef(source, True, self._time()))
+            log.info("pan reference: restored persisted pan %.3f (source %s)", pos, source)
+            self._changed(source, pos, previous)
+            return ReferenceResult(source, pos, None)
+
+    # --- events (spec 6.8) ------------------------------------------------
+    def _changed(self, source: str, pan: float, previous: float | None) -> None:
+        """Pan was renamed: old and new value for the same physical position (rule 1)."""
+        self._on_event("pan_reference", {"source": source, "pan": pan, "previous": previous})
+
+    def _dropped(self, reason: str) -> None:
+        """The reference is gone (rule 2): the host must stop automated motion."""
+        self._on_event("pan_reference", {"source": "none", "reason": reason})
+
+    def _failed(self, reason: str) -> None:
+        """An attempt to set the reference failed; the current reference is unchanged."""
+        self._on_event("pan_reference_failed", {"reason": reason, "source": self._state.ref.source})
 
     # --- IMU north --------------------------------------------------------
     async def reference_from_imu(self, timeout_s: float) -> ReferenceResult:
@@ -125,48 +169,48 @@ class PanReference:
             self._busy = True
             try:
                 try:
-                    reason, pan = await self._imu_north(timeout_s)
+                    reason, pan, previous = await self._imu_north(timeout_s)
                 except PicoError as exc:
-                    reason, pan = f"pico: {exc.reason}", None
+                    reason, pan, previous = f"pico: {exc.reason}", None, None
             finally:
                 self._busy = False
             if reason is not None:
                 log.warning("pan reference from IMU failed: %s", reason)
-                self._on_event("pan_reference", {"source": "none", "reason": reason})
+                self._failed(reason)
                 return ReferenceResult("none", None, reason)
             persisted = self._write(pan, "imu")
             self._state.set_ref(PanRef("imu", persisted, self._time()))
-            log.info("pan reference from IMU: pan set to %.3f", pan)
-            self._on_event("pan_reference", {"source": "imu", "pan": pan})
+            log.info("pan reference from IMU: pan %s -> %.3f", previous, pan)
+            self._changed("imu", pan, previous)
             return ReferenceResult("imu", pan, None)
 
-    async def _imu_north(self, timeout_s: float) -> tuple[str | None, float | None]:
-        """Returns (failure reason, None) or (None, pan) after SETPOS succeeded."""
+    async def _imu_north(self, timeout_s: float) -> tuple[str | None, float | None, float | None]:
+        """Returns (failure reason, None, None) or (None, pan, previous) after SETPOS succeeded."""
         pico = self._state.pico
         if pico is None:
-            return "no pico status", None
+            return "no pico status", None, None
         if not pico.axes["tilt"].homed:
-            return "tilt not homed", None
+            return "tilt not homed", None, None
         try:
             guard_head_motion(self._state)
         except EstopLatched:
-            return "estop latched", None
+            return "estop latched", None, None
         await self._pico.command("MOVE " + fmt_axes({"tilt": self._cfg.ref_tilt_deg}))
         before = self._state.pico
         settled = await self._poll(self._settle_cap_s,
                                    lambda: self._state.estop or self._settled(before))
         if self._state.estop:
-            return "estop latched", None
+            return "estop latched", None, None
         if not settled:
-            return "tilt did not settle", None
+            return "tilt did not settle", None, None
         if not await self._poll(timeout_s, self._imu_ready):
-            return "imu calibration timeout", None
+            return "imu calibration timeout", None, None
         headings = await self._collect_headings()
         if not headings:
-            return "imu lost during heading average", None
+            return "imu lost during heading average", None, None
         pan = wrap180(circular_mean_deg(headings) - self._cfg.imu_heading_offset_deg)
-        await self._setpos(pan)
-        return None, pan
+        previous = await self._setpos(pan)
+        return None, pan, previous
 
     async def _poll(self, timeout_s: float, cond: Callable[[], bool]) -> bool:
         for _ in range(max(1, math.ceil(timeout_s / POLL_S))):
@@ -197,25 +241,34 @@ class PanReference:
             await self._sleep(POLL_S)
         return headings
 
-    async def _setpos(self, pan: float) -> None:
+    async def _setpos(self, pan: float) -> float | None:
+        """SETPOS pan; returns pan's position before it, or None if pan had no frame to rename.
+
+        `previous` is None when no status is known or pan was not homed: an unhomed Pico's
+        position is its power-on count, not a pan value the host could shift from.
+        """
+        pico = self._state.pico
+        previous = pico.axes["pan"].pos if pico is not None and pico.axes["pan"].homed else None
         await self._pico.command("SETPOS " + fmt_axes({"pan": pan}))
         self._setpos_status = self._state.pico
+        return previous
 
     # --- host ---------------------------------------------------------------
     async def set_from_host(self, pan: float) -> None:
         """SETPOS pan from the host. PicoError and ProtocolError propagate to the caller."""
         async with self._lock:
-            pico = self._state.pico
-            previous = pico.axes["pan"].pos if pico is not None else None
-            await self._setpos(pan)
+            previous = await self._setpos(pan)
             persisted = self._write(pan, "host")
             self._state.set_ref(PanRef("host", persisted, self._time()))
             log.info("pan reference from host: pan %s -> %.3f", previous, pan)
-            self._on_event("pan_reference", {"source": "host", "pan": pan, "previous": previous})
+            self._changed("host", pan, previous)
 
     def note_enable_off(self) -> None:
+        if self._state.ref.source == "none":
+            return
         log.info("drivers disabled: pan reference cleared")
         self._state.set_ref(PanRef("none"))
+        self._dropped("enable off")
 
     # --- persistence ----------------------------------------------------------
     async def run_persistence(self) -> None:
