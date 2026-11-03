@@ -28,6 +28,9 @@ HOME_WAIT_S = 60.0
 HOMED_STATUS_WAIT_S = 2.0  # the `homed` event precedes the status line that shows it
 IMU_ONLY_TICK_S = 0.5
 SHUTDOWN_STOP_S = 1.0
+HTTP_SHUTDOWN_S = 0.5  # aiohttp waits this twice per busy connection (finish, then cancel)
+HTTP_FORCE_S = 0.1  # must be > 0: aiohttp treats a 0 timeout as "wait forever"
+HTTP_CLOSE_CAP_S = 2.0  # the whole server close, so it can never hold back STOP
 STATUS_POLL_S = 0.05
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _HOME_DONE = ("homed", "home_failed")
@@ -215,7 +218,7 @@ async def run(cfg: HeadConfig, *, serial_factory: Callable[[str, int], Any] | No
     head = Head(cfg, serial_factory,
                 imu_open or (lambda: BNO055(cfg.i2c_bus, cfg.imu_address)),
                 store if store is not None else JsonStore(cfg.data_dir))
-    runner = web.AppRunner(make_app(head.ctx))
+    runner = web.AppRunner(make_app(head.ctx), shutdown_timeout=HTTP_SHUTDOWN_S)
     tasks: dict[str, asyncio.Task] = {}
     try:
         log.info("startup 1/6: Pico link on %s", cfg.serial)
@@ -248,15 +251,11 @@ async def _boot(head: Head, tasks: dict[str, asyncio.Task]) -> None:
 
 
 async def _shutdown(head: Head, runner: web.AppRunner, tasks: dict[str, asyncio.Task]) -> None:
-    async def close_server() -> None:
-        if runner.server is not None:  # setup() succeeded; cleanup also closes WS clients
-            await runner.cleanup()
-
     # Stop taking requests first, so no command can reach the Pico after the final STOP,
     # and no jog can arrive once the dead-man is gone.
     await _chain([
         ("cancel boot", lambda: _cancel(tasks.get("boot"))),  # boot must not send after STOP
-        ("close HTTP server", close_server),
+        ("close HTTP server", lambda: _close_server(runner)),
         ("STOP", head.stop_motion),
         ("persist pan", head.ref.persist_now),
         ("stop tickers", lambda: _cancel(tasks.get("ticker"), tasks.get("persistence"))),
@@ -265,6 +264,20 @@ async def _shutdown(head: Head, runner: web.AppRunner, tasks: dict[str, asyncio.
         ("close Pico link", head.link.close),
     ])
     log.info("shutdown complete")
+
+
+async def _close_server(runner: web.AppRunner) -> None:
+    """Stop the site, close WS clients, cancel API tasks: bounded, since STOP waits on it."""
+    if runner.server is None:  # setup() never ran
+        return
+    try:
+        await asyncio.wait_for(runner.cleanup(), HTTP_CLOSE_CAP_S)
+    except asyncio.TimeoutError:
+        log.warning("shutdown: HTTP server did not close within %.0f s; forcing it", HTTP_CLOSE_CAP_S)
+        server = runner.server
+        if server is not None:
+            await server.shutdown(HTTP_FORCE_S)  # cancel every connection's handler now
+        await runner.app.cleanup()  # on_cleanup cancels API tasks (an IMU reference) before STOP
 
 
 async def _chain(steps: list[tuple[str, Callable[[], Awaitable[Any]]]]) -> None:

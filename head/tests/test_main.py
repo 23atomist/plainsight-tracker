@@ -286,3 +286,56 @@ async def test_shutdown_closes_hardware_even_if_a_step_fails(tmp_path, caplog, m
     assert rig.imu_fake.closed and not rig.fake.is_open
     assert any("persist pan failed" in r.getMessage() for r in caplog.records)
     assert_no_leaked_tasks()
+
+
+
+def stall_server(monkeypatch, where: str) -> asyncio.Event:
+    """Wrap main.make_app so the app stalls shutdown: a held-open handler or a hung on_shutdown."""
+    from plainsight_head import main as main_mod
+
+    entered = asyncio.Event()
+
+    async def hang(*_args):
+        entered.set()
+        await asyncio.Event().wait()
+
+    def make_app(ctx):
+        app = main_mod_make_app(ctx)
+        if where == "handler":
+            app.router.add_get("/hang", hang)
+        else:
+            app.on_shutdown.insert(0, hang)
+        return app
+
+    main_mod_make_app = main_mod.make_app
+    monkeypatch.setattr(main_mod, "make_app", make_app)
+    return entered
+
+
+async def stop_and_time_stop(rig: Rig) -> float:
+    mark = len(rig.fake.sent)
+    t0 = time.monotonic()
+    rig.stop.set()
+    await until(lambda: "STOP" in rig.fake.sent[mark:], "shutdown STOP", timeout=5.0)
+    return time.monotonic() - t0
+
+
+@pytest.mark.parametrize("where", ["handler", "on_shutdown"])
+async def test_stalled_http_close_does_not_delay_stop(tmp_path, caplog, monkeypatch, where):
+    entered = stall_server(monkeypatch, where)
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "none"})
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        held = None
+        if where == "handler":
+            held = asyncio.create_task(rig.http.get("/hang"))
+            await until(entered.is_set, "handler entered")
+        assert await stop_and_time_stop(rig) < 3.0
+        await asyncio.wait_for(asyncio.shield(rig.task), 5.0)
+        if held is not None:
+            with pytest.raises(aiohttp.ClientError):
+                await held
+    assert rig.task.exception() is None
+    assert rig.fake.sent[-1] == "STOP"
+    assert rig.imu_fake.closed and not rig.fake.is_open
+    assert_no_leaked_tasks()
