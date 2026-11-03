@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import signal
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiohttp import web
@@ -33,23 +33,18 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _HOME_DONE = ("homed", "home_failed")
 
 
-def _pyserial(port: str, baud: int) -> Any:
-    import serial  # lazily, so tests never need pyserial's port handling
-
-    return serial.Serial(port, baud, timeout=0.05)
-
-
 class Head:
     """Every component, wired the way tests/fakes.py HeadCtx wires them."""
 
-    def __init__(self, cfg: HeadConfig, serial_factory: Callable[[str, int], Any],
+    def __init__(self, cfg: HeadConfig, serial_factory: Callable[[str, int], Any] | None,
                  imu_open: Callable[[], Any], store: JsonStore) -> None:
         self.cfg, self.store = cfg, store
         self.state = HeadState(cfg)
         self._tilt_home: asyncio.Future[str] | None = None
+        factory = {} if serial_factory is None else {"serial_factory": serial_factory}  # else pyserial
         self.link = PicoLink(cfg.serial, cfg.baud, on_status=self._on_status,
                              on_event=self._on_pico_event, on_link=self.state.set_pico_link,
-                             on_reconnect=self.init_pico, serial_factory=serial_factory)
+                             on_reconnect=self.init_pico, **factory)
         self.imu = ImuReader(self._opener(imu_open), on_fully_calibrated=self._save_offsets,
                              on_link=self.state.set_imu_link)
         self.ref = PanReference(cfg, self.link, self.imu, self.state, store,
@@ -217,7 +212,7 @@ async def run(cfg: HeadConfig, *, serial_factory: Callable[[str, int], Any] | No
               imu_open: Callable[[], Any] | None = None, store: JsonStore | None = None,
               stop_event: asyncio.Event | None = None, bind: str = "0.0.0.0") -> None:
     stop_event = stop_event if stop_event is not None else asyncio.Event()
-    head = Head(cfg, serial_factory or _pyserial,
+    head = Head(cfg, serial_factory,
                 imu_open or (lambda: BNO055(cfg.i2c_bus, cfg.imu_address)),
                 store if store is not None else JsonStore(cfg.data_dir))
     runner = web.AppRunner(make_app(head.ctx))
@@ -253,16 +248,36 @@ async def _boot(head: Head, tasks: dict[str, asyncio.Task]) -> None:
 
 
 async def _shutdown(head: Head, runner: web.AppRunner, tasks: dict[str, asyncio.Task]) -> None:
-    await _cancel(tasks.get("boot"))  # an unfinished boot must not send anything after STOP
-    await head.stop_motion()
-    await head.ref.persist_now()
-    await _cancel(tasks.get("ticker"), tasks.get("persistence"))
-    await head.deadman.close()
-    if runner.server is not None:  # setup() succeeded; cleanup also closes WS clients
-        await runner.cleanup()
-    await head.imu.close()
-    await head.link.close()
+    async def close_server() -> None:
+        if runner.server is not None:  # setup() succeeded; cleanup also closes WS clients
+            await runner.cleanup()
+
+    # Stop taking requests first, so no command can reach the Pico after the final STOP,
+    # and no jog can arrive once the dead-man is gone.
+    await _chain([
+        ("cancel boot", lambda: _cancel(tasks.get("boot"))),  # boot must not send after STOP
+        ("close HTTP server", close_server),
+        ("STOP", head.stop_motion),
+        ("persist pan", head.ref.persist_now),
+        ("stop tickers", lambda: _cancel(tasks.get("ticker"), tasks.get("persistence"))),
+        ("close dead-man", head.deadman.close),
+        ("close IMU", head.imu.close),
+        ("close Pico link", head.link.close),
+    ])
     log.info("shutdown complete")
+
+
+async def _chain(steps: list[tuple[str, Callable[[], Awaitable[Any]]]]) -> None:
+    """Run every step in order; a failing (or cancelled) step never skips the ones after it."""
+    if not steps:
+        return
+    (name, step), rest = steps[0], steps[1:]
+    try:
+        await step()
+    except Exception:
+        log.exception("shutdown: %s failed", name)
+    finally:
+        await _chain(rest)
 
 
 def main() -> None:

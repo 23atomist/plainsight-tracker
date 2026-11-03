@@ -298,9 +298,11 @@ class HeadCtx:
 
     A background task streams status lines like the Pico's `STREAM`, so code that
     waits for a fresh status after a command sees one; `streaming(False)` pauses it.
-    Each status goes to `state.on_pico_status`, then `ref.on_status`. Pico `*E`
-    events and PanReference events are also published on `state` (as main wires
-    them), and the attributes cover api.HeadContext so `make_app(ctx)` accepts it.
+    Wired as main.Head wires production: each status first merges `imu.latest` into
+    `state`, then goes to `state.on_pico_status`, then `ref.on_status`; Pico `*E`
+    events and PanReference events are published on `state`. The attributes cover
+    api.HeadContext so `make_app(ctx)` accepts it. (main's IMU-only ticker and
+    init_pico are not reproduced here.)
     """
 
     pico_version = "plainsight-ptz 0.1.0"
@@ -331,6 +333,8 @@ class HeadCtx:
         return time.time()
 
     def _on_status(self, st) -> None:
+        if self.imu.latest is not None:  # main merges the latest IMU sample into every tick
+            self.state.on_imu(self.imu.latest)
         self.state.on_pico_status(st)
         self.ref.on_status(st)
 

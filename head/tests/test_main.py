@@ -248,13 +248,41 @@ async def test_shutdown_stops_and_persists(tmp_path, caplog):
             return (await rig.get("/api/state"))["axes"]["pan"]["pos"] == 33.0
         await until(pan_at_33, "pan at 33")
         assert rig.read("pan-reference.json")["pos"] == 10.0
+        rig.fake.reply_override["STOP"] = ""  # unanswered: shutdown sits in its 1 s STOP wait
+        mark = len(rig.fake.sent)
+        rig.stop.set()
+        await until(lambda: "STOP" in rig.fake.sent[mark:], "shutdown STOP")
+        async with aiohttp.ClientSession() as s:  # mid-shutdown, motion must be refused
+            try:
+                async with s.post(f"http://127.0.0.1:{rig.port}/api/jog", json={"pan": 5}) as r:
+                    assert r.status == 503, await r.text()
+            except aiohttp.ClientConnectionError:
+                pass
         await rig.shutdown()
         assert rig.task.done() and rig.task.exception() is None
-        assert rig.fake.sent[-1] == "STOP"
+        assert rig.fake.sent[mark:] == ["STOP"]
+        last_stop = len(rig.fake.sent) - 1 - rig.fake.sent[::-1].index("STOP")
+        assert not any(line.split()[0] in MOTION_VERBS for line in rig.fake.sent[last_stop:])
         saved = rig.read("pan-reference.json")
         assert saved["pos"] == 33.0 and saved["source"] == "host"
         assert rig.imu_fake.closed and not rig.fake.is_open
         async with aiohttp.ClientSession() as s:
             with pytest.raises(aiohttp.ClientConnectionError):
                 await s.get(f"http://127.0.0.1:{rig.port}/healthz")
+    assert_no_leaked_tasks()
+
+
+async def test_shutdown_closes_hardware_even_if_a_step_fails(tmp_path, caplog, monkeypatch):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "none"})
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        from plainsight_head.reference import PanReference
+
+        async def boom(self) -> None:
+            raise RuntimeError("persist exploded")
+        monkeypatch.setattr(PanReference, "persist_now", boom)
+    assert rig.task.exception() is None
+    assert rig.fake.sent[-1] == "STOP"
+    assert rig.imu_fake.closed and not rig.fake.is_open
+    assert any("persist pan failed" in r.getMessage() for r in caplog.records)
     assert_no_leaked_tasks()
