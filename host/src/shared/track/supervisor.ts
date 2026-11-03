@@ -441,9 +441,13 @@ export class SunSupervisor {
       // replaces this leg's goto and the leg never arrives. Awaiting the
       // arrival alone would sit out its whole timeout and then misreport
       // goto_failed (measured: ~8.8s). Each leg races its arrival against the
-      // abort conditions; on abort parkIdle stops waiting and sends nothing --
-      // whoever caused the abort (the session's goto, the sun park, the
-      // E-STOP) already owns the head.
+      // abort conditions; on abort parkIdle stops waiting and sends nothing.
+      // Usually whoever caused the abort has already taken the head over (a
+      // session's acquire goto, the sun park, the E-STOP). Not always: a fresh
+      // session that goes straight to wait() (sector, floor, stale target)
+      // sends nothing, so a leg already in flight runs on to its waypoint.
+      // That is safe -- planPark sun-path-validated every waypoint -- and the
+      // remaining legs are still never flown.
       for (const wp of plan.waypoints) {
         const midFlightAbort = this.idleParkAbortReason() ?? await this.flyIdleParkLeg(wp.panDeg, wp.tiltDeg, lim);
         if (midFlightAbort) return { parked: false, reason: `aborted_mid_flight: ${midFlightAbort}` };

@@ -166,6 +166,12 @@ describe("MCP tools", () => {
     expect(textOf(res)).toBe("jogged for 100ms (pan -5°/s tilt 2.5°/s)");
   });
 
+  it("jog reply rounds the rates to 2 decimals", async () => {
+    const { client } = await harness();
+    const res: any = await client.callTool({ name: "jog", arguments: { pan_dps: 1.23456, tilt_dps: 0.005, duration_ms: 50 } });
+    expect(textOf(res)).toBe("jogged for 50ms (pan 1.23°/s tilt 0.01°/s)");
+  });
+
   it("jog caps each axis at maxJogDps (the manual-jog ceiling)", async () => {
     const { client, cfg } = await harness({ TB3_PAN_SIGN: "-1" });
     const frames = captureJogFrames(mock!);
@@ -320,11 +326,12 @@ describe("jog rate-limit enforcement (Part 1 safety fix)", () => {
   // tighter limit is taught.
   it("a taught limit stops rate jog earlier than the bare config limit would", async () => {
     const { client, limitsStore } = await harness(); // config panMax defaults to 180
-    mock!.setPosition(170, 0);
+    mock!.setPosition(160, 0);
     await new Promise((r) => setTimeout(r, 200));
 
     // Under the config-only ceiling (180), this command is not even close to
-    // the limit and must NOT be blocked.
+    // the limit and must NOT be blocked: 160 + 10 deg/s x (0.3s + 1s to stop
+    // at the head's amax 10) = 173.
     const before: any = await client.callTool({
       name: "jog", arguments: { pan_dps: 10, tilt_dps: 0, duration_ms: 300 },
     });
@@ -337,7 +344,7 @@ describe("jog rate-limit enforcement (Part 1 safety fix)", () => {
     await new Promise((r) => setTimeout(r, 100));
 
     // Teach a tighter ceiling that the SAME command would now cross.
-    limitsStore.setEdge("panMax", 170);
+    limitsStore.setEdge("panMax", 170);   // 173 > 170
     const frames = captureJogFrames(mock!);
     const after: any = await client.callTool({
       name: "jog", arguments: { pan_dps: 10, tilt_dps: 0, duration_ms: 300 },
@@ -345,6 +352,56 @@ describe("jog rate-limit enforcement (Part 1 safety fix)", () => {
     expect(textOf(after)).toMatch(/held at travel limit: pan/);
     await new Promise((r) => setTimeout(r, 50));
     for (const f of frames) expect(f.pan ?? 0).toBe(0);
+  });
+
+  // The head does not stop dead when a jog ends: it decelerates at its amax.
+  // So the guard's horizon is the jog's duration PLUS the stopping time
+  // |rate| / amax, from the head's GET /api/config (FakeHead: amax 10).
+  it("the stopping reserve holds a jog that its duration alone would allow", async () => {
+    const { client } = await harness();          // panMax 180
+    mock!.setPosition(170, 0);
+    await new Promise((r) => setTimeout(r, 200));
+    const frames = captureJogFrames(mock!);
+    // Duration alone: 170 + 10 x 0.3 = 173, inside. With the 1s stop: 183.
+    const res: any = await client.callTool({
+      name: "jog", arguments: { pan_dps: 10, tilt_dps: 0, duration_ms: 300 },
+    });
+    expect(textOf(res)).toMatch(/held at travel limit: pan/);
+    await new Promise((r) => setTimeout(r, 50));
+    for (const f of frames) expect(f.pan ?? 0).toBe(0);
+  });
+
+  it("the stopping reserve uses trackFallbackAmaxDps2 until the head's config is known", async () => {
+    // A gentler fallback amax only matters when the head has not answered
+    // GET /api/config: make it unreadable before the Device connects.
+    mock = new FakeHead(); await mock.start({ port: PORT });
+    mock.failNext("/api/config", 503, 1000);
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, TB3_TRACK_FALLBACK_AMAX_DPS2: "1" });
+    dev = new Device(cfg); dev.start();
+    const t0 = Date.now();
+    while (!dev.getState().connected && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 25));
+    expect(dev.getAxisConfig()).toBeNull();
+    const dir = mkdtempSync(join(tmpdir(), "tb3-tools-fb-"));
+    const store = new CalibrationStore(join(dir, "cal.json"));
+    const limitsStore = new LimitsStore(join(dir, "limits.json"));
+    limitsStore.load();
+    const session = new TrackingSession(dev, cfg, store);
+    const supervisor = new SunSupervisor(dev, cfg, store, session);
+    const capture = new CaptureController({
+      setRecord: async () => {}, snapshot: async (icao) => `/tmp/${icao}.jpg`, isArmed: async () => true,
+      now: () => Date.now(), nowIso: () => new Date().toISOString(),
+    }, { debounceMs: 5000, autoEnabled: true });
+    const server = new McpServer({ name: "tb3-mcp", version: "test" });
+    registerTools(server, dev, cfg, session, supervisor, store, capture, limitsStore, new PassJournal(join(dir, "p.jsonl")));
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    const [c, s2] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(s2), client.connect(c)]);
+    mock.setPosition(170, 0);
+    await new Promise((r) => setTimeout(r, 200));
+    // 170 + 4 x (0.1 + 4s to stop at amax 1) = 186.4: held. At amax 10 it
+    // would be 170 + 4 x 0.5 = 172: allowed.
+    const res: any = await client.callTool({ name: "jog", arguments: { pan_dps: 4, tilt_dps: 0, duration_ms: 100 } });
+    expect(textOf(res)).toMatch(/held at travel limit: pan/);
   });
 
   // Both the dashboard's press-and-hold ramp (jog-hold.js) and the joystick

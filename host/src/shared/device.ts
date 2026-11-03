@@ -22,6 +22,29 @@ const REJECT_WARN_INTERVAL_MS = 10_000;
 
 type RejectKind = "tick" | "event" | "config";
 
+// A motion POST waiting its turn in the Device's FIFO (see enqueueMotion).
+type MotionKind = "goto" | "track" | "stop" | "jog";
+interface MotionCommand {
+  readonly kind: MotionKind;
+  readonly path: string;
+  readonly body: object | undefined;
+  // The axes a TRACK carries, for coalescing.
+  readonly axes: readonly string[];
+  readonly resolve: () => void;
+  readonly reject: (e: unknown) => void;
+}
+
+// Whether queued-but-unsent `older` is made pointless by `newer`: a newer jog
+// frame always replaces an older one (both carry pan and tilt), and a newer
+// TRACK replaces an older one that it covers axis for axis. A TRACK that
+// leaves out an axis the older one had (the limit guard holding that axis)
+// does not, so the older one's other axis is never silently lost.
+function supersedes(newer: MotionCommand, older: MotionCommand): boolean {
+  if (newer.kind !== older.kind) return false;
+  if (newer.kind === "jog") return true;
+  return newer.kind === "track" && older.axes.every((a) => newer.axes.includes(a));
+}
+
 /** Counts of head messages the client could not use (see Device.getDiagnostics). */
 export interface DeviceDiagnostics {
   rejectedTicks: number;
@@ -91,13 +114,20 @@ export class Device {
   private jogVec: { panDps: number; tiltDps: number; expiresAtMs: number } | null = null;
   private jogTimer: NodeJS.Timeout | null = null;
   private jogLocked = false;
-  // Jog frames are HTTP requests now, not WebSocket frames, and two requests
-  // in flight can land out of order: a stale non-zero refresh overtaking the
-  // final zero would leave the axis jogging until the head's 500ms dead-man.
-  // So frames go out one at a time; while one is in flight only the LATEST
-  // pending frame is kept (a stop is always the latest frame after a clear).
-  private jogPending: { pan: number; tilt: number } | null = null;
-  private jogInflight: Promise<void> | null = null;
+  // Every motion POST (goto, TRACK, STOP, jog frames including the keep-alive)
+  // leaves this Device strictly in call order, one in flight at a time. Two
+  // HTTP requests in flight can reach the head in either order, and in motion
+  // the order IS the meaning: a STOP that lands after the park goto it
+  // preceded cancels the park, a late TRACK after a STOP restarts the axis, a
+  // stale jog refresh after the final zero leaves the axis jogging until the
+  // head's dead-man. The head serializes its Pico commands anyway, so this
+  // costs one round trip of latency, not throughput. Superseded TRACK and jog
+  // frames coalesce (see supersedes()), so a slow head never builds a backlog
+  // of stale setpoints.
+  private motionQueue: readonly MotionCommand[] = [];
+  private motionDraining = false;
+  // The newest jog frame queued; jog() waits for it (the final zero) to be answered.
+  private lastJogFrame: Promise<void> | null = null;
   private jogError: unknown = null;
   // Bumped by close() and estop(): an in-progress jog() loop sees the change
   // and exits instead of re-arming the keep-alive.
@@ -138,6 +168,11 @@ export class Device {
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.configRetryTimer) { clearTimeout(this.configRetryTimer); this.configRetryTimer = null; }
     this.abortJog();
+    // A closed Device sends nothing more: queued motion is refused, not sent
+    // late to whatever answers at that address next.
+    const dropped = this.motionQueue;
+    this.motionQueue = [];
+    for (const d of dropped) d.reject(new Error("device closed"));
     this.ws?.removeAllListeners();
     this.ws?.on("error", () => { /* a close() during CONNECTING errors; nothing listens any more */ });
     this.ws?.close();
@@ -366,14 +401,48 @@ export class Device {
 
   // --- motion ----------------------------------------------------------------
 
+  // Queues a motion POST behind every earlier one (see motionQueue). Resolves
+  // when the head has answered it, or at once if a newer command superseded
+  // it before it was sent; rejects with the head's error.
+  private enqueueMotion(kind: MotionKind, path: string, body?: object): Promise<void> {
+    if (this.closed) return Promise.reject(new Error("device closed"));
+    return new Promise<void>((resolve, reject) => {
+      const axes = kind === "track" && body ? Object.keys(body) : [];
+      const cmd: MotionCommand = { kind, path, body, axes, resolve, reject };
+      const dropped = this.motionQueue.filter((q) => supersedes(cmd, q));
+      this.motionQueue = [...this.motionQueue.filter((q) => !supersedes(cmd, q)), cmd];
+      for (const d of dropped) d.resolve();
+      void this.drainMotion();
+    });
+  }
+
+  private async drainMotion(): Promise<void> {
+    if (this.motionDraining) return;
+    this.motionDraining = true;
+    try {
+      while (this.motionQueue.length > 0 && !this.closed) {
+        const [cmd, ...rest] = this.motionQueue;
+        this.motionQueue = rest;
+        try {
+          await this.post(cmd.path, cmd.body);
+          cmd.resolve();
+        } catch (e) {
+          cmd.reject(e);
+        }
+      }
+    } finally {
+      this.motionDraining = false;
+    }
+  }
+
   /** `POST /api/goto` (202). The head moves at the Pico's `vmax`; `speedDps` is accepted for callers and ignored. */
   async gotoAngle(devicePanDeg: number, deviceTiltDeg: number, _speedDps?: number): Promise<void> {
-    await this.post("/api/goto", { pan: devicePanDeg, tilt: deviceTiltDeg });
+    await this.enqueueMotion("goto", "/api/goto", { pan: devicePanDeg, tilt: deviceTiltDeg });
   }
 
   /** `POST /api/track`: position-now plus rate; the Pico extrapolates and servos. */
   async track(cmd: HeadTrackCmd): Promise<void> {
-    await this.post("/api/track", cmd);
+    await this.enqueueMotion("track", "/api/track", cmd);
   }
 
   // `signal` lets a caller that has given up on this arrival (the goto was
@@ -406,10 +475,14 @@ export class Device {
 
   /** `POST /api/stop`: the named axes, or all of them. Not guarded by the E-STOP latch. */
   async stop(axes?: readonly HeadAxisName[]): Promise<void> {
-    await this.post("/api/stop", axes && axes.length > 0 ? { axes: [...axes] } : undefined);
+    await this.enqueueMotion("stop", "/api/stop", axes && axes.length > 0 ? { axes: [...axes] } : undefined);
   }
 
-  /** `POST /api/estop`: latches the head; every motion route returns 423 until cleared. */
+  /**
+   * `POST /api/estop`: latches the head; every motion route returns 423 until
+   * cleared. Deliberately NOT queued behind the motion FIFO: an E-STOP must
+   * never wait for a slow goto to be answered.
+   */
   async estop(): Promise<void> {
     // Nothing would accept the keep-alive's frames now: stop pumping them, drop
     // any queued frame, and end an in-progress jog() (it rejects).
@@ -458,34 +531,24 @@ export class Device {
   // --- jog -------------------------------------------------------------------
 
   // Stops the keep-alive without sending a frame (the head's own dead-man,
-  // or the E-STOP, stops the axis) and ends any jog() loop in progress.
+  // or the E-STOP, stops the axis), drops any jog frame still queued, and ends
+  // any jog() loop in progress.
   private abortJog(): void {
     this.jogEpoch += 1;
     this.jogVec = null;
-    this.jogPending = null;
+    const dropped = this.motionQueue.filter((q) => q.kind === "jog");
+    this.motionQueue = this.motionQueue.filter((q) => q.kind !== "jog");
+    for (const d of dropped) d.resolve();
     this.stopJogTimer();
   }
 
+  // Jog frames ride the motion FIFO like every other motion command; while
+  // one is queued unsent, a newer frame replaces it (a stop is always the
+  // latest frame after a clear).
   private sendJog(pan: number, tilt: number): void {
     if (this.closed) return;
-    this.jogPending = { pan, tilt };
-    if (!this.jogInflight) this.jogInflight = this.drainJog();
-  }
-
-  private async drainJog(): Promise<void> {
-    try {
-      while (this.jogPending && !this.closed) {
-        const frame = this.jogPending;
-        this.jogPending = null;
-        try {
-          await this.post("/api/jog", frame);
-        } catch (e) {
-          this.jogError ??= e; // first failure wins: it names the cause
-        }
-      }
-    } finally {
-      this.jogInflight = null;
-    }
+    this.lastJogFrame = this.enqueueMotion("jog", "/api/jog", { pan, tilt })
+      .catch((e: unknown) => { this.jogError ??= e; }); // first failure wins: it names the cause
   }
 
   private stopJogTimer(): void {
@@ -581,7 +644,11 @@ export class Device {
       this.setJogVector(panDps, tiltDps, JOG_KEEPALIVE_MS * 5);
     }
     this.clearJog();
-    while (this.jogInflight) await this.jogInflight;
+    // Wait for the newest jog frame (normally the zero) to be answered.
+    for (let frame = this.lastJogFrame; frame !== null; frame = this.lastJogFrame) {
+      await frame;
+      if (frame === this.lastJogFrame) break;
+    }
     const err = this.jogError;
     this.jogError = null;
     if (err) throw err;

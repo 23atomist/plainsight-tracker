@@ -103,6 +103,7 @@ describe("initial-acquire azimuth-sector stop", () => {
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("outside_sector");
     expect(dev.tracks).toHaveLength(0);
+    expect(dev.stopCalls).toBe(0);   // nothing was ever commanded, so nothing to stop
   });
 });
 
@@ -111,12 +112,16 @@ describe("in-track azimuth-sector stop", () => {
     // Arc open from 90 to 270 (east, through south, to west) -- excludes due
     // north (bearing 0).
     const arc: TrackSector = { enabled: true, startDeg: 90, endDeg: 270 };
-    const s = new TrackingSession(dev as never, cfg, store, () => clockMs, sched, () => arc);
+    // tiltMin -90: the level target sits a hair below the horizon (earth
+    // curvature), and the acquire goto must genuinely go out for the STOP
+    // assertion below to mean anything.
+    const s = new TrackingSession(dev as never, { ...cfg, tiltMin: -90 }, store, () => clockMs, sched, () => arc);
 
     // Start on a target INSIDE the arc (due south, bearing 180) so the
     // initial acquire is unaffected, then force straight to "tracking" --
     // this isolates tick()'s own gate from beginAcquire()'s.
     expect(s.start(bearingTarget(180), [0, 0, 0], null)).toBeNull();
+    expect(dev.gotos).toHaveLength(1);
     s.forceStateForTest("tracking");
 
     // The target drifts to due north (bearing 0), outside the arc.
@@ -127,6 +132,7 @@ describe("in-track azimuth-sector stop", () => {
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("outside_sector");
     expect(dev.tracks).toHaveLength(0);
+    expect(dev.stopCalls).toBe(1);   // the head is stopped once on entering the hold
 
     // Feed a fix INSIDE the arc again (due south, bearing 180) -- the hold
     // must release: the reason is no longer outside_sector.

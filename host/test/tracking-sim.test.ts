@@ -9,8 +9,6 @@ import { CalibrationStore } from "../src/shared/calibration.js";
 import { TrackingSession } from "../src/shared/track/session.js";
 import { Mat3 } from "../src/shared/geo/vec3.js";
 
-// Ports 8791-8799 are already taken by other test files. Do not reuse them.
-const PORT = 8800;
 // Identity R: the mount frame IS the ENU frame, so pan == azimuth and
 // tilt == elevation. Keeps the expectations hand-checkable.
 const I: Mat3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
@@ -64,8 +62,8 @@ describe("FakeHead TRACK model", () => {
 describe("closed-loop tracking simulation", () => {
   it("holds pointing error bounded while chasing a crossing target", async () => {
     mock = new FakeHead();
-    await mock.start({ port: PORT });
-    const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
+    await mock.start();   // ephemeral port
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: mock.url });
     device = new Device(cfg);
     device.start();
 
@@ -124,9 +122,9 @@ describe("closed-loop tracking simulation", () => {
 
   it("stops commanding motion when target updates dry up", async () => {
     mock = new FakeHead();
-    await mock.start({ port: PORT });
+    await mock.start();   // ephemeral port
     const cfg = loadConfig(undefined, {
-      TB3_HEAD_URL: `http://127.0.0.1:${PORT}`,
+      TB3_HEAD_URL: mock.url,
       TB3_TRACK_MAX_TARGET_AGE_MS: "400",
     });
     device = new Device(cfg);

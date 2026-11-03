@@ -10,7 +10,7 @@ import { CalibrationStore } from "../shared/calibration.js";
 import { CaptureController } from "../shared/capture/controller.js";
 import { PassJournal } from "../shared/capture/pass-journal.js";
 import { LimitsStore, effectiveLimits, CeilingLimits } from "../shared/limits-store.js";
-import { limitGuard, GuardHorizon } from "../shared/track/control.js";
+import { limitGuard, GuardHorizon, usableOr } from "../shared/track/control.js";
 import { currentUserPanTilt } from "./geo-tools.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
@@ -135,18 +135,25 @@ export function registerTools(
       //
       // Reuses the SAME predict-then-block pattern tracking already uses
       // (limitGuard): predict where this rate takes each axis over the
-      // command's own duration, and zero only the axis that would leave the
-      // effective range. limitGuard's math already allows motion AWAY from a
+      // command's own duration PLUS the head's stopping time for that rate
+      // (|rate| / amax: the axis does not stop dead when the jog ends), and
+      // zero only the axis that would leave the effective range. limitGuard's math already allows motion AWAY from a
       // limit (the prediction lands back inside the range) — it never traps
       // the operator at a stop with no way back.
       //
       // maxJogDps is the manual-jog ceiling, applied per axis BEFORE the guard
       // so the guard predicts on the rate that is actually sent.
       const rig = currentUserPanTilt(device, cfg);
-      const horizon: GuardHorizon = { panMs: duration_ms, tiltMs: duration_ms };
       const capped = {
         panDps: clamp(pan_dps, -cfg.maxJogDps, cfg.maxJogDps),
         tiltDps: clamp(tilt_dps, -cfg.maxJogDps, cfg.maxJogDps),
+      };
+      const axisCfg = device.getAxisConfig();
+      const stopMs = (dps: number, amax: number | undefined): number =>
+        (Math.abs(dps) / usableOr(amax, cfg.trackFallbackAmaxDps2)) * 1000;
+      const horizon: GuardHorizon = {
+        panMs: duration_ms + stopMs(capped.panDps, axisCfg?.pan.amax),
+        tiltMs: duration_ms + stopMs(capped.tiltDps, axisCfg?.tilt.amax),
       };
       const guarded = limitGuard(capped, rig.panDeg, rig.tiltDeg, effLimits(), horizon);
       await device.jog(guarded.out.panDps * cfg.panSign, guarded.out.tiltDps * cfg.tiltSign, duration_ms);
@@ -157,7 +164,8 @@ export function registerTools(
       if (guarded.panBlocked) held.push("pan");
       if (guarded.tiltBlocked) held.push("tilt");
       const limitNote = held.length > 0 ? ` — held at travel limit: ${held.join(", ")}` : "";
-      return text(`jogged for ${duration_ms}ms (pan ${guarded.out.panDps}°/s tilt ${guarded.out.tiltDps}°/s)${limitNote}`);
+      const dps = (v: number): number => Number(v.toFixed(2)) + 0; // + 0 turns -0 into 0
+      return text(`jogged for ${duration_ms}ms (pan ${dps(guarded.out.panDps)}°/s tilt ${dps(guarded.out.tiltDps)}°/s)${limitNote}`);
     },
   );
 

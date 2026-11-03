@@ -241,6 +241,88 @@ describe("Device (head API)", () => {
     await waitFor(() => lastJogIsZero(h));
   });
 
+  // --- the motion FIFO ------------------------------------------------------
+
+  function motion(h: FakeHead): { path: string; body: unknown }[] {
+    return h.calls.filter((c) => ["/api/goto", "/api/track", "/api/stop", "/api/jog"].includes(c.path))
+      .map((c) => ({ path: c.path, body: c.body }));
+  }
+
+  it("motion commands reach the head strictly in call order, one in flight at a time", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.responseDelayMs = 100;
+    const done = Promise.all([
+      d.track({ pan: { pos: 1, vel: 1 }, tilt: { pos: 2, vel: 0 } }),
+      d.stop(),
+      d.gotoAngle(10, 20),
+    ]);
+    await sleep(50);
+    expect(motion(h).map((c) => c.path)).toEqual(["/api/track"]);   // the rest wait their turn
+    await done;
+    expect(motion(h).map((c) => c.path)).toEqual(["/api/track", "/api/stop", "/api/goto"]);
+  });
+
+  it("a queued TRACK is replaced by a newer one covering the same axes (and resolves)", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.responseDelayMs = 100;
+    const a = d.track({ pan: { pos: 1, vel: 0 }, tilt: { pos: 1, vel: 0 } });   // in flight
+    const b = d.track({ pan: { pos: 2, vel: 0 }, tilt: { pos: 2, vel: 0 } });   // queued...
+    const c = d.track({ pan: { pos: 3, vel: 0 }, tilt: { pos: 3, vel: 0 } });   // ...replaced by this
+    await Promise.all([a, b, c]);
+    expect(motion(h).map((m) => (m.body as { pan: { pos: number } }).pan.pos)).toEqual([1, 3]);
+  });
+
+  it("a TRACK that leaves an axis out does not replace a queued one that had it", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.responseDelayMs = 100;
+    const a = d.track({ pan: { pos: 1, vel: 0 } });
+    const b = d.track({ pan: { pos: 2, vel: 0 }, tilt: { pos: 2, vel: 0 } });
+    const c = d.track({ tilt: { pos: 3, vel: 0 } });
+    await Promise.all([a, b, c]);
+    expect(motion(h)).toHaveLength(3);
+  });
+
+  it("a queued command that the head refuses rejects its own caller only", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.failNext("/api/goto", 503);
+    const goto = d.gotoAngle(1, 1).catch((e) => e);
+    const stop = d.stop();
+    expect(await goto).toBeInstanceOf(DeviceHttpError);
+    await expect(stop).resolves.toBeUndefined();
+  });
+
+  it("a closed Device sends no queued motion, and refuses new motion", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.responseDelayMs = 100;
+    const goto = d.gotoAngle(1, 1).catch((e) => e);   // in flight
+    const stop = d.stop().catch((e) => e);             // queued
+    d.close();
+    expect(await stop).toBeInstanceOf(Error);
+    await goto;
+    await sleep(150);
+    expect(h.calls.filter((c) => c.path === "/api/stop")).toHaveLength(0);
+    await expect(d.track({ pan: { pos: 0, vel: 0 } })).rejects.toThrow(/closed/);
+  });
+
+  it("E-STOP is not queued behind a slow motion command", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.responseDelayMs = 200;
+    const goto = d.gotoAngle(10, 20);
+    const stop = d.stop();
+    await sleep(20);
+    const estop = d.estop();
+    await sleep(50);
+    const paths = h.calls.map((c) => c.path).filter((p) => p !== "/api/config");
+    expect(paths).toEqual(["/api/goto", "/api/estop"]);   // estop overtook the queued stop
+    await Promise.allSettled([goto, stop, estop]);
+  });
+
   it("clearJog sends a zero frame only when a jog vector was live", async () => {
     const h = await startHead();
     const d = await startDevice(h);

@@ -97,6 +97,7 @@ describe("initial-acquire elevation floor", () => {
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("below_min_elevation");
     expect(dev.tracks).toHaveLength(0);
+    expect(dev.stopCalls).toBe(0);   // nothing was ever commanded, so nothing to stop
   });
 
   it("dispatches normally for a target above the floor", () => {
@@ -134,6 +135,7 @@ describe("in-track elevation floor", () => {
     expect(s.status().state).toBe("waiting");
     expect(s.status().reason).toBe("below_min_elevation");
     expect(dev.tracks).toHaveLength(0);
+    expect(dev.stopCalls).toBe(1);   // the head is stopped once on entering the hold
   });
 
   it("releases the hold when the target climbs back above the floor", () => {

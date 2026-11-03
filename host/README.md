@@ -47,8 +47,8 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 
 `goto_angle` is the soft-limit-enforced primitive — out-of-range targets are refused. `jog` takes
 `pan_dps`/`tilt_dps` in °/s (user frame, each capped at `maxJogDps`) and `duration_ms`, replies
-`jogged for Nms (pan X°/s tilt Y°/s)` with the rates actually sent, and predicts where those rates
-would take each axis over the command's own duration, zeroing an axis before it would cross the
+`jogged for Nms (pan X°/s tilt Y°/s)` with the rates actually sent (2 decimals), and predicts where those rates
+would take each axis over the command's own duration plus the head's stopping time, zeroing an axis before it would cross the
 effective pan/tilt limit — see "Rate-jog limit enforcement" below. (There are no endstops, so this prediction is the only thing standing between a held-down
 jog and the mechanical stop.)
 
@@ -239,11 +239,14 @@ the rig has **no endstops**, so several independent layers back it up:
   axis (if any) it is holding via `pan_limited`/`tilt_limited` in `get_tracking_status`
   (`commanded_*_dps` reads `0` for it), so a held axis is diagnosable instead of looking
   identical to "the servo is happy". The manual `jog` tool uses the same predict-then-zero idea
-  over the command's own duration — see "Rate-jog limit enforcement" below.
-- **Command ordering**: two HTTP requests can reach the head in either order. A stop sent while a
-  TRACK is still unanswered is sent again once that TRACK has been answered (unless the session
-  has commanded motion again since), so a late TRACK cannot restart a stopped axis; and an acquire
-  goto waits for any unanswered TRACK or stop, so neither can replace or cancel it.
+  over the command's own duration plus the head's stopping time — see "Rate-jog limit
+  enforcement" below.
+- **Command ordering**: two HTTP requests in flight can reach the head in either order, and in
+  motion the order is the meaning. The device client sends every motion command (goto, TRACK,
+  stop, jog frames) strictly in call order, one in flight at a time, so a late TRACK cannot
+  restart a stopped axis and a stop cannot land after the park goto that followed it. A queued
+  TRACK or jog frame that a newer one supersedes is dropped, so a slow head never builds a
+  backlog. E-STOP is never queued.
 - **Stale-data gates**: stale device telemetry (`trackStaleTelemetryMs`; a tick without axes,
   which the head publishes while its Pico link is down, does not count as fresh), a stale target
   fix (`trackMaxTargetAgeMs`), or the head's E-STOP all move the session to `waiting` and stop
@@ -259,11 +262,13 @@ the rig has **no endstops**, so several independent layers back it up:
 The `jog` tool is the one motion path both the dashboard's press-and-hold control and the USB
 joystick drive — there is no third way to command a rate (both post to `/api/control/jog`, which
 calls this exact MCP tool). Each axis's rate is first capped at `maxJogDps`. Before commanding the device, `jog` predicts where that rate
-would take each axis over the command's own `duration_ms` and, per axis independently, zeroes the
+would take each axis over the command's own `duration_ms` plus the head's stopping time for it
+(`|rate| / amax`, `amax` from `GET /api/config` or `trackFallbackAmaxDps2` — the axis does not
+stop dead when the jog ends) and, per axis independently, zeroes the
 rate if that prediction would cross the *effective* pan/tilt limit (see "Operator-taught travel
 limits" below) — the same predict-then-zero pattern the tracking session's soft-limit guard uses,
-just with the command's own duration standing in for the tracking guard's computed ramp-down
-horizon.
+just with the command's own duration standing in for the tracking guard's telemetry-age and
+tick terms.
 
 Two things this deliberately preserves:
 

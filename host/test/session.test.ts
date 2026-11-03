@@ -58,10 +58,6 @@ class FakeDevice {
   lastUpdateMs = 1_000_000;
   // Every track() call, in order (the head's TRACK).
   tracks: HeadTrackCmd[] = [];
-  // Set to hold every track() unanswered until releaseTracks(): a TRACK still
-  // in flight when the session decides to stop.
-  holdTracks = false;
-  private heldTracks: (() => void)[] = [];
   // Every stop() call's axes argument, in order (undefined = all axes).
   stops: (string[] | undefined)[] = [];
   get stopCalls(): number { return this.stops.length; }
@@ -83,11 +79,7 @@ class FakeDevice {
       lastUpdateMs: this.lastUpdateMs,
     };
   }
-  async track(cmd: HeadTrackCmd) {
-    this.tracks.push(cmd);
-    if (this.holdTracks) await new Promise<void>((resolve) => this.heldTracks.push(resolve));
-  }
-  releaseTracks() { for (const r of this.heldTracks.splice(0)) r(); }
+  async track(cmd: HeadTrackCmd) { this.tracks.push(cmd); }
   async gotoAngle(pan: number, tilt: number) {
     this.gotos.push({ pan, tilt });
     return new Promise<void>((resolve, reject) => {
@@ -216,6 +208,21 @@ describe("TrackingSession servo: the head's TRACK", () => {
     expect(dev.tracks).toHaveLength(2);
   });
 
+  it("tilt_sign -1 mirrors the TRACK tilt setpoint and feed-forward", () => {
+    // A climbing target 2km up: a real tilt and a real tilt rate to mirror.
+    const climbing = { ...NORTH, height: 2000 };
+    const c = { ...cfg, tiltSign: -1 as const };
+    const { aim, reach } = trackingAt(climbing, [0, 0, 100], c);
+    expect(reach.tilt).toBeGreaterThan(5);
+    expect(Math.abs(aim.rateTiltDps)).toBeGreaterThan(0.1);
+
+    sched.fire();
+    expect(dev.tracks[0]).toEqual({
+      pan: { pos: expect.closeTo(reach.pan, 9), vel: expect.closeTo(aim.ratePanDps, 9) },
+      tilt: { pos: expect.closeTo(-reach.tilt, 9), vel: expect.closeTo(-aim.rateTiltDps, 9) },
+    });
+  });
+
   it("status reports the feed-forward rates actually sent, in the user frame", () => {
     const c = { ...cfg, panSign: -1 as const };
     const { s, aim } = trackingAt(NORTH, [120, 0, 0], c);
@@ -259,71 +266,6 @@ describe("TrackingSession servo: the head's TRACK", () => {
     for (let i = 0; i < 5; i++) sched.fire();
     expect(s.status().state).toBe("acquiring");
     expect(dev.tracks).toHaveLength(0);
-  });
-
-  it("a stop chases a TRACK that was still in flight, so a late TRACK cannot restart the axis", async () => {
-    const { s } = trackingAt(NORTH, [0, 0, 0]);
-    dev.holdTracks = true;
-    sched.fire();                 // a TRACK goes out and is not yet answered
-    expect(dev.tracks).toHaveLength(1);
-
-    dev.estop = true;
-    sched.fire();                 // enters waiting: one stop, at once
-    expect(s.status().state).toBe("waiting");
-    expect(dev.stopCalls).toBe(1);
-
-    dev.releaseTracks();          // the TRACK lands -- possibly AFTER the stop
-    await flush();
-    expect(dev.stopCalls).toBe(2);   // so the stop is sent again behind it
-  });
-
-  it("no chase stop once the session has commanded motion again", async () => {
-    const { s } = trackingAt(NORTH, [0, 0, 0]);
-    dev.holdTracks = true;
-    sched.fire();
-    dev.estop = true;
-    sched.fire();
-    expect(dev.stopCalls).toBe(1);
-
-    // E-STOP clears and the session re-acquires before the old TRACK settles:
-    // a chase stop now would kill the fresh goto.
-    dev.estop = false;
-    sched.fire();
-    expect(s.status().state).toBe("acquiring");
-    dev.releaseTracks();
-    await flush();
-    expect(dev.stopCalls).toBe(1);
-  });
-
-  it("the re-acquire goto waits for an in-flight TRACK so the TRACK cannot replace it", async () => {
-    const { s } = trackingAt(NORTH, [0, 0, 0]);
-    dev.holdTracks = true;
-    sched.fire();
-    const gotosBefore = dev.gotos.length;
-
-    dev.panDeg = 90;              // way off: reacquire
-    sched.fire();
-    expect(s.status().state).toBe("acquiring");
-    expect(dev.gotos.length).toBe(gotosBefore);   // held back
-
-    dev.releaseTracks();
-    await flush();
-    expect(dev.gotos.length).toBe(gotosBefore + 1);
-  });
-
-  it("the re-acquire goto waits for an unanswered STOP so the STOP cannot cancel it", async () => {
-    const { s } = trackingAt(NORTH, [0, 0, 0]);
-    dev.estop = true;
-    sched.fire();                 // waiting: STOP sent, not yet answered
-    const gotosBefore = dev.gotos.length;
-
-    dev.estop = false;
-    sched.fire();                 // reacquire in the same turn
-    expect(s.status().state).toBe("acquiring");
-    expect(dev.gotos.length).toBe(gotosBefore);
-
-    await flush();                // the STOP is answered; the goto follows it
-    expect(dev.gotos.length).toBe(gotosBefore + 1);
   });
 });
 
@@ -423,12 +365,11 @@ describe("TrackingSession safety gates", () => {
     expect(dev.stopCalls).toBe(1);
   });
 
-  it("auto-reacquires when a waiting target becomes reachable again", async () => {
+  it("auto-reacquires when a waiting target becomes reachable again", () => {
     const s = tracking();
     dev.estop = true;
     sched.fire();
     expect(s.status().state).toBe("waiting");
-    await flush();   // the head answers the STOP (ticks are 100ms apart)
 
     dev.estop = false;
     dev.lastUpdateMs = clockMs;
@@ -447,8 +388,8 @@ describe("TrackingSession safety gates", () => {
     expect(s.status().state).toBe("acquiring");
     expect(dev.gotos.length).toBe(before + 1);
     expect(dev.tracks).toHaveLength(0);
-    // The head retargets an accepted goto, so nothing is stopped first: a
-    // stop racing the fresh goto could land after it and cancel it.
+    // The head retargets an accepted goto (it replaces the TRACK), so nothing
+    // is stopped first.
     expect(dev.stopCalls).toBe(0);
   });
 
@@ -481,8 +422,7 @@ describe("TrackingSession goto cancellation (generation stamp)", () => {
 
     // A second start() arrives while the first goto is still in flight. It
     // must abandon the stale attempt (generation bump) and issue a fresh
-    // goto. No stop: the head retargets an accepted goto, and a stop sent
-    // alongside the fresh goto could land after it and cancel it.
+    // goto. No stop: the head retargets an accepted goto.
     s.start(NORTH, null, null);
     expect(dev.stopCalls).toBe(0);
     expect(dev.gotoDeferreds.length).toBe(2);

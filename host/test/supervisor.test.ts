@@ -273,6 +273,88 @@ describe("SunSupervisor", () => {
 // points UP (idleParkTiltDeg, default 45) to get it off the neighbours. They
 // share SunSupervisor's park machinery but must never share a posture, and
 // the sun always wins.
+// The motion commands the head received, in arrival order.
+function motionCalls(m: FakeHead): { path: string; body: unknown }[] {
+  return m.calls
+    .filter((c) => ["/api/goto", "/api/track", "/api/stop", "/api/jog"].includes(c.path))
+    .map((c) => ({ path: c.path, body: c.body }));
+}
+
+// A point distM from the rig at azimuth/elevation (flat earth; fine at 10km).
+function azElTarget(rig: { lat: number; lon: number }, azDeg: number, elDeg: number, distM = 10000) {
+  const az = (azDeg * Math.PI) / 180;
+  return {
+    lat: rig.lat + (distM * Math.cos(az)) / 111320,
+    lon: rig.lon + (distM * Math.sin(az)) / (111320 * Math.cos((rig.lat * Math.PI) / 180)),
+    height: distM * Math.tan((elDeg * Math.PI) / 180) + (distM * distM) / (2 * 6_371_000),
+  };
+}
+
+// Two HTTP requests can reach the head in either order. A tracking session
+// stopped while one of its TRACKs is still unanswered, immediately followed by
+// a park goto, must not leave a STOP arriving AFTER that goto: the STOP would
+// cancel the park and the park would sit out its arrival timeout.
+describe("stop-then-park command ordering on the head", () => {
+  const RIG = { lat: 33.4484, lon: -112.074, height: 0 };
+
+  // A session tracking a target at the rig's current pose, with one TRACK sent
+  // and still unanswered (the head is slow).
+  async function trackingWithTrackInFlight(cfg: ReturnType<typeof loadConfig>, store: CalibrationStore, nowMs: number, azDeg: number, elDeg: number) {
+    const { sched, fire } = manualScheduler();
+    const session = new TrackingSession(dev!, cfg, store, () => nowMs, sched);
+    expect(session.start(azElTarget(RIG, azDeg, elDeg), [0, 0, 0], "ord")).toBeNull();
+    await new Promise((r) => setTimeout(r, 300));       // the acquire goto lands and arrives
+    session.forceStateForTest("tracking");
+    mock!.responseDelayMs = 300;
+    const before = motionCalls(mock!).length;
+    fire();                                              // one TRACK, unanswered for 300ms
+    await new Promise((r) => setTimeout(r, 30));
+    expect(motionCalls(mock!).slice(before).map((c) => c.path)).toEqual(["/api/track"]);
+    return { session, before };
+  }
+
+  it("a sun trip during tracking: the park goto is the last motion command, no STOP after it", async () => {
+    // Phoenix solar noon, rig on the sun (same fixture as the direct park).
+    const nowMs = Date.UTC(2026, 6, 17, 19, 30);
+    const { cfg, store } = await harness(25, nowMs);
+    mock!.setPosition(175, 77);
+    await new Promise((r) => setTimeout(r, 200));
+    const { session, before } = await trackingWithTrackInFlight(cfg, store, nowMs, 175, 77);
+    const { sched } = manualScheduler();
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
+
+    sup.tickForTest();                                   // trip: stop the session, post the park goto
+    expect(sup.status().state).toBe("parking");
+    await new Promise((r) => setTimeout(r, 1500));       // everything answered
+
+    const after = motionCalls(mock!).slice(before);
+    expect(after.at(-1)?.path).toBe("/api/goto");
+    expect((after.at(-1)?.body as { tilt: number }).tilt).toBeCloseTo(cfg.parkTiltDeg, 1);
+    const parkIdx = after.length - 1;
+    expect(after.slice(parkIdx + 1).some((c) => c.path === "/api/stop")).toBe(false);
+    session.stop();
+  });
+
+  it("stop() then parkIdle(): the idle-park goto is the last motion command and the park lands", async () => {
+    const NIGHT_MS = Date.UTC(2026, 0, 1, 8, 0);
+    const { cfg, store } = await harness(25, NIGHT_MS);
+    mock!.setPosition(0, 0);
+    await new Promise((r) => setTimeout(r, 200));
+    const { session, before } = await trackingWithTrackInFlight(cfg, store, NIGHT_MS, 0, 0);
+    const { sched } = manualScheduler();
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => NIGHT_MS, sched);
+
+    session.stop();
+    const r = await sup.parkIdle();
+
+    expect(r).toEqual({ parked: true, reason: "parked" });
+    await new Promise((r2) => setTimeout(r2, 400));
+    const after = motionCalls(mock!).slice(before);
+    expect(after.at(-1)?.path).toBe("/api/goto");
+    expect((after.at(-1)?.body as { tilt: number }).tilt).toBeCloseTo(cfg.idleParkTiltDeg, 1);
+  });
+});
+
 describe("idle park", () => {
   const RIG = { lat: 33.4484, lon: -112.074, height: 0 };
   // A nighttime fixture (sun far below the horizon at RIG) for tests that are
