@@ -12,6 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from .outage import OutageLog
+
 log = logging.getLogger(__name__)
 
 # Copied from plainsight/host/imu.py (2026-11); keep in sync by hand.
@@ -28,7 +30,8 @@ MODE_CONFIG, MODE_IMU, MODE_NDOF = 0x00, 0x08, 0x0C  # IMU = gyro+accel only, no
 
 _SAMPLE_LEN = 28  # EUL(6) QUA(8) LIA(6) GRV(6) TEMP(1) CALIB_STAT(1), contiguous from EUL_DATA
 _BURST_MAX = 1000
-_BURST_YIELD_EVERY = 10
+CAL_RETRY_FIRST_S = 5.0  # offsets-read retry backoff once fully calibrated: 5, 10, 20, 40, 60, 60 ...
+CAL_RETRY_MAX_S = 60.0
 _REOPEN_S = 1.0
 _FAIL_LIMIT = 3  # consecutive read failures before the link is declared down
 
@@ -181,7 +184,12 @@ class BNO055:
 
 
 class ImuReader:
-    """Polls the sensor at rate_hz, publishes `latest`, and survives link loss."""
+    """Polls the sensor at rate_hz, publishes `latest`, and survives link loss.
+
+    Every sensor access (open, sample reads, bursts, offsets, close) runs in a worker thread,
+    one at a time behind `_bus`: a held bus or a kernel adapter timeout then blocks that thread,
+    never the event loop that runs the jog dead-man, E-STOP, HTTP and the Pico stale check.
+    """
 
     def __init__(self, open_fn: Callable[[], Any], *, rate_hz: float = 20,
                  on_fully_calibrated: Callable[[bytes], None] | None = None,
@@ -195,8 +203,12 @@ class ImuReader:
         self._time = time_fn
         self._reopen_s = reopen_s
         self._dev: Any = None
+        self._bus = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._cal_fired = False
+        self._cal_retry_at: float | None = None
+        self._cal_retry_s = CAL_RETRY_FIRST_S
+        self._outage = OutageLog(log, "IMU")
         self.latest: ImuSample | None = None
         self.ok = False
 
@@ -209,15 +221,32 @@ class ImuReader:
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        self._close_dev()
+        await self._close_dev()
         self.ok = False
         self._cal_fired = False
 
-    def _close_dev(self) -> None:
+    async def _io(self, fn: Callable[..., Any], *args: Any,
+                  orphan: Callable[[Any], None] | None = None) -> Any:
+        """Run one blocking sensor call in a worker thread, holding the bus lock until it returns."""
+        async with self._bus:
+            fut = asyncio.get_running_loop().run_in_executor(None, fn, *args)
+            try:
+                return await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                # A thread cannot be interrupted: keep the bus until it returns, so no other call
+                # overlaps it, and dispose of a result nobody will take (an opened device).
+                await asyncio.wait([fut])
+                if orphan is not None and not fut.cancelled() and fut.exception() is None:
+                    orphan(fut.result())
+                elif not fut.cancelled() and fut.exception() is not None:
+                    log.warning("IMU call finished after cancellation with %r", fut.exception())
+                raise
+
+    async def _close_dev(self) -> None:
         dev, self._dev = self._dev, None
         if dev is not None:
             try:
-                dev.close()
+                await self._io(dev.close)
             except Exception:
                 log.exception("closing IMU failed")
 
@@ -230,40 +259,52 @@ class ImuReader:
             except Exception:
                 log.exception("on_link callback failed")
 
-    def load_offsets(self, data: bytes) -> None:
-        if self._dev is None:
+    async def load_offsets(self, data: bytes) -> None:
+        dev = self._dev
+        if dev is None:
             log.warning("load_offsets ignored: IMU not open")
             return
-        self._dev.set_offsets(data)
+        await self._io(dev.set_offsets, data)
 
     async def burst(self, n: int) -> list[ImuSample]:
-        """Read up to n (max 1000) samples back-to-back; returns [] if the sensor is not open."""
-        if self._dev is None:
-            return []
-        out: list[ImuSample] = []
-        for i in range(min(n, _BURST_MAX)):
-            out.append(self._dev.read_sample(self._time()))
-            if (i + 1) % _BURST_YIELD_EVERY == 0:
-                await asyncio.sleep(0)
-        return out
+        """Read up to n (max 1000) samples back-to-back; returns [] if the sensor is not open.
 
-    def _open(self) -> bool:
+        Each read takes the bus lock on its own, so the 20 Hz reader interleaves with a burst.
+        """
+        dev = self._dev
+        if dev is None:
+            return []
+        return [await self._io(self._sample, dev) for _ in range(min(n, _BURST_MAX))]
+
+    def _sample(self, dev: Any) -> ImuSample:
+        """Runs in the worker with the bus held, so `t` is when the read happened, not queued."""
+        return dev.read_sample(self._time())
+
+    async def _open(self) -> bool:
         try:
-            self._dev = self._open_fn()
+            self._dev = await self._io(self._open_fn, orphan=_close_quietly)
         except Exception as e:
-            log.warning("IMU open failed: %s", e)
+            log.debug("IMU open failed", exc_info=True)
+            self._outage.failure(f"open failed ({type(e).__name__}: {e}); retrying every "
+                                 f"{self._reopen_s:g} s")
             self._dev = None
             return False
         return True
 
-    def _maybe_fire_calibrated(self, sample: ImuSample) -> None:
+    async def _maybe_fire_calibrated(self, sample: ImuSample) -> None:
         if self._cal_fired or self._on_cal is None or sample.cal != (3, 3, 3, 3):
             return
-        try:
-            offsets = self._dev.get_offsets()
-        except Exception:
-            log.exception("reading calibration offsets failed; will retry on a later sample")
+        now = self._time()
+        if self._cal_retry_at is not None and now < self._cal_retry_at:
             return
+        try:
+            offsets = await self._io(self._dev.get_offsets)
+        except Exception:
+            log.exception("reading calibration offsets failed; retrying in %.0f s", self._cal_retry_s)
+            self._cal_retry_at = now + self._cal_retry_s
+            self._cal_retry_s = min(self._cal_retry_s * 2, CAL_RETRY_MAX_S)
+            return
+        self._cal_retry_at, self._cal_retry_s = None, CAL_RETRY_FIRST_S
         self._cal_fired = True
         try:
             self._on_cal(offsets)
@@ -274,7 +315,7 @@ class ImuReader:
         fails = 0
         while True:
             if self._dev is None:
-                if self._open():
+                if await self._open():
                     fails = 0
                     self._set_link(True)
                 else:
@@ -282,19 +323,27 @@ class ImuReader:
                     await asyncio.sleep(self._reopen_s)
                     continue
             try:
-                sample = self._dev.read_sample(self._time())
+                sample = await self._io(self._sample, self._dev)
             except Exception as e:
-                if not isinstance(e, OSError):
-                    log.exception("unexpected IMU read error")
+                if not isinstance(e, OSError) and not self._outage.down:
+                    log.exception("unexpected IMU read error")  # once per outage, not per read
                 fails += 1
                 if fails >= _FAIL_LIMIT:
-                    log.warning("IMU link down after %d failed reads: %s", fails, e)
-                    self._close_dev()
+                    self._outage.failure(f"{fails} failed reads ({type(e).__name__}: {e})")
+                    await self._close_dev()
                     self._set_link(False)
                     await asyncio.sleep(self._reopen_s)
                     continue
             else:
                 fails = 0
+                self._outage.recovered()  # a good sample, not a reopen, ends an outage
                 self.latest = sample
-                self._maybe_fire_calibrated(sample)
+                await self._maybe_fire_calibrated(sample)
             await asyncio.sleep(self._period)
+
+
+def _close_quietly(dev: Any) -> None:
+    try:
+        dev.close()
+    except Exception:
+        log.exception("closing an IMU opened during cancellation failed")

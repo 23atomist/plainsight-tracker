@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 
+from plainsight_head.pico import PicoError
 from plainsight_head.protocol import AXES
 
 log = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ class JogDeadman:
         self._poll_s = poll_s
         self._last_touch: dict[str, float] = {}
         self._task: asyncio.Task | None = None
+        self._failure: str | None = None  # the last logged stop failure; None while stops work
 
     @property
     def armed(self) -> set[str]:
@@ -56,6 +58,16 @@ class JogDeadman:
         else:
             self._last_touch.pop(axis, None)
 
+    def snapshot(self) -> dict[str, float]:
+        """The arm times now; pass to `clear_unchanged` after a command that supersedes a jog."""
+        return dict(self._last_touch)
+
+    def clear_unchanged(self, snap: dict[str, float], axes: Iterable[str]) -> None:
+        """Disarm `axes` unless a jog re-armed them since `snap` (that jog was sent later)."""
+        for axis in axes:
+            if axis in self._last_touch and self._last_touch[axis] == snap.get(axis):
+                del self._last_touch[axis]
+
     async def _run(self) -> None:
         while True:
             await asyncio.sleep(self._poll_s)
@@ -66,9 +78,26 @@ class JogDeadman:
                 continue
             try:
                 await self._stop_axes(expired)
-            except Exception:
-                log.exception("jog dead-man stop failed for %s; will retry", expired)
+            except Exception as exc:
+                self._note_failure(expired, exc)
                 continue
+            if self._failure is not None:
+                log.warning("jog dead-man: STOP %s went through after failing", " ".join(expired))
+                self._failure = None
             for axis in expired:
                 if self._last_touch.get(axis) == stale[axis]:  # not re-touched meanwhile
                     del self._last_touch[axis]
+
+    def _note_failure(self, axes: list[str], exc: Exception) -> None:
+        """Log a failing stop once per change of failure, not once per poll; the axes stay armed."""
+        failure = f"{type(exc).__name__}: {exc}"
+        if failure == self._failure:
+            return
+        self._failure = failure
+        log.warning("jog dead-man: STOP %s failed (%s); retrying every %.0f ms until it goes through",
+                    " ".join(axes), failure, self._poll_s * 1000, exc_info=not _expected(exc))
+
+
+def _expected(exc: Exception) -> bool:
+    """Pico refusals and link loss need no traceback; anything else does."""
+    return isinstance(exc, PicoError)

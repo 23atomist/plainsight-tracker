@@ -157,3 +157,64 @@ async def test_two_axes_expiring_together_make_one_call():
     await asyncio.sleep(0.05)
     assert calls == [["pan", "tilt"]] and d.armed == set()
     await d.close()
+
+
+async def test_failure_is_logged_once_per_change_and_recovery_once(caplog):
+    from plainsight_head.pico import PicoLinkDown, PicoTimeout
+
+    clk, calls = FakeClock(), []
+    errors = [PicoLinkDown()] * 5 + [PicoTimeout("no reply")] * 3
+
+    async def stop(axes):
+        calls.append(list(axes))
+        if errors:
+            raise errors.pop(0)
+
+    d = JogDeadman(100, stop, time_fn=clk.now, poll_s=0.005)
+    await d.start()
+    d.touch("pan")
+    clk.advance(1.0)
+    for _ in range(200):
+        await asyncio.sleep(0.005)
+        if not d.armed:
+            break
+    await d.close()
+    assert len(calls) == 9 and d.armed == set()
+    lines = [r.getMessage() for r in caplog.records if r.name == "plainsight_head.deadman"]
+    assert len(lines) == 3, lines  # link down, then timeout, then "went through"
+    assert "link down" in lines[0] and "no reply" in lines[1] and "went through" in lines[2]
+    assert not any(r.exc_info for r in caplog.records)  # Pico errors carry no traceback
+
+
+async def test_unexpected_stop_error_is_logged_with_traceback(caplog):
+    clk, calls = FakeClock(), []
+
+    async def stop(axes):
+        calls.append(axes)
+        if len(calls) < 3:
+            raise RuntimeError("bug")
+
+    d = JogDeadman(100, stop, time_fn=clk.now, poll_s=0.005)
+    await d.start()
+    d.touch("tilt")
+    clk.advance(1.0)
+    await asyncio.sleep(0.1)
+    await d.close()
+    tracebacks = [r for r in caplog.records if r.exc_info]
+    assert len(tracebacks) == 1 and "RuntimeError: bug" in tracebacks[0].getMessage()
+
+
+async def test_clear_unchanged_keeps_axes_rearmed_after_the_snapshot():
+    clk = FakeClock()
+
+    async def stop(axes):
+        pass
+
+    d = JogDeadman(100, stop, time_fn=clk.now)
+    d.touch("pan")
+    d.touch("tilt")
+    snap = d.snapshot()
+    clk.advance(0.01)
+    d.touch("tilt")  # a newer jog queued behind the superseding command
+    d.clear_unchanged(snap, ["pan", "tilt", "zoom"])
+    assert d.armed == {"tilt"}

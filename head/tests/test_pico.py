@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import time
 
 import pytest
 
@@ -180,4 +182,146 @@ async def test_read_error_closes_reopens_and_commands_work_again():
     await asyncio.sleep(0.3)
     assert seen["link"] == [True, False, True] and link.connected
     assert await link.command("VER") == ["V plainsight-ptz 0.1.0"]
+    await link.close()
+
+
+async def test_link_down_errors_are_picolinkdown():
+    from plainsight_head.pico import PicoLinkDown
+
+    fake = FakeSerial(); link, _ = await make_link(fake, reconnect_s=5.0)
+    fake.fail_next_reads(1)
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if not link.connected:
+            break
+    with pytest.raises(PicoLinkDown) as e:
+        await link.command("VER")
+    assert isinstance(e.value, PicoError) and e.value.reason == "link down"
+    await link.close()
+
+
+async def test_status_round_trip_parses_the_reply():
+    fake = FakeSerial(); fake.model["pan"].update(mode="V", vel=2.0)
+    link, _ = await make_link(fake)
+    st = await link.status()
+    assert st.axes["pan"].mode == "V" and st.axes["pan"].vel == 2.0 and fake.sent == ["STATUS"]
+    fake.reply_override["STATUS"] = "ok"
+    from plainsight_head.protocol import ProtocolError
+    with pytest.raises(ProtocolError):
+        await link.status()
+    await link.close()
+
+
+async def test_command_waiting_behind_a_held_lock_times_out_unsent():
+    fake = FakeSerial(); link, _ = await make_link(fake)
+    await link._cmd_lock.acquire()  # a stuck holder (a write that never returns)
+    try:
+        with pytest.raises(PicoTimeout) as e:
+            await asyncio.wait_for(link.command("VER", timeout_s=0.2), 2.0)
+        assert "not sent" in e.value.reason
+    finally:
+        link._cmd_lock.release()
+    assert fake.sent == []
+    assert await link.command("VER") == ["V plainsight-ptz 0.1.0"]  # the lock was not leaked
+    await link.close()
+
+
+def test_pyserial_is_opened_with_a_write_timeout(monkeypatch):
+    import serial
+
+    from plainsight_head import pico
+
+    seen = {}
+    monkeypatch.setattr(serial, "Serial", lambda *a, **kw: seen.update(args=a, kw=kw) or "port")
+    assert pico._pyserial_factory("/dev/ttyACM0", 115200) == "port"
+    assert seen["args"] == ("/dev/ttyACM0", 115200)
+    assert seen["kw"]["write_timeout"] == pico.WRITE_TIMEOUT_S == 1.0
+    assert issubclass(serial.SerialTimeoutException, OSError)  # so command() maps it to PicoError
+
+
+def _warnings(caplog, logger):
+    return [r for r in caplog.records if r.name == logger and r.levelno >= logging.WARNING]
+
+
+async def test_absent_pico_for_3s_logs_at_most_two_warnings_and_no_traceback(caplog):
+    fake, gone = FakeSerial(), {"until": None}
+
+    def factory(port, baud):
+        if time.monotonic() < gone["until"]:  # runs in a worker thread
+            raise FileNotFoundError(port)
+        fake.is_open = True
+        return fake
+
+    gone["until"] = time.monotonic() + 3.0
+    caplog.set_level(logging.INFO, logger="plainsight_head.pico")
+    link = PicoLink("/dev/fake", 115200, on_status=lambda s: None, on_event=lambda e: None,
+                    on_link=lambda up: None, serial_factory=factory, reconnect_s=0.05)
+    await link.start()
+    await asyncio.sleep(3.2)
+    assert link.connected
+    fake.emit_status()
+    await asyncio.sleep(0.05)
+    await link.close()
+    warnings = _warnings(caplog, "plainsight_head.pico")
+    assert 1 <= len(warnings) <= 2, [r.getMessage() for r in warnings]
+    assert not any(r.exc_info for r in warnings)
+    assert any("back after" in r.getMessage() for r in caplog.records)
+
+
+async def test_supervisor_survives_a_failing_teardown_and_reconnects(caplog):
+    fake = FakeSerial(); factory = CountingFactory(fake)
+
+    def bad_close():
+        fake.is_open = False
+        raise RuntimeError("driver bug in close()")
+
+    fake.close = bad_close
+    link, seen = await make_link(fake, reconnect_s=0.05)
+    link._factory = factory
+    fake.fail_next_reads(1)
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if seen["link"][-1] is True and factory.calls >= 1:
+            break
+    assert seen["link"] == [True, False, True] and link.connected
+    assert link._supervisor is not None and not link._supervisor.done()
+    assert await link.command("VER") == ["V plainsight-ptz 0.1.0"]
+    assert any("teardown failed" in r.getMessage() for r in caplog.records)
+    await link.close()
+
+
+async def test_supervisor_survives_an_unexpected_exception_in_a_step(caplog, monkeypatch):
+    fake = FakeSerial()
+    link, seen = await make_link(fake, reconnect_s=0.05)
+    real_open, calls = link._open, []
+
+    async def flaky_open():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("bug")
+        return await real_open()
+
+    monkeypatch.setattr(link, "_open", flaky_open)
+    fake.fail_next_reads(1)
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if link.connected and len(calls) >= 2:
+            break
+    assert link.connected and len(calls) == 2
+    assert any("supervisor step failed" in r.getMessage() and r.exc_info for r in caplog.records)
+    await link.close()
+
+
+async def test_write_failure_is_a_lost_link():
+    from plainsight_head.pico import PicoLinkDown
+
+    fake = FakeSerial(); link, _ = await make_link(fake, reconnect_s=5.0)
+
+    def broken_write(data):
+        raise OSError("EIO")
+
+    fake.write = broken_write
+    with pytest.raises(PicoLinkDown) as e:
+        await link.command("VER")
+    assert e.value.reason == "write failed: EIO"
     await link.close()

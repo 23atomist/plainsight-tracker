@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://plainsight.local/head-api/event.json",
   "title": "Head event",
-  "description": "One WebSocket event. `detail` shapes per event name are in docs/HEAD-API.md.",
+  "description": "One WebSocket event. `detail` (and `axis`) are typed per event `name`; see docs/HEAD-API.md.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -35,5 +35,213 @@
         "null"
       ]
     }
-  }
+  },
+  "oneOf": [
+    {
+      "description": "Pico `*E` event (the names the plainsight-ptz firmware emits). `axis` is the axis on the line; `detail` is the rest of the line, or null if empty (always null for `homed`).",
+      "properties": {
+        "name": {
+          "enum": [
+            "homed",
+            "home_failed",
+            "endstop_hit",
+            "track_timeout",
+            "driver_online",
+            "driver_offline",
+            "driver_fault",
+            "driver_config_failed"
+          ]
+        },
+        "axis": {
+          "enum": [
+            "pan",
+            "tilt",
+            "zoom",
+            "focus"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "description": "The head's E-STOP latch was set.",
+      "properties": {
+        "name": {
+          "const": "estop"
+        },
+        "axis": {
+          "type": "null"
+        },
+        "detail": {
+          "type": "null"
+        }
+      }
+    },
+    {
+      "description": "The head's E-STOP latch was cleared.",
+      "properties": {
+        "name": {
+          "const": "estop_cleared"
+        },
+        "axis": {
+          "type": "null"
+        },
+        "detail": {
+          "type": "null"
+        }
+      }
+    },
+    {
+      "description": "A Pico setting was written through POST /api/config.",
+      "properties": {
+        "name": {
+          "const": "config"
+        },
+        "axis": {
+          "type": "null"
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scope",
+            "key",
+            "value"
+          ],
+          "properties": {
+            "scope": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "value": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "The Pico serial link went down or came up.",
+      "properties": {
+        "name": {
+          "const": "pico_link"
+        },
+        "axis": {
+          "type": "null"
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "up"
+          ],
+          "properties": {
+            "up": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "The pan reference changed.",
+      "properties": {
+        "name": {
+          "const": "pan_reference"
+        },
+        "axis": {
+          "type": "null"
+        },
+        "detail": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "source",
+                "pan",
+                "previous"
+              ],
+              "description": "Pan renamed by SETPOS: `previous` and `pan` name the same physical position (spec 6.8 rule 1). `previous` is null when pan had no frame (no status, or not homed).",
+              "properties": {
+                "source": {
+                  "enum": [
+                    "imu",
+                    "host"
+                  ]
+                },
+                "pan": {
+                  "type": "number"
+                },
+                "previous": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "source",
+                "reason"
+              ],
+              "description": "The reference was dropped (spec 6.8 rule 2).",
+              "properties": {
+                "source": {
+                  "const": "none"
+                },
+                "reason": {
+                  "enum": [
+                    "pan unhomed",
+                    "enable off"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "description": "An attempt to set the pan reference failed; `source` is the current, unchanged reference.",
+      "properties": {
+        "name": {
+          "const": "pan_reference_failed"
+        },
+        "axis": {
+          "type": "null"
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reason",
+            "source"
+          ],
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "none",
+                "imu",
+                "host"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
 }

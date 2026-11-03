@@ -44,6 +44,7 @@ class FakeSerial:
         self.is_open = True
         self.model: dict = {**{ax: _axis_model() for ax in AXES}, "enabled": True}
         self.home_ticks = 2
+        self.home_axes = ("tilt",)  # axes with home_dir set in the firmware config
         self.home_pos = 0.0
         self.sent: list[str] = []
         self.reply_override: dict[str, str] = {}
@@ -191,7 +192,7 @@ class FakeSerial:
                     m[ax]["mode"] = "I"
             self._reply("ok")
         elif verb == "HOME":
-            for ax in args:
+            for ax in args or self.home_axes:  # bare HOME homes the axes with an endstop
                 if ax not in AXES:
                     raise KeyError(ax)
                 m[ax]["mode"] = "H"
@@ -231,6 +232,7 @@ class FakeBNO055:
         self.closed = False
         self.mode = _FAKE_MODE_NDOF
         self.offsets_writes: list[bytes] = []
+        self.offsets_reads = 0
         self._fail = 0
         self._fail_offsets = 0
 
@@ -272,6 +274,7 @@ class FakeBNO055:
 
     def get_offsets(self) -> bytes:
         self._maybe_fail()
+        self.offsets_reads += 1
         self.mode = _FAKE_MODE_CONFIG
         try:
             if self._fail_offsets > 0:
@@ -359,8 +362,7 @@ class HeadCtx:
         from plainsight_head.reference import PanReference  # deferred: keeps other test modules importable
 
         return PanReference(self.cfg, self.link, self.imu, self.state, self.store,
-                            time_fn=self.now, on_event=self._on_ref_event,
-                            **self._ref_kw)
+                            on_event=self._on_ref_event, **{"time_fn": self.now, **self._ref_kw})
 
     def cfg_override(self, **kw) -> None:
         self.cfg = dataclasses.replace(self.cfg, **kw)

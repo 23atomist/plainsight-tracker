@@ -14,11 +14,12 @@ from .api import HeadContext, make_app, pico_stop_axes
 from .config import HeadConfig
 from .deadman import JogDeadman
 from .imu import BNO055, OFFSETS_LEN, ImuReader
+from .outage import OutageLog
 from .persist import JsonStore
 from .pico import PicoError, PicoLink
-from .protocol import PicoEvent, PicoStatus, ProtocolError, parse_cfg_lines
+from .protocol import AXES, PicoEvent, PicoStatus, ProtocolError, parse_cfg_lines
 from .reference import PanReference
-from .state import HeadState
+from .state import EstopLatched, HeadState, guard_head_motion
 
 log = logging.getLogger(__name__)
 
@@ -44,10 +45,13 @@ class Head:
         self.cfg, self.store = cfg, store
         self.state = HeadState(cfg)
         self._tilt_home: asyncio.Future[str] | None = None
+        self._init_outage = OutageLog(log, "pico init")  # a silent Pico fails init every cycle
         factory = {} if serial_factory is None else {"serial_factory": serial_factory}  # else pyserial
-        self.link = PicoLink(cfg.serial, cfg.baud, on_status=self._on_status,
+        self._restore_task: asyncio.Task | None = None  # reconnect restore, off the supervisor
+        self._orphan_logged: str | None = None  # last _stop_orphans warning, until a stream status
+        self.link = PicoLink(cfg.serial, cfg.baud, on_status=self._on_stream_status,
                              on_event=self._on_pico_event, on_link=self._on_pico_link,
-                             on_reconnect=self.init_pico, **factory)
+                             on_reconnect=self._reinit_pico, **factory)
         self.imu = ImuReader(self._opener(imu_open), on_fully_calibrated=self._save_offsets,
                              on_link=self.state.set_imu_link)
         self.ref = PanReference(cfg, self.link, self.imu, self.state, store,
@@ -59,6 +63,10 @@ class Head:
     def _merge_imu(self) -> None:
         if self.imu.latest is not None:
             self.state.on_imu(self.imu.latest)
+
+    def _on_stream_status(self, st: PicoStatus) -> None:
+        self._orphan_logged = None  # the link is streaming again: the next reconnect warns afresh
+        self._on_status(st)
 
     def _on_status(self, st: PicoStatus) -> None:
         self._merge_imu()
@@ -114,9 +122,10 @@ class Head:
         log.info("IMU fully calibrated; offsets saved to %s", OFFSETS_FILE)
 
     # --- Pico init (first connect and every reconnect) ---------------------
-    async def init_pico(self) -> None:
+    async def init_pico(self, *, reconnect: bool = False) -> None:
         cfg, link = self.cfg, self.link
         try:
+            await self._stop_orphans()
             ver = await link.command("VER")
             self.ctx.pico_version = ver[0].removeprefix("V ") if ver else ""
             log.info("pico: version %s", self.ctx.pico_version or "(none reported)")
@@ -124,11 +133,84 @@ class Head:
             await link.command(f"CFG global track_timeout_ms {cfg.track_timeout_ms}")
             await link.command(f"STREAM {cfg.stream_ms}")
             log.info("pico: initialised, streaming every %d ms", cfg.stream_ms)
-        except PicoError as exc:
-            log.warning("pico init failed (%s); the link supervisor will retry", exc.reason)
+            self._init_outage.recovered()
+        except (PicoError, ProtocolError) as exc:
+            self._init_outage.failure(f"{exc}; the link supervisor will retry")
+            return
         finally:
             # Also after a failure: no stream then goes stale, the link recycles, init re-runs.
             link.expect_stream = True
+        if reconnect:  # the first connect leaves this to boot()'s restore_at_boot
+            self._start_reconnect_restore()
+
+    def _start_reconnect_restore(self) -> None:
+        """Run the rule-2 restore as its own task: it may wait minutes for the reference lock
+        (an IMU north run), and init_pico runs inside the link supervisor, which must keep
+        detecting drops meanwhile. One pending restore is enough: it decides under the lock."""
+        if self._restore_task is not None and not self._restore_task.done():
+            return
+        self._restore_task = asyncio.create_task(self._reconnect_restore(), name="pan-reconnect-restore")
+
+    async def _reconnect_restore(self) -> None:
+        try:
+            result = await self.ref.restore_after_reconnect()
+        except Exception:
+            log.exception("pan reference restore after reconnect failed")
+            return
+        log.info("pico reconnect: pan reference %s%s", result.source,
+                 f" ({result.reason})" if result.reason else "")
+
+    async def cancel_background(self) -> None:
+        await _cancel(self._restore_task)
+
+    def _orphan_warning(self, msg: str, *args: Any) -> None:
+        """Warn once per streaming spell: a Pico that answers but never streams re-runs init
+        every few seconds and must not repeat the same warning each time."""
+        text = msg % args
+        if text == self._orphan_logged:
+            log.debug(text)
+            return
+        self._orphan_logged = text
+        log.warning(text)
+
+    async def _reinit_pico(self) -> None:
+        await self.init_pico(reconnect=True)
+
+    async def _stop_orphans(self) -> None:
+        """Stop whatever motion survived the link: the Pico has no host-disconnect stop.
+
+        With the E-STOP latch set, re-send ESTOP (the Pico does not latch it). Otherwise STOP
+        every axis the Pico reports jogging (mode V: JOG has no Pico-side timeout, so a jog from
+        before a link drop or from a previous process runs forever) and every axis the dead-man
+        still holds armed. The status read here also refreshes `state` before anything else.
+        """
+        link, deadman = self.link, self.deadman
+        st: PicoStatus | None = None
+        try:
+            st = await link.status()
+        except ProtocolError as exc:
+            self._orphan_warning("pico: unreadable STATUS reply (%s)", exc)
+        else:
+            self._on_status(st)
+        if self.state.estop:
+            self._orphan_warning("pico: E-STOP latched; re-sending ESTOP")
+            await link.command("ESTOP")
+            deadman.clear()
+            return
+        if st is None:
+            self._orphan_warning("pico: motion state unknown; sending STOP to all axes")
+            await link.command("STOP")
+            deadman.clear()
+            return
+        jogging = [ax for ax in AXES if st.axes[ax].mode == "V"]
+        axes = [ax for ax in AXES if ax in deadman.armed or ax in jogging]
+        if not axes:
+            return
+        self._orphan_warning("pico: stopping %s (jogging: %s, dead-man armed: %s)", " ".join(axes),
+                    " ".join(jogging) or "none", " ".join(sorted(deadman.armed)) or "none")
+        snap = deadman.snapshot()
+        await link.command("STOP " + " ".join(axes))
+        deadman.clear_unchanged(snap, axes)
 
     # --- boot (spec 5.1 steps 4-6) -------------------------------------------
     async def boot(self) -> None:
@@ -149,6 +231,11 @@ class Head:
         return self.state.pico is not None and self.state.pico.axes["tilt"].homed
 
     async def _home_tilt(self) -> None:
+        try:
+            guard_head_motion(self.state)
+        except EstopLatched:
+            log.warning("boot: tilt not homed, but E-STOP is latched; skipping HOME tilt")
+            return
         log.info("boot: tilt not homed; HOME tilt")
         self._tilt_home = asyncio.get_running_loop().create_future()
         try:
@@ -259,6 +346,7 @@ async def _shutdown(head: Head, runner: web.AppRunner, tasks: dict[str, asyncio.
     # and no jog can arrive once the dead-man is gone.
     await _chain([
         ("cancel boot", lambda: _cancel(tasks.get("boot"))),  # boot must not send after STOP
+        ("cancel reconnect restore", head.cancel_background),  # nor a queued SETPOS
         ("close HTTP server", lambda: _close_server(runner)),
         ("STOP", head.stop_motion),
         ("persist pan", head.ref.persist_now),

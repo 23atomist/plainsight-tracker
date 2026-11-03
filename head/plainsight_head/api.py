@@ -1,4 +1,4 @@
-"""aiohttp application: the HTTP command routes and WebSocket telemetry fan-out (spec 4.2, 4.3)."""
+"""aiohttp application: the HTTP command routes (spec 4.2); WebSocket telemetry is in ws.py."""
 from __future__ import annotations
 
 import asyncio
@@ -6,29 +6,31 @@ import json
 import logging
 import math
 import re
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from aiohttp import WSCloseCode, web
+from aiohttp import web
 
 from . import __version__
 from .config import HeadConfig
 from .deadman import JogDeadman
 from .imu import ImuReader, ImuSample
-from .pico import PicoError, PicoLink, PicoTimeout
+from .pico import PicoError, PicoLink, PicoLinkDown, PicoTimeout
 from .protocol import AXES, ProtocolError, fmt_axes, parse_cfg_lines, parse_drv_lines
 from .reference import PanReference
-from .state import HeadState
+from .state import EstopLatched, HeadState, guard_head_motion
+from .ws import WsHub
 
 log = logging.getLogger(__name__)
 
-WS_QUEUE_MAX = 50
 IMU_BURST_DEFAULT = 100
 IMU_BURST_MAX = 1000
 TRACK_AXES = ("pan", "tilt")
 GUARDED_KEYS = ("socket", "host_baud")
+COMMAND_TIMEOUT_S = 2.0
+SAFETY_TIMEOUT_S = 5.0  # STOP and ESTOP may queue behind another command's full 2 s timeout
 _TOKEN = re.compile(r"[A-Za-z0-9_]+")
 
 
@@ -45,13 +47,12 @@ class HeadContext:
 
 @dataclass
 class _ApiState:
-    ws_clients: set[web.WebSocketResponse] = field(default_factory=set)
-    ws_dropped_total: int = 0
     tasks: set[asyncio.Task] = field(default_factory=set)
 
 
 CTX = web.AppKey("ctx", HeadContext)
 API = web.AppKey("api", _ApiState)
+WS = web.AppKey("ws", WsHub)
 
 
 class HTTPLocked(web.HTTPClientError):
@@ -67,14 +68,14 @@ def _ok(status: int = 200) -> web.Response:
 
 
 def pico_stop_axes(pico: PicoLink) -> Callable[[list[str]], Awaitable[None]]:
-    """The jog dead-man's stop action: `STOP <axes>`; a down link has nothing left to stop."""
+    """The jog dead-man's stop action: `STOP <axes>`.
+
+    Every failure propagates, PicoLinkDown included: the Pico has no host-disconnect stop and
+    JOG no timeout of its own, so a jog survives a link drop. The dead-man keeps the axis armed
+    and retries each poll until a STOP goes through (main.init_pico also stops it on reconnect).
+    """
     async def stop_axes(axes: list[str]) -> None:
-        try:
-            await pico.command("STOP " + " ".join(axes))
-        except PicoError as exc:
-            if pico.connected:
-                raise
-            log.warning("dead-man STOP %s skipped, pico link down: %s", " ".join(axes), exc.reason)
+        await pico.command("STOP " + " ".join(axes))
 
     return stop_axes
 
@@ -148,21 +149,23 @@ def _pico_errors(*, setpos: bool = False) -> Iterator[None]:
         raise _error(web.HTTPGatewayTimeout, exc.reason) from exc
     except PicoError as exc:
         log.warning("pico refused: %s", exc.reason)
-        if exc.reason == "link down":
+        if isinstance(exc, PicoLinkDown):
             raise _error(web.HTTPServiceUnavailable, "pico link down") from exc
         if setpos and ("moving" in exc.reason or "stopped" in exc.reason):
             raise _error(web.HTTPConflict, exc.reason) from exc
         raise _error(web.HTTPBadRequest, exc.reason) from exc
 
 
-async def _command(ctx: HeadContext, line: str) -> list[str]:
+async def _command(ctx: HeadContext, line: str, timeout_s: float = COMMAND_TIMEOUT_S) -> list[str]:
     with _pico_errors():
-        return await ctx.pico.command(line)
+        return await ctx.pico.command(line, timeout_s)
 
 
 def _guard_motion(ctx: HeadContext) -> None:
-    if ctx.state.estop:
-        raise _error(HTTPLocked, "estop latched; POST /api/estop/clear")
+    try:
+        guard_head_motion(ctx.state)
+    except EstopLatched:
+        raise _error(HTTPLocked, "estop latched; POST /api/estop/clear") from None
     if not ctx.state.pico_link:
         raise _error(web.HTTPServiceUnavailable, "pico link down")
 
@@ -173,15 +176,27 @@ async def send_motion(ctx: HeadContext, line: str) -> list[str]:
 
 
 # --- motion routes ----------------------------------------------------------------
+async def _send_superseding(ctx: HeadContext, line: str, axes: Iterable[str]) -> list[str]:
+    """Send a command that replaces any jog on `axes`, then disarm their dead-man timers.
+
+    Otherwise the dead-man would STOP the axis mid-move. A jog re-armed while the command was
+    queued is newer than it and keeps its timer. After a timeout the timers stay armed.
+    """
+    snap = ctx.deadman.snapshot()
+    data = await send_motion(ctx, line)
+    ctx.deadman.clear_unchanged(snap, axes)
+    return data
+
+
 async def goto(request: web.Request) -> web.Response:
     values = expect_axes(await _body(request), AXES, "scalar")
-    await send_motion(request.app[CTX], "MOVE " + fmt_axes(values))
+    await _send_superseding(request.app[CTX], "MOVE " + fmt_axes(values), values)
     return _ok(202)
 
 
 async def track(request: web.Request) -> web.Response:
     values = expect_axes(await _body(request), TRACK_AXES, "pair")
-    await send_motion(request.app[CTX], "TRACK " + fmt_axes(values))
+    await _send_superseding(request.app[CTX], "TRACK " + fmt_axes(values), values)
     return _ok()
 
 
@@ -209,9 +224,25 @@ async def jog(request: web.Request) -> web.Response:
 
 
 async def home(request: web.Request) -> web.Response:
+    ctx = request.app[CTX]
     axes = _axis_list(await _body(request, required=False))
-    await send_motion(request.app[CTX], " ".join(["HOME", *axes]))
+    if axes:
+        await _send_superseding(ctx, " ".join(["HOME", *axes]), axes)
+        return _ok(202)
+    snap = ctx.deadman.snapshot()
+    await send_motion(ctx, "HOME")
+    if snap:  # bare HOME homes the axes with an endstop; ask the Pico which ones started
+        await _clear_homing(ctx, snap)
     return _ok(202)
+
+
+async def _clear_homing(ctx: HeadContext, snap: dict[str, float]) -> None:
+    try:
+        st = await ctx.pico.status()
+    except (PicoError, ProtocolError) as exc:
+        log.warning("HOME: could not read which axes are homing (%s); jog timers stay armed", exc)
+        return
+    ctx.deadman.clear_unchanged(snap, [ax for ax in snap if st.axes[ax].mode == "H"])
 
 
 async def setpos(request: web.Request) -> web.Response:
@@ -271,7 +302,7 @@ def _reference_done(api: _ApiState) -> Callable[[asyncio.Task], None]:
 async def stop(request: web.Request) -> web.Response:
     ctx = request.app[CTX]
     axes = _axis_list(await _body(request, required=False))
-    await _command(ctx, " ".join(["STOP", *axes]))
+    await _command(ctx, " ".join(["STOP", *axes]), SAFETY_TIMEOUT_S)
     if axes:
         for ax in axes:
             ctx.deadman.clear(ax)
@@ -285,10 +316,12 @@ async def estop(request: web.Request) -> web.Response:
     # Latch before the round trip: ESTOP may queue behind an in-flight command, and motion
     # requests arriving meanwhile must be refused, not queued to go out after it.
     ctx.state.set_estop(True)
-    ctx.deadman.clear()
     ctx.state.publish_event("estop")
     log.warning("E-STOP latched")
-    await _command(ctx, "ESTOP")
+    await _command(ctx, "ESTOP", SAFETY_TIMEOUT_S)
+    # Only now: if ESTOP did not go through, the dead-man keeps retrying STOP for any jog, and
+    # main.init_pico re-sends ESTOP when the link comes back while the latch is set.
+    ctx.deadman.clear()
     return _ok()
 
 
@@ -381,58 +414,11 @@ async def version(request: web.Request) -> web.Response:
 
 
 async def healthz(request: web.Request) -> web.Response:
-    ctx, api = request.app[CTX], request.app[API]
+    ctx, hub = request.app[CTX], request.app[WS]
     return web.json_response({
         "ok": True, "pico": ctx.state.pico_link, "imu": ctx.state.imu_link, "estop": ctx.state.estop,
-        "wsClients": len(api.ws_clients), "wsDroppedTotal": api.ws_dropped_total, "version": __version__,
+        "wsClients": len(hub.clients), "wsDroppedTotal": hub.dropped_total, "version": __version__,
     })
-
-
-# --- WebSocket ----------------------------------------------------------------------
-async def ws_handler(request: web.Request) -> web.WebSocketResponse:
-    ctx, api = request.app[CTX], request.app[API]
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-    queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=WS_QUEUE_MAX)
-    queue.put_nowait(ctx.state.tick())
-
-    def push(msg: dict) -> None:
-        try:
-            queue.put_nowait(msg)
-        except asyncio.QueueFull:
-            queue.get_nowait()  # drop the oldest; a slow client must never stall the others
-            api.ws_dropped_total += 1
-            queue.put_nowait(msg)
-
-    unsubscribe = ctx.state.subscribe(push)
-    api.ws_clients.add(ws)
-    writer = asyncio.create_task(_ws_writer(ws, queue), name="ws-writer")
-    try:
-        async for msg in ws:  # no command path over the socket; read only to see the close
-            log.debug("ignoring WS message of type %s", msg.type)
-    finally:
-        unsubscribe()
-        api.ws_clients.discard(ws)
-        writer.cancel()
-        await asyncio.gather(writer, return_exceptions=True)
-    return ws
-
-
-async def _ws_writer(ws: web.WebSocketResponse, queue: asyncio.Queue[dict]) -> None:
-    try:
-        while True:
-            await ws.send_json(await queue.get())
-    except ConnectionError as exc:  # peer gone or socket closing
-        log.info("WS client write failed: %s", exc)
-        await ws.close()
-    except Exception:
-        log.exception("WS writer failed; closing the socket")
-        await ws.close()
-
-
-async def _close_ws_clients(app: web.Application) -> None:
-    for ws in list(app[API].ws_clients):
-        await ws.close(code=WSCloseCode.GOING_AWAY, message=b"server shutdown")
 
 
 async def _cancel_tasks(app: web.Application) -> None:
@@ -467,12 +453,14 @@ async def _json_errors(request: web.Request, handler: Callable) -> web.StreamRes
 
 def make_app(ctx: HeadContext) -> web.Application:
     app = web.Application(middlewares=[_json_errors])
+    hub = WsHub(ctx.state)
     app[CTX] = ctx
     app[API] = _ApiState()
-    app.on_shutdown.append(_close_ws_clients)
+    app[WS] = hub
+    app.on_shutdown.append(hub.close_all)
     app.on_cleanup.append(_cancel_tasks)
     app.router.add_get("/healthz", healthz)
-    app.router.add_get("/ws", ws_handler)
+    app.router.add_get("/ws", hub.handler)
     app.router.add_get("/api/version", version)
     app.router.add_get("/api/state", get_state)
     app.router.add_post("/api/goto", goto)

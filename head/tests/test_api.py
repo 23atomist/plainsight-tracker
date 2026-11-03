@@ -403,3 +403,53 @@ async def test_pico_link_events_reach_ws_clients(client, ctx, ws):
         "type": "event", "name": "pico_link", "axis": None, "detail": {"up": False}}
     ctx.link._on_link(True)
     assert (await next_event(ws, "pico_link"))["detail"] == {"up": True}
+
+
+async def test_estop_that_does_not_go_through_leaves_the_deadman_armed(client, ctx):
+    await post(client, "/api/jog", {"pan": 2})
+    ctx.fake.reply_override["ESTOP"] = "err busy"
+    await post(client, "/api/estop", None, 400)
+    assert ctx.state.estop is True and ctx.deadman.armed == {"pan"}
+    await wait_for(lambda: "STOP pan" in ctx.fake.sent, "dead-man STOP pan after a refused ESTOP")
+
+
+async def _no_stop_for(ctx, axis: str) -> None:
+    await asyncio.sleep(ctx.cfg.jog_deadman_ms / 1000 + 0.3)
+    assert f"STOP {axis}" not in ctx.fake.sent and axis not in ctx.deadman.armed
+
+
+@pytest.mark.parametrize("path,body,line", [
+    ("/api/goto", {"pan": 10}, "MOVE pan 10.00000"),
+    ("/api/track", {"pan": {"pos": 1, "vel": 0.5}}, "TRACK pan 1.00000 0.50000"),
+])
+async def test_goto_and_track_supersede_a_jog_on_the_same_axis(client, ctx, path, body, line):
+    await post(client, "/api/jog", {"pan": 2, "tilt": 1})
+    resp = await client.post(path, json=body)
+    assert resp.status in (200, 202) and line in ctx.fake.sent
+    assert ctx.deadman.armed == {"tilt"}  # only the commanded axis is superseded
+    await wait_for(lambda: "STOP tilt" in ctx.fake.sent, "dead-man STOP tilt")
+    await _no_stop_for(ctx, "pan")
+
+
+async def test_home_with_axes_supersedes_their_jog(client, ctx):
+    await post(client, "/api/jog", {"tilt": -1})
+    await post(client, "/api/home", {"axes": ["tilt"]}, 202)
+    assert ctx.deadman.armed == set()
+    await _no_stop_for(ctx, "tilt")
+    assert "home_failed" not in [e.name for e in ctx.pico_events]
+
+
+async def test_bare_home_supersedes_only_the_axes_that_start_homing(client, ctx):
+    await post(client, "/api/jog", {"pan": 2, "tilt": -1})
+    await post(client, "/api/home", {}, 202)
+    assert ctx.fake.sent[-2:] == ["HOME", "STATUS"]  # which axes did the Pico start homing?
+    assert ctx.deadman.armed == {"pan"}  # pan has no endstop: its jog is still guarded
+    await wait_for(lambda: "STOP pan" in ctx.fake.sent, "dead-man STOP pan")
+    assert "STOP tilt" not in ctx.fake.sent
+
+
+async def test_superseding_command_that_fails_leaves_the_jog_guarded(client, ctx):
+    await post(client, "/api/jog", {"pan": 2})
+    ctx.fake.reply_override["MOVE"] = "err out_of_range"
+    await post(client, "/api/goto", {"pan": 999}, 400)
+    assert ctx.deadman.armed == {"pan"}

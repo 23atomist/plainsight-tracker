@@ -14,6 +14,16 @@ from .protocol import AXES, PicoStatus
 log = logging.getLogger(__name__)
 
 
+class EstopLatched(Exception):
+    """Motion refused: the head's E-STOP latch is set."""
+
+
+def guard_head_motion(state: HeadState) -> None:
+    """The single E-STOP gate for every motion command, host-requested or head-initiated."""
+    if state.estop:
+        raise EstopLatched("estop latched")
+
+
 @dataclass(frozen=True)
 class PanRef:
     source: str = "none"  # none | imu | host

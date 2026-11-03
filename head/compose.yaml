@@ -9,6 +9,11 @@ services:
     stop_grace_period: 5s
     ports:
       - "${HEAD_HOST_PORT:-8780}:8780"
+    # The serial passthrough is static: the Pico must be plugged in at `docker compose up`,
+    # and a re-enumeration to another ttyACM minor is not followed. Hot-plug (container up
+    # without the Pico, unplug/replug, REBOOT) is verified on the rig in Task 12; see the
+    # final-fix report (I6) for why a /dev/serial bind alone cannot provide it.
+    # I2C does not re-enumerate, so its static entry is fine.
     devices:
       - "${HEAD_SERIAL_BY_ID}:/dev/ttyACM0"
       - "/dev/i2c-${HEAD_I2C_BUS}:/dev/i2c-${HEAD_I2C_BUS}"
@@ -18,6 +23,11 @@ services:
     volumes:
       - "./data:/data"
     env_file: .env
+    logging:  # bounded on the SD card: at most 3 x 10 MB
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       - HEAD_I2C_BUS=${HEAD_I2C_BUS}
     healthcheck:
