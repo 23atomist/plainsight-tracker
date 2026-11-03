@@ -217,12 +217,23 @@ async def test_non_oserror_is_logged_and_counts_as_failure(caplog):
     r = ImuReader(lambda: fake, rate_hz=200, on_link=links.append, reopen_s=0.05)
     with caplog.at_level(logging.ERROR, logger="plainsight_head.imu"):
         await r.start()
-        await asyncio.sleep(0.02)
-        assert r.ok is False and links[-1] is False
-        await asyncio.sleep(0.15)
-    assert r.ok is True and r._task is not None and not r._task.done()
+        # Event-driven, not fixed sleeps: each read is a worker-thread hop, so how long three
+        # failures take depends on the scheduler. Wait (bounded) for each transition instead.
+        await wait_until(lambda: False in links, "three failed reads to take the link down")
+        assert links == [True, False] and calls["n"] == 3
+        await wait_until(lambda: links[-1] is True and r.ok, "the reopen after the reopen delay")
+    assert links == [True, False, True]
+    assert r._task is not None and not r._task.done()
     assert any("ValueError" in (rec.exc_text or "") for rec in caplog.records)
     await r.close()
+
+
+async def wait_until(cond, what: str, timeout_s: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not cond():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {what}")
+        await asyncio.sleep(0.002)
 
 
 async def test_load_offsets_noop_with_warning_when_closed(caplog):
