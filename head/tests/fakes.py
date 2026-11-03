@@ -362,8 +362,7 @@ class HeadCtx:
         from plainsight_head.reference import PanReference  # deferred: keeps other test modules importable
 
         return PanReference(self.cfg, self.link, self.imu, self.state, self.store,
-                            time_fn=self.now, on_event=self._on_ref_event,
-                            **self._ref_kw)
+                            on_event=self._on_ref_event, **{"time_fn": self.now, **self._ref_kw})
 
     def cfg_override(self, **kw) -> None:
         self.cfg = dataclasses.replace(self.cfg, **kw)

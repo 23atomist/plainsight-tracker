@@ -30,4 +30,6 @@ class JsonStore:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(obj, f)
+            f.flush()
+            os.fsync(f.fileno())  # the data is on the card before the rename makes it current
         os.replace(tmp, path)

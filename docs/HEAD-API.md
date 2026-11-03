@@ -11,7 +11,8 @@ The head is a Python asyncio service beside the stepper pan/tilt head. It owns
 the serial link to the Pico motor controller and the BNO055 IMU. It exposes
 one JSON API.
 
-- Port: `8780` (`HEAD_PORT`). HTTP and WebSocket on the same port.
+- Port: `8780` inside the container, HTTP and WebSocket on the same port.
+  Compose publishes it on the host as `HEAD_HOST_PORT` (default 8780).
 - No authentication. LAN appliance.
 - JSON everywhere. Angles in degrees, rates in degrees per second.
 - Axes are `pan`, `tilt`, `zoom`, `focus`.
@@ -228,7 +229,9 @@ empty. The schema lists the names the plainsight-ptz firmware sends.
 
 `pan_reference_failed` reasons include `"pico: <reason>"`, `"no pico
 status"`, `"tilt not homed"`, `"estop latched"`, `"tilt did not settle"`,
-`"imu calibration timeout"` and `"imu lost during heading average"`.
+`"imu calibration timeout"`, `"imu lost during heading average"` and
+`"head moved during reference"` (pan or tilt moved, or no status arrived,
+during the heading average).
 
 ```json event
 {"type": "event", "t": 1762150004000, "name": "pan_reference_failed", "axis": null, "detail": {"reason": "imu calibration timeout", "source": "host"}}

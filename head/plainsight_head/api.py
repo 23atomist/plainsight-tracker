@@ -1,4 +1,4 @@
-"""aiohttp application: the HTTP command routes and WebSocket telemetry fan-out (spec 4.2, 4.3)."""
+"""aiohttp application: the HTTP command routes (spec 4.2); WebSocket telemetry is in ws.py."""
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from aiohttp import WSCloseCode, web
+from aiohttp import web
 
 from . import __version__
 from .config import HeadConfig
@@ -21,10 +21,10 @@ from .pico import PicoError, PicoLink, PicoLinkDown, PicoTimeout
 from .protocol import AXES, ProtocolError, fmt_axes, parse_cfg_lines, parse_drv_lines
 from .reference import PanReference
 from .state import EstopLatched, HeadState, guard_head_motion
+from .ws import WsHub
 
 log = logging.getLogger(__name__)
 
-WS_QUEUE_MAX = 50
 IMU_BURST_DEFAULT = 100
 IMU_BURST_MAX = 1000
 TRACK_AXES = ("pan", "tilt")
@@ -47,13 +47,12 @@ class HeadContext:
 
 @dataclass
 class _ApiState:
-    ws_clients: set[web.WebSocketResponse] = field(default_factory=set)
-    ws_dropped_total: int = 0
     tasks: set[asyncio.Task] = field(default_factory=set)
 
 
 CTX = web.AppKey("ctx", HeadContext)
 API = web.AppKey("api", _ApiState)
+WS = web.AppKey("ws", WsHub)
 
 
 class HTTPLocked(web.HTTPClientError):
@@ -415,58 +414,11 @@ async def version(request: web.Request) -> web.Response:
 
 
 async def healthz(request: web.Request) -> web.Response:
-    ctx, api = request.app[CTX], request.app[API]
+    ctx, hub = request.app[CTX], request.app[WS]
     return web.json_response({
         "ok": True, "pico": ctx.state.pico_link, "imu": ctx.state.imu_link, "estop": ctx.state.estop,
-        "wsClients": len(api.ws_clients), "wsDroppedTotal": api.ws_dropped_total, "version": __version__,
+        "wsClients": len(hub.clients), "wsDroppedTotal": hub.dropped_total, "version": __version__,
     })
-
-
-# --- WebSocket ----------------------------------------------------------------------
-async def ws_handler(request: web.Request) -> web.WebSocketResponse:
-    ctx, api = request.app[CTX], request.app[API]
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-    queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=WS_QUEUE_MAX)
-    queue.put_nowait(ctx.state.tick())
-
-    def push(msg: dict) -> None:
-        try:
-            queue.put_nowait(msg)
-        except asyncio.QueueFull:
-            queue.get_nowait()  # drop the oldest; a slow client must never stall the others
-            api.ws_dropped_total += 1
-            queue.put_nowait(msg)
-
-    unsubscribe = ctx.state.subscribe(push)
-    api.ws_clients.add(ws)
-    writer = asyncio.create_task(_ws_writer(ws, queue), name="ws-writer")
-    try:
-        async for msg in ws:  # no command path over the socket; read only to see the close
-            log.debug("ignoring WS message of type %s", msg.type)
-    finally:
-        unsubscribe()
-        api.ws_clients.discard(ws)
-        writer.cancel()
-        await asyncio.gather(writer, return_exceptions=True)
-    return ws
-
-
-async def _ws_writer(ws: web.WebSocketResponse, queue: asyncio.Queue[dict]) -> None:
-    try:
-        while True:
-            await ws.send_json(await queue.get())
-    except ConnectionError as exc:  # peer gone or socket closing
-        log.info("WS client write failed: %s", exc)
-        await ws.close()
-    except Exception:
-        log.exception("WS writer failed; closing the socket")
-        await ws.close()
-
-
-async def _close_ws_clients(app: web.Application) -> None:
-    for ws in list(app[API].ws_clients):
-        await ws.close(code=WSCloseCode.GOING_AWAY, message=b"server shutdown")
 
 
 async def _cancel_tasks(app: web.Application) -> None:
@@ -501,12 +453,14 @@ async def _json_errors(request: web.Request, handler: Callable) -> web.StreamRes
 
 def make_app(ctx: HeadContext) -> web.Application:
     app = web.Application(middlewares=[_json_errors])
+    hub = WsHub(ctx.state)
     app[CTX] = ctx
     app[API] = _ApiState()
-    app.on_shutdown.append(_close_ws_clients)
+    app[WS] = hub
+    app.on_shutdown.append(hub.close_all)
     app.on_cleanup.append(_cancel_tasks)
     app.router.add_get("/healthz", healthz)
-    app.router.add_get("/ws", ws_handler)
+    app.router.add_get("/ws", hub.handler)
     app.router.add_get("/api/version", version)
     app.router.add_get("/api/state", get_state)
     app.router.add_post("/api/goto", goto)

@@ -21,9 +21,11 @@ log = logging.getLogger(__name__)
 REF_FILE = "pan-reference.json"
 HEADING_WINDOW_S = 2.0
 PERSIST_INTERVAL_S = 5.0
+PERSIST_REFRESH_S = 3600.0  # rewrite while referenced even if pan has not moved (spec 5.4 freshness)
 POLL_S = 0.05
 SETTLE_CAP_S = 30.0
 SETTLE_TOL_DEG = 0.5
+STILL_TOL_DEG = 0.05  # pan/tilt drift allowed across the heading window
 STATUS_WAIT_S = 3.0
 _SOURCES = ("host", "imu")
 _MIN_CAL = 2  # BNO055 calibration level needed for mag and sys
@@ -64,6 +66,7 @@ class PanReference:
         self._lock = asyncio.Lock()
         self._busy = False
         self._last_written: float | None = None
+        self._last_write_t: float | None = None  # the `t` stored in the file as last written
         self._setpos_status: PicoStatus | None = None  # state.pico when the last SETPOS returned
         self._pan_homed: bool | None = None
 
@@ -101,7 +104,7 @@ class PanReference:
     def _keep_pico_position(self, pos: float, saved: dict | None) -> ReferenceResult:
         source = saved["source"] if saved is not None else "host"
         if saved is not None:
-            self._last_written = saved["pos"]
+            self._last_written, self._last_write_t = saved["pos"], saved["t"]
         self._state.set_ref(PanRef(source, saved is not None, self._time()))
         log.info("pan reference: Pico still homed at %.3f; keeping source %s", pos, source)
         return ReferenceResult(source, pos, None)
@@ -144,7 +147,7 @@ class PanReference:
                 log.warning("pan reference: restoring persisted pan %.3f failed: %s", pos, exc.reason)
                 self._failed(reason)
                 return ReferenceResult("none", None, reason)
-            self._last_written = pos
+            self._last_written, self._last_write_t = pos, saved["t"]
             self._state.set_ref(PanRef(source, True, self._time()))
             log.info("pan reference: restored persisted pan %.3f (source %s)", pos, source)
             self._changed(source, pos, previous)
@@ -205,9 +208,12 @@ class PanReference:
             return "tilt did not settle", None, None
         if not await self._poll(timeout_s, self._imu_ready):
             return "imu calibration timeout", None, None
+        window_start = self._state.pico
         headings = await self._collect_headings()
         if not headings:
             return "imu lost during heading average", None, None
+        if not self._held_still(window_start, self._state.pico):
+            return "head moved during reference", None, None
         pan = wrap180(circular_mean_deg(headings) - self._cfg.imu_heading_offset_deg)
         previous = await self._setpos(pan)
         return None, pan, previous
@@ -227,6 +233,13 @@ class PanReference:
         st = self._state.pico
         return (st is not before and st is not None and not st.moving
                 and abs(st.axes["tilt"].pos - self._cfg.ref_tilt_deg) <= SETTLE_TOL_DEG)
+
+    @staticmethod
+    def _held_still(start: PicoStatus | None, end: PicoStatus | None) -> bool:
+        """A status arrived during the heading window and pan and tilt did not move across it."""
+        if start is None or end is None or end is start or end.moving:
+            return False
+        return all(abs(end.axes[ax].pos - start.axes[ax].pos) <= STILL_TOL_DEG for ax in ("pan", "tilt"))
 
     def _imu_ready(self) -> bool:
         s = self._imu.latest
@@ -275,8 +288,12 @@ class PanReference:
         while True:
             await self._sleep(PERSIST_INTERVAL_S)
             pan = self._persistable_pan()
-            if pan is not None and pan.vel == 0 and pan.pos != self._last_written:
+            if pan is not None and pan.vel == 0 and (pan.pos != self._last_written or self._stale()):
                 self._write(pan.pos, self._state.ref.source)
+
+    def _stale(self) -> bool:
+        """The file's age is measured from the last known-good write: refresh it hourly."""
+        return self._last_write_t is None or self._time() - self._last_write_t >= PERSIST_REFRESH_S
 
     async def persist_now(self) -> None:
         pan = self._persistable_pan()
@@ -293,11 +310,12 @@ class PanReference:
 
     def _write(self, pos: float, source: str) -> bool:
         try:
-            self._store.write(REF_FILE, {"pos": pos, "source": source, "t": self._time()})
+            t = self._time()
+            self._store.write(REF_FILE, {"pos": pos, "source": source, "t": t})
         except OSError:
             log.exception("writing %s failed", REF_FILE)
             return False
-        self._last_written = pos
+        self._last_written, self._last_write_t = pos, t
         ref = self._state.ref
         if ref.source == source and not ref.persisted:
             self._state.set_ref(replace(ref, persisted=True))

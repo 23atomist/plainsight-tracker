@@ -296,3 +296,44 @@ async def test_restore_after_reconnect_without_a_fresh_file_stays_unreferenced(c
     assert r.source == "none" and c.state.ref.source == "none"
     assert not any(s.startswith(("SETPOS", "MOVE")) for s in c.fake.sent)  # rule 2 only: no IMU north
     assert c.events == []
+
+
+async def test_run_persistence_refreshes_the_file_hourly_while_referenced(ctx):
+    from tests.fakes import FakeClock
+
+    await ctx.streaming(False)
+    clk, step = FakeClock(1.8e9), StepSleep()
+    ctx.ref_override(sleep=step, time_fn=clk.now)
+    await ctx.ref.set_from_host(10.0)
+    await ctx.status_now()  # pan idle at 10, as written
+    task = asyncio.create_task(ctx.ref.run_persistence())
+    try:
+        first_t = ctx.store.read(REF)["t"]
+        clk.advance(3599)
+        await step.step()
+        assert ctx.store.read(REF)["t"] == first_t  # unmoved, under an hour: no write
+        clk.advance(1)
+        await step.step()
+        assert ctx.store.read(REF) == {"pos": 10.0, "source": "host", "t": first_t + 3600}
+        ctx.ref.note_enable_off()
+        clk.advance(7200)
+        await step.step()
+        assert ctx.store.read(REF)["t"] == first_t + 3600  # unreferenced: never refreshed
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("axis", ["pan", "tilt"])
+async def test_imu_north_aborts_if_the_head_moves_during_the_heading_window(ctx_imu_ready, axis):
+    c = ctx_imu_ready
+    c.ref_override(heading_window_s=0.3)
+    await c.ref.set_from_host(5.0)
+    await c.status_now()
+    task = asyncio.create_task(c.ref.reference_from_imu(1.0))
+    await asyncio.sleep(0.15)  # inside the heading window
+    c.fake.model[axis]["pos"] += 1.0  # someone nudged the head
+    r = await task
+    assert r == ReferenceResult("none", None, "head moved during reference")
+    assert c.events[-1] == ("pan_reference_failed", {"reason": "head moved during reference", "source": "host"})
+    assert [s for s in c.fake.sent if s.startswith("SETPOS")] == ["SETPOS pan 5.00000"]

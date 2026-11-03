@@ -53,6 +53,16 @@ def _str(key: str, raw: str) -> str:
     return raw
 
 
+def _int_in(lo: int, hi: int) -> Callable[[str, str], int]:
+    def parse(key: str, raw: str) -> int:
+        v = _int(key, raw)
+        if not lo <= v <= hi:
+            raise ValueError(f"{key}: expected {lo}..{hi}, got {raw!r}")
+        return v
+
+    return parse
+
+
 @dataclass(frozen=True)
 class HeadConfig:
     port: int = 8780
@@ -78,7 +88,7 @@ class HeadConfig:
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> HeadConfig:
         parsers: dict[str, Callable[[str, str], Any]] = {
-            "port": _int,
+            "port": _int_in(1, 65535),
             "serial": _str,
             "baud": _int,
             "i2c_bus": _int,
@@ -92,17 +102,18 @@ class HeadConfig:
             "imu_pitch_offset_deg": _float,
             "imu_tilt_axis": _choice("pitch", "roll"),
             "imu_tilt_sign": _sign,
-            "jog_deadman_ms": _int,
+            "jog_deadman_ms": _int_in(100, 10000),
             "track_timeout_ms": _int,
-            "stream_ms": _int,
+            "stream_ms": _int_in(20, 1000),
             "data_dir": _str,
             "log_level": _str,
         }
         values: dict[str, Any] = {}
         for name, parse in parsers.items():
             key = f"HEAD_{name.upper()}"
-            if key in env:
-                values[name] = parse(key, env[key])
+            raw = env.get(key, "")
+            if raw.strip():  # an empty value (`HEAD_I2C_BUS=`) means unset: the default applies
+                values[name] = parse(key, raw)
         return cls(**values)
 
 

@@ -266,3 +266,47 @@ async def test_absent_pico_for_3s_logs_at_most_two_warnings_and_no_traceback(cap
     assert 1 <= len(warnings) <= 2, [r.getMessage() for r in warnings]
     assert not any(r.exc_info for r in warnings)
     assert any("back after" in r.getMessage() for r in caplog.records)
+
+
+async def test_supervisor_survives_a_failing_teardown_and_reconnects(caplog):
+    fake = FakeSerial(); factory = CountingFactory(fake)
+
+    def bad_close():
+        fake.is_open = False
+        raise RuntimeError("driver bug in close()")
+
+    fake.close = bad_close
+    link, seen = await make_link(fake, reconnect_s=0.05)
+    link._factory = factory
+    fake.fail_next_reads(1)
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if seen["link"][-1] is True and factory.calls >= 1:
+            break
+    assert seen["link"] == [True, False, True] and link.connected
+    assert link._supervisor is not None and not link._supervisor.done()
+    assert await link.command("VER") == ["V plainsight-ptz 0.1.0"]
+    assert any("teardown failed" in r.getMessage() for r in caplog.records)
+    await link.close()
+
+
+async def test_supervisor_survives_an_unexpected_exception_in_a_step(caplog, monkeypatch):
+    fake = FakeSerial()
+    link, seen = await make_link(fake, reconnect_s=0.05)
+    real_open, calls = link._open, []
+
+    async def flaky_open():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("bug")
+        return await real_open()
+
+    monkeypatch.setattr(link, "_open", flaky_open)
+    fake.fail_next_reads(1)
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if link.connected and len(calls) >= 2:
+            break
+    assert link.connected and len(calls) == 2
+    assert any("supervisor step failed" in r.getMessage() and r.exc_info for r in caplog.records)
+    await link.close()

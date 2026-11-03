@@ -104,8 +104,8 @@ class PicoLink:
             self._supervisor = None
         self.connected = False
         self._schedule_teardown()
-        if self._teardowns:
-            await asyncio.gather(*self._teardowns)
+        if self._teardowns:  # failures are logged by _teardown_done
+            await asyncio.gather(*self._teardowns, return_exceptions=True)
 
     # --- reader thread / teardown --------------------------------------------
     def _begin_reading(self) -> None:
@@ -125,7 +125,12 @@ class PicoLink:
             return
         fut = asyncio.ensure_future(asyncio.to_thread(self._teardown, thread, stop, ser))
         self._teardowns.add(fut)
-        fut.add_done_callback(self._teardowns.discard)
+        fut.add_done_callback(self._teardown_done)
+
+    def _teardown_done(self, fut: asyncio.Future) -> None:
+        self._teardowns.discard(fut)
+        if not fut.cancelled() and fut.exception() is not None:
+            log.error("pico port teardown failed", exc_info=fut.exception())
 
     @staticmethod
     def _teardown(thread: threading.Thread | None, stop: threading.Event | None, ser: Any) -> None:
@@ -200,17 +205,24 @@ class PicoLink:
         tick = min(_TICK_MAX_S, self._stale_s / 4, self._reconnect_s / 4)
         while True:
             await asyncio.sleep(tick)
-            now = self._loop.time()
-            if self.connected:
-                if self._reader_died:
-                    self._go_down(f"reader died ({self._reader_error})")
-                elif self.expect_stream and now - self._last_status > self._stale_s:
-                    self._go_down("status stream stale")
-            elif self._serial is None and now >= self._next_try:
-                if self._teardowns:  # never reopen while the old port is still closing
-                    await asyncio.gather(*self._teardowns)
-                if await self._open():
-                    await self._come_up()
+            try:
+                await self._supervise_once()
+            except Exception:  # never let one bad step end reconnects and stale detection
+                log.exception("pico link supervisor step failed; retrying in %ss", self._reconnect_s)
+                await asyncio.sleep(self._reconnect_s)
+
+    async def _supervise_once(self) -> None:
+        now = self._loop.time()
+        if self.connected:
+            if self._reader_died:
+                self._go_down(f"reader died ({self._reader_error})")
+            elif self.expect_stream and now - self._last_status > self._stale_s:
+                self._go_down("status stream stale")
+        elif self._serial is None and now >= self._next_try:
+            if self._teardowns:  # never reopen while the old port is still closing
+                await asyncio.gather(*self._teardowns, return_exceptions=True)
+            if await self._open():
+                await self._come_up()
 
     def _go_down(self, why: str) -> None:
         self._outage.failure(why)

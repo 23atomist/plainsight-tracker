@@ -15,3 +15,23 @@ def test_env_overrides_and_bool_parsing():
 def test_bad_values_name_the_key(key, val):
     with pytest.raises(ValueError, match=key):
         HeadConfig.from_env({key: val})
+
+
+def test_empty_values_mean_unset():
+    c = HeadConfig.from_env({"HEAD_I2C_BUS": "", "HEAD_IMU_ADDRESS": " ", "HEAD_PORT": "",
+                             "HEAD_SERIAL": ""})
+    d = HeadConfig()
+    assert (c.i2c_bus, c.imu_address, c.port, c.serial) == (None, None, d.port, d.serial)
+
+
+@pytest.mark.parametrize("key,ok,bad", [
+    ("HEAD_STREAM_MS", ["20", "1000"], ["19", "1001", "0"]),
+    ("HEAD_JOG_DEADMAN_MS", ["100", "10000"], ["99", "10001"]),
+    ("HEAD_PORT", ["1", "65535"], ["0", "65536", "-5"]),
+])
+def test_range_checks(key, ok, bad):
+    for v in ok:
+        HeadConfig.from_env({key: v})
+    for v in bad:
+        with pytest.raises(ValueError, match=key):
+            HeadConfig.from_env({key: v})
