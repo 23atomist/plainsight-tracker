@@ -13,7 +13,7 @@ const BODY = {
   enabled: true, moving: false, estop: false,
   imu: { ok: true, heading: 0, pitch: 1, roll: 2, cal: { sys: 3, gyr: 3, acc: 3, mag: 3 }, tempC: 25 },
   tiltDisagreeDeg: null,
-  ref: { pan: "imu", persisted: true, ageS: 0 },
+  ref: { pan: "imu", persisted: true, ageS: 0, frameId: "00000000000000a1" },
   link: { pico: true, imu: true },
 };
 

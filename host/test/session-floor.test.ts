@@ -46,7 +46,7 @@ class FakeDevice {
     return {
       connected: true, panDeg: this.panDeg, tiltDeg: this.tiltDeg, zoomDeg: 0, focusDeg: 0,
       moving: this.moving, enabled: true, estop: this.estop, tiltDisagreeDeg: null,
-      ref: { pan: "imu", persisted: true, ageS: 0 }, link: { pico: true, imu: true },
+      ref: { pan: "imu", persisted: true, ageS: 0, frameId: "00000000000000a1" }, link: { pico: true, imu: true },
       lastUpdateMs: this.lastUpdateMs,
     };
   }

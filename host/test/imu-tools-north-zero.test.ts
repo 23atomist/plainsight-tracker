@@ -69,7 +69,7 @@ describe("set_north_zero", () => {
   it("refuses while pan is unreferenced (fix round E3)", async () => {
     const { client, store } = await harness();
     store.setImuMounting([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [0, 0, -1]);
-    mock!.model.ref = { pan: "none", persisted: false, ageS: null };
+    mock!.model.ref = { pan: "none", persisted: false, ageS: null, frameId: null };
     const t0 = Date.now();
     while (dev!.getState().ref.pan !== "none" && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 20));
     const res: any = await client.callTool({ name: "set_north_zero", arguments: {} });

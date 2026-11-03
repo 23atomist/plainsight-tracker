@@ -841,7 +841,7 @@ describe("geo tools while pan is unreferenced", () => {
     const h = await harness();
     await h.client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
     h.store.setOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], new Date(0).toISOString());
-    mock!.model.ref = { pan: "none", persisted: false, ageS: null };
+    mock!.model.ref = { pan: "none", persisted: false, ageS: null, frameId: null };
     const t0 = Date.now();
     while (dev!.getState().ref.pan !== "none" && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 20));
     return h;
@@ -878,6 +878,18 @@ describe("calibration frame verification (fix round E1)", () => {
     expect(textOf(res)).toMatch(/already verified|nothing to confirm/i);
   });
 
+  it("confirm_pan_frame refuses while pan is unreferenced: there is no frame to vouch for", async () => {
+    const { client, store } = await harness();
+    store.markFrameUnverified("test");
+    mock!.model.ref = { pan: "none", persisted: false, ageS: null, frameId: null };
+    const t0 = Date.now();
+    while (dev!.getState().ref.pan !== "none" && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 20));
+    const res: any = await client.callTool({ name: "confirm_pan_frame", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toBe("pan unreferenced — nothing to confirm");
+    expect(store.isFrameUnverified()).toBe(true);
+  });
+
   it("solve_calibration clears the flag only once a sighting taken after it is in the solve", async () => {
     const { client, store } = await harness();
     await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
@@ -894,7 +906,18 @@ describe("calibration frame verification (fix round E1)", () => {
     mock!.setPosition(80, 1);
     await new Promise((r) => setTimeout(r, 200));
     await client.callTool({ name: "sight_landmark", arguments: { lat: 45, lon: 11.4, height_m: 100, label: "E" } });
-    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    // No IMU characterization -> TRIAD, which takes the two NEWEST sightings
+    // while the frame is unverified and needs BOTH to be fresh: N (old frame)
+    // + E is not enough.
+    let res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError).toBeFalsy();
+    expect(store.isFrameUnverified()).toBe(true);
+    expect(textOf(res)).toMatch(/two newest sightings.*clear_sightings.*confirm_pan_frame/);
+
+    mock!.setPosition(45, 1);
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "sight_landmark", arguments: { lat: 45.7, lon: 10.99, height_m: 100, label: "NE" } });
+    res = await client.callTool({ name: "solve_calibration", arguments: {} });
     expect(res.isError).toBeFalsy();
     expect(store.isFrameUnverified()).toBe(false);
     expect(textOf(res)).toMatch(/frame verified/i);

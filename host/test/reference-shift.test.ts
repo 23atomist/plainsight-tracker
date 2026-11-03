@@ -184,23 +184,38 @@ describe("LimitsStore.shiftPan", () => {
   });
 });
 
+// A frame memory as HeadRefWatch keeps it, in memory.
+function memFrames(known: string | null) {
+  const m = { known, accepted: [] as string[] };
+  return {
+    m,
+    frames: {
+      knownFrameId: () => m.known,
+      acceptFrame: (id: string) => { m.known = id; m.accepted.push(id); },
+    },
+  };
+}
+
+const A = "00000000000000aa", B = "00000000000000bb";
+
 describe("applyPanReferenceChange", () => {
-  function stores(panSign: 1 | -1) {
+  function setup(panSign: 1 | -1, known: string | null = A) {
     const cal = new CalibrationStore(tmpFile("cal.json"), 1);
     cal.setRigLocation(33.4, -112.1, 341);
     cal.setGravityCalibration(R0, CHEAD, new Date(0).toISOString());
     const limits = new LimitsStore(tmpFile("limits.json"));
     limits.setEdge("panMin", -100);
     limits.setEdge("panMax", 100);
-    return { cal, limits, panSign };
+    const logs: string[] = [];
+    const { m, frames } = memFrames(known);
+    const deps = { panSign, stores: { calibration: cal, limits }, frames, log: (x: string) => { logs.push(x); } };
+    return { cal, limits, logs, m, deps };
   }
 
   for (const panSign of [1, -1] as const) {
     it(`maps the device-frame delta into the user frame (panSign ${panSign})`, () => {
-      const { cal, limits } = stores(panSign);
-      const logs: string[] = [];
-      const applied = applyPanReferenceChange({ source: "host", pan: 30, previous: 20 }, panSign,
-        { calibration: cal, limits }, (m) => logs.push(m));
+      const { cal, limits, logs, deps } = setup(panSign);
+      const applied = applyPanReferenceChange({ source: "host", pan: 30, previous: 20, frameId: B }, deps);
       const dUser = 10 * panSign;
       expect(applied).toBe(dUser);
       expect(limits.get()).toMatchObject({ panMin: -100 + dUser, panMax: 100 + dUser });
@@ -212,55 +227,67 @@ describe("applyPanReferenceChange", () => {
   }
 
   it("shifts nothing (and logs) when the reference was dropped or there was no old frame", () => {
-    const { cal, limits } = stores(1);
+    const { cal, limits, logs, deps } = setup(1);
     const orientBefore = cal.getOrientation(); const limBefore = limits.get();
-    const logs: string[] = [];
-    expect(applyPanReferenceChange({ source: "none", pan: null, previous: null }, 1,
-      { calibration: cal, limits }, (m) => logs.push(m))).toBeNull();
-    expect(applyPanReferenceChange({ source: "host", pan: 12, previous: null }, 1,
-      { calibration: cal, limits }, (m) => logs.push(m))).toBeNull();
+    expect(applyPanReferenceChange({ source: "none", pan: null, previous: null, frameId: null }, deps)).toBeNull();
+    expect(applyPanReferenceChange({ source: "host", pan: 12, previous: null, frameId: B }, deps)).toBeNull();
     expect(cal.getOrientation()).toEqual(orientBefore);
     expect(limits.get()).toEqual(limBefore);
     expect(logs).toHaveLength(2);
   });
 
+  it("every rename's frameId is accepted as the calibration's frame; a drop names none", () => {
+    const { m, deps } = setup(1);
+    applyPanReferenceChange({ source: "none", pan: null, previous: null, reason: "pan unhomed", frameId: null }, deps);
+    expect(m.accepted).toEqual([]);
+    applyPanReferenceChange({ source: "host", pan: 30, previous: 20, frameId: B }, deps);
+    expect(m.known).toBe(B);
+  });
+
   // E1: a reference with no old frame may have put pan's zero anywhere
   // relative to the frame the calibration was solved in.
   it("a reference with no previous frame flags the calibration unverified", () => {
-    const { cal, limits } = stores(1);
+    const { cal, deps } = setup(1);
     for (const source of ["imu", "host"] as const) {
       cal.confirmFrame();
-      applyPanReferenceChange({ source, pan: 12, previous: null }, 1, { calibration: cal, limits }, () => {});
+      applyPanReferenceChange({ source, pan: 12, previous: null, frameId: B }, deps);
       expect(cal.isFrameUnverified()).toBe(true);
       expect(cal.frameUnverifiedReason()).toMatch(new RegExp(source));
     }
   });
 
-  it("a restore of the persisted position (reason restored) does not flag it", () => {
-    const { cal, limits } = stores(1);
-    applyPanReferenceChange({ source: "imu", pan: 12, previous: null, reason: "restored" }, 1,
-      { calibration: cal, limits }, () => {});
+  it("a restore of the calibration's own frame (reason restored, same frameId) does not flag it", () => {
+    const { cal, deps } = setup(1, A);
+    applyPanReferenceChange({ source: "imu", pan: 12, previous: null, reason: "restored", frameId: A }, deps);
     expect(cal.isFrameUnverified()).toBe(false);
   });
 
+  // The reviewer's case: renamed to B while the host was away, dropped, then
+  // B restored. "restored" alone would wave through a frame the calibration
+  // was never in.
+  it("a restore of a DIFFERENT frame than the calibration's is flagged", () => {
+    const { cal, deps } = setup(1, A);
+    applyPanReferenceChange({ source: "imu", pan: 12, previous: null, reason: "restored", frameId: B }, deps);
+    expect(cal.isFrameUnverified()).toBe(true);
+    expect(cal.frameUnverifiedReason()).toMatch(/not the calibration's frame/);
+  });
+
   it("a drop (source none) does not flag it -- the unreferenced gate owns that state", () => {
-    const { cal, limits } = stores(1);
-    applyPanReferenceChange({ source: "none", pan: null, previous: null, reason: "pan unhomed" }, 1,
-      { calibration: cal, limits }, () => {});
+    const { cal, deps } = setup(1);
+    applyPanReferenceChange({ source: "none", pan: null, previous: null, reason: "pan unhomed", frameId: null }, deps);
     expect(cal.isFrameUnverified()).toBe(false);
   });
 
   it("a rename with a known delta does not flag it", () => {
-    const { cal, limits } = stores(1);
-    applyPanReferenceChange({ source: "host", pan: 30, previous: 20 }, 1, { calibration: cal, limits }, () => {});
+    const { cal, deps } = setup(1);
+    applyPanReferenceChange({ source: "host", pan: 30, previous: 20, frameId: B }, deps);
     expect(cal.isFrameUnverified()).toBe(false);
   });
 
   it("a zero delta writes nothing", () => {
-    const { cal, limits } = stores(1);
+    const { cal, deps } = setup(1);
     const calBefore = cal.get();
-    expect(applyPanReferenceChange({ source: "imu", pan: 42, previous: 42 }, 1,
-      { calibration: cal, limits }, () => {})).toBe(0);
+    expect(applyPanReferenceChange({ source: "imu", pan: 42, previous: 42, frameId: B }, deps)).toBe(0);
     expect(cal.get()).toEqual(calBefore);
   });
 });
@@ -290,29 +317,36 @@ describe("wireReferenceShift against the head's pan_reference event", () => {
       cal.setGravityCalibration(R0, CHEAD, new Date(0).toISOString());
       const limits = new LimitsStore(tmpFile("limits.json"));
       limits.setEdge("panMax", 100);
+      const { m, frames } = memFrames(A);
       let renamed = 0;
-      wireReferenceShift(device, cfg.panSign, { calibration: cal, limits }, () => {}, () => { renamed += 1; });
+      wireReferenceShift(device, {
+        panSign: cfg.panSign, stores: { calibration: cal, limits }, frames, log: () => {},
+        onRenamed: () => { renamed += 1; },
+      });
 
       head.emitEvent({ type: "event", t: 1, name: "pan_reference", axis: null, detail: { source: "none", reason: "pan unhomed" } });
-      head.emitEvent({ type: "event", t: 2, name: "pan_reference", axis: null, detail: { source: "host", pan: 10, previous: 0 } });
+      head.emitEvent({ type: "event", t: 2, name: "pan_reference", axis: null, detail: { source: "host", pan: 10, previous: 0, frameId: B } });
       const expected = 100 + 10 * cfg.panSign;
       await waitFor(() => limits.get().panMax === expected);
-      // Every pan_reference resets the sun guard's rate history (minor fix):
-      // the drop and the rename both moved what "pan" means.
       expectVecClose(boresightEnu(cal.getOrientation()!, 10 * cfg.panSign, 20, CHEAD, cfg.geoPanSign),
         boresightEnu(R0, 0, 20, CHEAD, cfg.geoPanSign), 1e-9);
+      // Every pan_reference resets the sun guard's rate history (minor fix):
+      // the drop and the rename both moved what "pan" means.
       expect(renamed).toBe(2);
+      expect(m.known).toBe(B);
       expect(cal.isFrameUnverified()).toBe(false);
 
-      // The head's restore tag (sent raw: the published event schema gains
-      // `reason` on the head branch).
-      head.sendRaw(JSON.stringify({ type: "event", t: 3, name: "pan_reference", axis: null,
-        detail: { source: "imu", pan: 40, previous: null, reason: "restored" } }));
-      head.emitEvent({ type: "event", t: 4, name: "pan_reference", axis: null, detail: { source: "host", pan: 41, previous: 40 } });
-      await waitFor(() => renamed === 4);
+      // The head's restore of the frame the calibration is in (B, after the
+      // shift above) is exempt...
+      head.emitEvent({ type: "event", t: 3, name: "pan_reference", axis: null,
+        detail: { source: "imu", pan: 40, previous: null, frameId: B, reason: "restored" } });
+      await waitFor(() => renamed === 3);
       expect(cal.isFrameUnverified()).toBe(false);
-      head.emitEvent({ type: "event", t: 5, name: "pan_reference", axis: null, detail: { source: "imu", pan: 7, previous: null } });
+      // ...a new frame with no previous is not.
+      const C = "00000000000000cc";
+      head.emitEvent({ type: "event", t: 4, name: "pan_reference", axis: null, detail: { source: "imu", pan: 7, previous: null, frameId: C } });
       await waitFor(() => cal.isFrameUnverified());
+      expect(m.known).toBe(C);
     });
   }
 });

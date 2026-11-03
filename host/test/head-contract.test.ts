@@ -60,12 +60,17 @@ describe("head API contract", () => {
     const bad: Array<[string, unknown]> = [
       ["tick", { ...tick, extra: 1 }],
       ["tick", { ...tick, axes: { ...(tick.axes as object), pan: { pos: 1 } } }],
-      ["tick", { ...tick, ref: { pan: "gps", persisted: true, ageS: null } }],
+      ["tick", { ...tick, ref: { pan: "gps", persisted: true, ageS: null, frameId: null } }],
       ["tick", { ...tick, t: 1.5 }],
       ["tick", { ...tick, imu: { ...(tick.imu as object), cal: { sys: 4, gyr: 0, acc: 0, mag: 0 } } }],
       ["event", { type: "event", t: 1, name: "homed", axis: null, detail: null }],
       ["event", { type: "event", t: 1, name: "estop", axis: null, detail: "x" }],
       ["event", { type: "event", t: 1, name: "pan_reference", axis: null, detail: { source: "imu", pan: 1 } }],
+      // A rename's only reason is "restored"; anything else is outside the contract.
+      ["event", { type: "event", t: 1, name: "pan_reference", axis: null, detail: { source: "imu", pan: 1, previous: null, frameId: "3f9c2a1b7d4e6f80", reason: "bored" } }],
+      // A rename must name its frame.
+      ["event", { type: "event", t: 1, name: "pan_reference", axis: null, detail: { source: "imu", pan: 1, previous: null } }],
+      ["tick", { ...tick, ref: { pan: "imu", persisted: true, ageS: 1 } }],
       ["event", { type: "event", t: 1, name: "pan_reference", axis: null, detail: { source: "none", reason: "bored" } }],
       ["event", { type: "event", t: 1, name: "config", axis: null, detail: { scope: "pan", key: "vmax", value: 1, x: 1 } }],
       ["event", { type: "event", t: 1, name: "made_up", axis: null, detail: null }],

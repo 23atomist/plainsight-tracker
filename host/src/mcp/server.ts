@@ -558,20 +558,23 @@ export async function main(): Promise<MainHandle> {
   // calibration frame unverified instead; every pan_reference also resets
   // the sun guard's rate history. Wired before the first await in main(), so
   // no event from the already-started Device can be missed.
-  wireReferenceShift(
-    device, cfg.panSign, { calibration: store, limits: limitsStore },
-    (m) => console.error(m), () => supervisor.onPanRenamed(),
-  );
-  // A rename the host never saw (link down, host not running): compare the
-  // head's reference identity on the first tick of every connection.
+  //
+  // A rename the host never saw (link down, host not running, a head restart
+  // minting a new frame): HeadRefWatch compares the head's frame id on the
+  // first tick of every connection and whenever it changes. It is also the
+  // frame memory the event path consults for restores.
   const headRefFile = join(cfg.stateDir, "head-ref.json");
   const headRefWatch = new HeadRefWatch(headRefFile, (why) => {
     store.markFrameUnverified(why);
     console.error(`[reference] ${why}; calibration flagged unverified — re-sight and solve_calibration, or confirm_pan_frame if the head was not moved`);
   });
   headRefWatch.load();
+  wireReferenceShift(device, {
+    panSign: cfg.panSign, stores: { calibration: store, limits: limitsStore }, frames: headRefWatch,
+    log: (m) => console.error(m), onRenamed: () => supervisor.onPanRenamed(),
+  });
   device.onRefTick((ref, first) => {
-    try { headRefWatch.observe(ref, first, Date.now()); }
+    try { headRefWatch.observe(ref, first); }
     catch (e) { console.error(`[reference] head-ref watch failed (${headRefFile}): ${e instanceof Error ? e.message : String(e)}`); }
   });
   const follower = new AdsbFollower(session, cfg.adsbAltSource, cfg.adsbLostSec * 1000);

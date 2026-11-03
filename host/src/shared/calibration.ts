@@ -362,11 +362,17 @@ export class CalibrationStore {
    * the CURRENT frame, so the solve is anchored to it. Ids, not timestamps:
    * exact, and immune to clock steps. Returns whether it cleared.
    */
-  clearFrameUnverifiedIfResighted(used: readonly Sighting[]): boolean {
+  //
+  // `requireAll`: every used sighting must be post-flag. The TRIAD fallback
+  // passes it -- two sightings ARE its whole orientation, so one from the old
+  // frame corrupts it outright, where the N-sighting fit can at least show
+  // the disagreement in its residual.
+  clearFrameUnverifiedIfResighted(used: readonly Sighting[], requireAll = false): boolean {
     const f = this.profile.frameUnverified;
     if (!f) return false;
     const prior = new Set(f.priorSightingIds);
-    if (!used.some((s) => s.id !== undefined && !prior.has(s.id))) return false;
+    const fresh = (s: Sighting): boolean => s.id !== undefined && !prior.has(s.id);
+    if (used.length === 0 || !(requireAll ? used.every(fresh) : used.some(fresh))) return false;
     this.profile = { ...this.profile, frameUnverified: undefined };
     this.save();
     return true;

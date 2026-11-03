@@ -13,7 +13,7 @@ const TICK = {
   enabled: true, moving: true, estop: false,
   imu: { ok: true, heading: 124.0, pitch: 31.5, roll: -0.4, cal: { sys: 3, gyr: 3, acc: 3, mag: 2 }, tempC: 28 },
   tiltDisagreeDeg: 0.3,
-  ref: { pan: "imu", persisted: true, ageS: 812.4 },
+  ref: { pan: "imu", persisted: true, ageS: 812.4, frameId: "00000000000000a1" },
   link: { pico: true, imu: true },
 };
 
@@ -26,7 +26,7 @@ describe("parseHeadState", () => {
     const r = parseHeadState(TICK);
     expect(r).toEqual({
       connected: true, panDeg: 123.4, tiltDeg: 31.2, moving: true, estop: false,
-      ref: { pan: "imu", persisted: true, ageS: 812.4 },
+      ref: { pan: "imu", persisted: true, ageS: 812.4, frameId: "00000000000000a1" },
       imu: TICK.imu,
       tiltDisagreeDeg: 0.3,
       link: { pico: true, imu: true },

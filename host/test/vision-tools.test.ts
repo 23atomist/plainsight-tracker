@@ -33,7 +33,7 @@ function bareDeviceState(over: Partial<DeviceState> = {}): DeviceState {
   return {
     connected: true, panDeg: 0, tiltDeg: 0, zoomDeg: 0, focusDeg: 0,
     moving: false, enabled: true, estop: false, tiltDisagreeDeg: null,
-    ref: { pan: "imu", persisted: true, ageS: 0 }, link: { pico: true, imu: true }, lastUpdateMs: 0,
+    ref: { pan: "imu", persisted: true, ageS: 0, frameId: "00000000000000a1" }, link: { pico: true, imu: true }, lastUpdateMs: 0,
     ...over,
   };
 }

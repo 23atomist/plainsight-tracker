@@ -626,7 +626,7 @@ describe("pan unreferenced", () => {
   const NOON_MS = Date.UTC(2026, 6, 17, 19, 30);   // Phoenix: sun ~175 az / ~77 el
 
   async function dropReference(): Promise<void> {
-    mock!.model.ref = { pan: "none", persisted: false, ageS: null };
+    mock!.model.ref = { pan: "none", persisted: false, ageS: null, frameId: null };
     const t0 = Date.now();
     while (dev!.getState().ref.pan !== "none" && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 20));
     expect(dev!.getState().ref.pan).toBe("none");
@@ -725,7 +725,7 @@ describe("onPanRenamed resets the rate history", () => {
   function stubDevice(pose: { pan: number; tilt: number; t: number }) {
     const state = () => ({
       connected: true, panDeg: pose.pan, tiltDeg: pose.tilt, zoomDeg: 0, focusDeg: 0, moving: false,
-      enabled: true, estop: false, tiltDisagreeDeg: null, ref: { pan: "host", persisted: true, ageS: 0 },
+      enabled: true, estop: false, tiltDisagreeDeg: null, ref: { pan: "host", persisted: true, ageS: 0, frameId: "00000000000000a1" },
       link: { pico: true, imu: true }, lastUpdateMs: pose.t,
     });
     return {

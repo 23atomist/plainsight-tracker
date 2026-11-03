@@ -33,6 +33,8 @@ const SCHEMA_DIR = fileURLToPath(new URL("../../docs/head-api/schemas/", import.
 const SCHEMA_NAMES = ["tick", "event", "goto", "track", "jog", "setpos", "config-set", "imu-burst"] as const;
 
 const G = 9.80665;
+// Monotonic across FakeHead instances: two heads in one test file never share a frame.
+let frameSeq = 0x100;
 const SIM_DPS = 90; // simulated goto/home speed, fast for tests
 // TRACK servo: feed-forward at the commanded rate plus this much catch-up per
 // degree of error (1/s), capped at SIM_DPS. A first-order stand-in for the
@@ -98,7 +100,7 @@ function defaultModel(): FakeHeadModel {
     enabled: true,
     estop: false,
     imu: okImu(),
-    ref: { pan: "imu", persisted: true, ageS: 0 },
+    ref: { pan: "imu", persisted: true, ageS: 0, frameId: "00000000000000a1" },
     link: { pico: true, imu: true },
     tiltDisagreeDeg: 0,
     referenceBusy: false,
@@ -163,6 +165,12 @@ export class FakeHead {
       const a = this.model.axes[name];
       this.model.axes[name] = { ...a, pos, tgt: pos, vel: 0, mode: "I" };
     }
+  }
+
+  /** A fresh pan frame id (16 hex digits), as the head mints on every new zero. */
+  static newFrameId(): string {
+    frameSeq += 1;
+    return frameSeq.toString(16).padStart(16, "0");
   }
 
   /** The gravity vector (m/s², IMU frame) the fake reports for a pitch/roll (degrees). */
@@ -472,7 +480,7 @@ export class FakeHead {
       if (!this.model.link.pico) return fail(res, 503, "pico link down");
       this.model.enabled = on;
       if (!on && this.model.ref.pan !== "none") {
-        this.model.ref = { pan: "none", persisted: false, ageS: null };
+        this.model.ref = { pan: "none", persisted: false, ageS: null, frameId: null };
         this.event("pan_reference", null, { source: "none", reason: "enable off" });
       }
       ok(res);
@@ -505,8 +513,9 @@ export class FakeHead {
         const a = this.model.axes[name];
         this.model.axes[name] = { ...a, pos, tgt: pos, homed: name === "pan" ? true : a.homed };
         if (name === "pan") {
-          this.model.ref = { pan: "host", persisted: true, ageS: 0 };
-          this.event("pan_reference", null, { source: "host", pan: pos, previous: a.homed ? a.pos : null });
+          const frameId = FakeHead.newFrameId();
+          this.model.ref = { pan: "host", persisted: true, ageS: 0, frameId };
+          this.event("pan_reference", null, { source: "host", pan: pos, previous: a.homed ? a.pos : null, frameId });
         }
       }
       ok(res);
@@ -528,8 +537,9 @@ export class FakeHead {
           return;
         }
         this.model.axes.pan = { ...pan, pos: heading, tgt: heading, homed: true };
-        this.model.ref = { pan: "imu", persisted: true, ageS: 0 };
-        this.event("pan_reference", null, { source: "imu", pan: heading, previous: pan.homed ? pan.pos : null });
+        const frameId = FakeHead.newFrameId();
+        this.model.ref = { pan: "imu", persisted: true, ageS: 0, frameId };
+        this.event("pan_reference", null, { source: "imu", pan: heading, previous: pan.homed ? pan.pos : null, frameId });
       });
     });
 

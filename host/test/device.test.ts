@@ -109,7 +109,7 @@ describe("Device (head API)", () => {
 
     h.model.link.pico = false;
     h.model.imu.heading = 200;
-    h.model.ref = { pan: "none", persisted: false, ageS: null };
+    h.model.ref = { pan: "none", persisted: false, ageS: null, frameId: null };
     h.model.estop = true;
     h.setPosition(99, 99); // the head cannot see this: the Pico link is down
     await sleep(5);
@@ -490,17 +490,17 @@ describe("Device (head API)", () => {
   it("pan_reference events fire onReferenceChanged with source/pan/previous", async () => {
     const h = await startHead();
     const d = await startDevice(h);
-    const changes: Array<{ source: string; pan: number | null; previous: number | null }> = [];
+    const changes: Array<{ source: string; pan: number | null; previous: number | null; frameId: string | null; reason?: string }> = [];
     d.onReferenceChanged((c) => changes.push(c));
 
     h.emitEvent({ type: "event", t: 1, name: "homed", axis: "tilt", detail: null });
     h.emitEvent({
       type: "event", t: 2, name: "pan_reference", axis: null,
-      detail: { source: "imu", pan: 123.4, previous: 121.9 },
+      detail: { source: "imu", pan: 123.4, previous: 121.9, frameId: "3f9c2a1b7d4e6f80" },
     });
     h.emitEvent({
       type: "event", t: 3, name: "pan_reference", axis: null,
-      detail: { source: "host", pan: 0, previous: null },
+      detail: { source: "host", pan: 0, previous: null, frameId: "a07e5d2c91b3f466", reason: "restored" },
     });
     h.emitEvent({
       type: "event", t: 4, name: "pan_reference", axis: null,
@@ -513,16 +513,18 @@ describe("Device (head API)", () => {
     await waitFor(() => changes.length === 3);
     await sleep(50);
     expect(changes).toEqual([
-      { source: "imu", pan: 123.4, previous: 121.9 },
-      { source: "host", pan: 0, previous: null },
-      { source: "none", pan: null, previous: null, reason: "pan unhomed" },
+      { source: "imu", pan: 123.4, previous: 121.9, frameId: "3f9c2a1b7d4e6f80" },
+      { source: "host", pan: 0, previous: null, frameId: "a07e5d2c91b3f466", reason: "restored" },
+      { source: "none", pan: null, previous: null, reason: "pan unhomed", frameId: null },
     ]);
 
     // POST /api/setpos with pan makes the head announce the rename.
     h.setPosition(42, 10);
     await d.setPos({ pan: 90 });
     await waitFor(() => changes.length === 4);
-    expect(changes[3]).toEqual({ source: "host", pan: 90, previous: 42 });
+    expect(changes[3]).toMatchObject({ source: "host", pan: 90, previous: 42 });
+    expect(changes[3].frameId).toMatch(/^[0-9a-f]{16}$/);
+    expect(changes[3].frameId).toBe(h.model.ref.frameId);   // the tick's ref names the same frame
   });
 
   it("reconnects after the socket closes", async () => {

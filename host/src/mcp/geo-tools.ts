@@ -103,10 +103,18 @@ export function registerGeoTools(
   const effLimits = (): CeilingLimits => effectiveLimits(cfgCeiling, limitsStore.get());
   // After a successful solve: the calibration-frame flag clears only if the
   // solve used a sighting aimed in the CURRENT frame (taken since the flag).
-  const verifyFrameNote = (used: readonly Sighting[]): string => {
+  const verifyFrameNote = (used: readonly Sighting[], triad = false): string => {
     if (!store.isFrameUnverified()) return "";
-    return store.clearFrameUnverifiedIfResighted(used)
-      ? " Pan frame verified: this solve includes a sighting taken since the pan re-reference; automated motion is allowed again."
+    if (store.clearFrameUnverifiedIfResighted(used, triad)) {
+      return triad
+        ? " Pan frame verified: both sightings in this solve were taken since the pan re-reference; automated motion is allowed again."
+        : " Pan frame verified: this solve includes a sighting taken since the pan re-reference; automated motion is allowed again.";
+    }
+    return triad
+      // TRIAD (no IMU characterization) solves from exactly two sightings --
+      // while the frame is unverified, the two NEWEST -- and both must be
+      // from the current frame, or the orientation mixes two frames.
+      ? " Pan frame STILL UNVERIFIED: without an IMU characterization the solve uses the two newest sightings, and both must be taken since the pan re-reference. Take another sighting (or clear_sightings and re-sight two) and solve again, or confirm_pan_frame if the head was not moved."
       : " Pan frame STILL UNVERIFIED: every sighting in this solve predates the pan re-reference, so it is still in the old frame. Take a new sighting and solve again, or confirm_pan_frame if the head was not moved.";
   };
 
@@ -114,10 +122,13 @@ export function registerGeoTools(
     "confirm_pan_frame",
     {
       description:
-        "declare that the current pan reference is the same frame the calibration was solved in — use after a Pico reboot when the head was not moved",
+        "declare that the current pan reference is the same frame the calibration was solved in — use after a Pico reboot when the head was not moved. " +
+        "A tracking session held for calibration_unverified resumes on its next tick.",
       inputSchema: {},
     },
     async () => {
+      // Nothing to vouch for: with no reference there is no frame to declare.
+      if (isPanUnreferenced(device.getState())) return errText("pan unreferenced — nothing to confirm");
       const reason = store.frameUnverifiedReason();
       if (!store.confirmFrame()) return text("pan frame already verified — nothing to confirm");
       return text(`pan frame confirmed by the operator; automated motion is allowed again (it had been held because: ${reason})`);
@@ -513,7 +524,11 @@ export function registerGeoTools(
       if (p.sightings.length < 2) {
         return errText(`need two sightings to solve without an IMU characterization; have ${p.sightings.length} (run characterize_imu to solve from one)`);
       }
-      const [sa, sb] = p.sightings;
+      // Normally the two oldest (the legacy pair). While the pan frame is
+      // unverified, the two NEWEST: only sightings taken since the
+      // re-reference can be in the current frame, and the oldest two never
+      // are -- solving from them could never verify anything.
+      const [sa, sb] = store.isFrameUnverified() ? p.sightings.slice(-2) : p.sightings;
       const landmarkA: Geodetic = { lat: sa.lat, lon: sa.lon, height: sa.height };
       const landmarkB: Geodetic = { lat: sb.lat, lon: sb.lon, height: sb.height };
       const enuA = enuDirection(rig, landmarkA).unit;
@@ -535,7 +550,7 @@ export function registerGeoTools(
       }
       const R = solveOrientation(mountA, enuA, mountB, enuB);
       store.setOrientation(R, new Date().toISOString());
-      const frameNote = verifyFrameNote([sa, sb]);
+      const frameNote = verifyFrameNote([sa, sb], true);
 
       // Heading = ENU azimuth the boresight points at pan=0,tilt=0, i.e. the
       // direction of the mount-forward (+Y) axis = second column of R.

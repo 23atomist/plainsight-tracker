@@ -132,7 +132,7 @@ describe("track tools", () => {
     await harness();
     let body = JSON.parse(textOf(await client.callTool({ name: "get_tracking_status", arguments: {} })));
     expect(body.pan_referenced).toBe(true);
-    mock.model.ref = { pan: "none", persisted: false, ageS: null };
+    mock.model.ref = { pan: "none", persisted: false, ageS: null, frameId: null };
     await sleep(200);
     body = JSON.parse(textOf(await client.callTool({ name: "get_tracking_status", arguments: {} })));
     expect(body.pan_referenced).toBe(false);
@@ -140,7 +140,7 @@ describe("track tools", () => {
 
   it("start_tracking refuses while pan is unreferenced, and moves nothing", async () => {
     const session = await harness();
-    mock.model.ref = { pan: "none", persisted: false, ageS: null };
+    mock.model.ref = { pan: "none", persisted: false, ageS: null, frameId: null };
     await sleep(200);
     const r: any = await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
     expect(r.isError).toBe(true);

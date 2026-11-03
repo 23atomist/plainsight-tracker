@@ -29,12 +29,27 @@
 // the operator typed. So it flags the calibration frame unverified, which
 // gates automation exactly like an unreferenced pan until a re-solve or
 // confirm_pan_frame. The one exception is the head re-applying its persisted
-// position file (`reason: "restored"`): that IS the old frame.
+// position file (`reason: "restored"`) carrying the SAME frameId the host's
+// calibration is known to be in (HeadRefWatch): that IS the old frame. A
+// restore of a frame the host never knew follows the rule above.
 import type { ReferenceChange } from "../shared/device.js";
 
 export interface PanZeroStores {
   readonly calibration: { shiftPanZero(deltaDeg: number): void; markFrameUnverified(reason: string): void };
   readonly limits: { shiftPan(deltaDeg: number): void };
+}
+
+/** Which head frame (`frameId`) the calibration is known to be in -- HeadRefWatch. */
+export interface PanFrameMemory {
+  knownFrameId(): string | null;
+  acceptFrame(frameId: string): void;
+}
+
+export interface ReferenceShiftDeps {
+  readonly panSign: number;
+  readonly stores: PanZeroStores;
+  readonly frames: PanFrameMemory;
+  readonly log: (msg: string) => void;
 }
 
 /**
@@ -49,20 +64,30 @@ export interface PanZeroStores {
  * device-frame pan; the stores hold user-frame pan (sightings and taught
  * edges are recorded through applySign), so the delta crosses cfg.panSign.
  */
-export function applyPanReferenceChange(
-  c: ReferenceChange, panSign: number, stores: PanZeroStores, log: (msg: string) => void,
-): number | null {
+export function applyPanReferenceChange(c: ReferenceChange, deps: ReferenceShiftDeps): number | null {
+  // Every rename names the frame in force afterwards; whatever happens below
+  // explains it, so the tick that follows must not read as a missed rename.
+  try { return applyChange(c, deps); }
+  finally { if (c.frameId !== null) deps.frames.acceptFrame(c.frameId); }
+}
+
+function applyChange(c: ReferenceChange, { panSign, stores, frames, log }: ReferenceShiftDeps): number | null {
   if (c.pan === null) {
     log(`[reference] pan reference lost (${c.reason ?? "no reason given"}); ` +
       "nothing to shift — automated motion is held until pan is referenced");
     return null;
   }
+  const known = frames.knownFrameId();
+  if (c.reason === "restored" && c.frameId !== null && c.frameId === known) {
+    log(`[reference] pan restored by ${c.source} from the head's persisted position (pan ${c.pan}, frame ${c.frameId}); ` +
+      "the calibration's own frame, nothing to shift");
+    return null;
+  }
   if (c.previous === null) {
-    if (c.reason === "restored") {
-      log(`[reference] pan restored by ${c.source} from the head's persisted position (pan ${c.pan}); same frame, nothing to shift`);
-      return null;
-    }
-    const why = `pan referenced by ${c.source} at ${c.pan} with no previous frame — its offset from the calibration's frame is unknown`;
+
+    const why = c.reason === "restored"
+      ? `pan restored by ${c.source} into frame ${c.frameId}, which is not the calibration's frame (${known ?? "unknown"})`
+      : `pan referenced by ${c.source} at ${c.pan} with no previous frame — its offset from the calibration's frame is unknown`;
     stores.calibration.markFrameUnverified(why);
     log(`[reference] ${why}; calibration flagged unverified — re-sight and solve_calibration, or confirm_pan_frame if the head was not moved`);
     return null;
@@ -82,15 +107,14 @@ export function applyPanReferenceChange(
 // rate derived across it is not motion.
 export function wireReferenceShift(
   device: { onReferenceChanged(cb: (c: ReferenceChange) => void): void },
-  panSign: number, stores: PanZeroStores, log: (msg: string) => void = (m) => console.error(m),
-  onRenamed: () => void = () => {},
+  deps: ReferenceShiftDeps & { readonly onRenamed?: () => void },
 ): void {
   device.onReferenceChanged((c) => {
     // Device isolates listener throws silently; a failed shift (e.g. a write
     // error persisting a store) must be loud instead.
-    try { applyPanReferenceChange(c, panSign, stores, log); }
-    catch (e) { log(`[reference] FAILED to shift stores for a pan rename: ${e instanceof Error ? e.message : String(e)}`); }
-    try { onRenamed(); }
-    catch (e) { log(`[reference] onRenamed hook threw: ${e instanceof Error ? e.message : String(e)}`); }
+    try { applyPanReferenceChange(c, deps); }
+    catch (e) { deps.log(`[reference] FAILED to apply a pan reference change: ${e instanceof Error ? e.message : String(e)}`); }
+    try { deps.onRenamed?.(); }
+    catch (e) { deps.log(`[reference] onRenamed hook threw: ${e instanceof Error ? e.message : String(e)}`); }
   });
 }

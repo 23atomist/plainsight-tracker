@@ -11,7 +11,7 @@ const DEVICE_STATUS = {
 };
 const HEAD_DIRECT = {
   connected: true, panDeg: 10, tiltDeg: 20, moving: false, estop: false,
-  ref: { pan: "host" as const, persisted: false, ageS: 5 },
+  ref: { pan: "host" as const, persisted: false, ageS: 5, frameId: "00000000000000a1" },
   imu: { ok: true, heading: 90, pitch: 1, roll: 2, cal: { sys: 3, gyr: 3, acc: 3, mag: 3 }, tempC: 25 },
   tiltDisagreeDeg: 0.4, link: { pico: true, imu: false },
 };

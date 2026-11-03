@@ -77,7 +77,7 @@ class FakeDevice {
     return {
       connected: true, panDeg: this.panDeg, tiltDeg: this.tiltDeg, zoomDeg: 0, focusDeg: 0,
       moving: this.moving, enabled: true, estop: this.estop, tiltDisagreeDeg: null,
-      ref: { pan: this.refPan, persisted: true, ageS: 0 }, link: { pico: true, imu: true },
+      ref: { pan: this.refPan, persisted: true, ageS: 0, frameId: "00000000000000a1" }, link: { pico: true, imu: true },
       lastUpdateMs: this.lastUpdateMs,
     };
   }
@@ -568,7 +568,7 @@ describe("TrackingSession: pan unreferenced", () => {
     const s = new TrackingSession(device, c, store, () => clockMs, sched);
     try {
       await waitFor(() => device.getState().lastUpdateMs === clockMs);
-      head.model.ref = { pan: "none", persisted: false, ageS: null };
+      head.model.ref = { pan: "none", persisted: false, ageS: null, frameId: null };
       head.tick();
       await waitFor(() => device.getState().ref.pan === "none");
 

@@ -61,6 +61,8 @@ export interface ReferenceChange {
   previous: number | null;
   /** The head's tag: "restored" for a persisted-file restore; the drop reason for source "none". */
   reason?: string;
+  /** The frame in force after a rename (null on a drop): see HeadRef.frameId. */
+  frameId: string | null;
 }
 
 export type AxisConfig = Record<"pan" | "tilt", HeadAxisConfig>;
@@ -98,7 +100,7 @@ export class Device {
   private state: DeviceState = {
     connected: false, panDeg: 0, tiltDeg: 0, zoomDeg: 0, focusDeg: 0,
     moving: false, enabled: false, estop: false, tiltDisagreeDeg: null,
-    ref: { pan: "none", persisted: false, ageS: null },
+    ref: { pan: "none", persisted: false, ageS: null, frameId: null },
     link: { pico: false, imu: false },
     lastUpdateMs: 0,
   };
@@ -349,8 +351,8 @@ export class Device {
     if (e.name === "pan_reference") {
       const d = PanReferenceDetailZ.parse(e.detail);
       const change: ReferenceChange = "pan" in d
-        ? { source: d.source, pan: d.pan, previous: d.previous, ...(d.reason !== undefined ? { reason: d.reason } : {}) }
-        : { source: d.source, pan: null, previous: null, reason: d.reason };
+        ? { source: d.source, pan: d.pan, previous: d.previous, frameId: d.frameId, ...(d.reason !== undefined ? { reason: d.reason } : {}) }
+        : { source: d.source, pan: null, previous: null, reason: d.reason, frameId: null };
       for (const cb of this.referenceListeners) {
         try { cb({ ...change }); } catch { /* isolated, see onTelemetry */ }
       }

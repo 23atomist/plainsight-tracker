@@ -34,6 +34,8 @@ export interface HeadRef {
   pan: "none" | "imu" | "host";
   persisted: boolean;
   ageS: number | null;
+  /** Names pan's frame: new on every new zero, kept through restores; null while pan is "none". */
+  frameId: string | null;
 }
 
 export interface HeadLink { pico: boolean; imu: boolean }
@@ -111,6 +113,7 @@ const RefZ = z.object({
   pan: z.enum(["none", "imu", "host"]),
   persisted: z.boolean(),
   ageS: z.number().nullable(),
+  frameId: z.string().nullable(),
 }).strict();
 
 /** tick.json: a WebSocket tick and the body of `GET /api/state`. */
@@ -145,10 +148,11 @@ export const PanReferenceDetailZ = z.union([
     source: z.enum(["imu", "host"]),
     pan: z.number(),
     previous: z.number().nullable(),
-    // "restored": the head re-applied its persisted position file (same frame
-    // as before the drop). Being added on the head branch; optional so the
-    // current head still parses.
-    reason: z.string().optional(),
+    // Present only on a restore of the head's persisted position file: the
+    // frame named by frameId coming back, not a new reference.
+    reason: z.literal("restored").optional(),
+    // The frame in force afterwards: new for a rename, the stored id for a restore.
+    frameId: z.string(),
   }).strict(),
   z.object({
     source: z.literal("none"),

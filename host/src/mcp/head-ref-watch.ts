@@ -1,64 +1,74 @@
-// Missed-rename detection (task-7 fix round, E2). A pan_reference event sent
-// while the host's WebSocket was down -- or while the host itself was not
-// running -- is simply gone, and with it the delta the calibration needed.
-// The tick's `ref` still describes the CURRENT reference: its source, and
-// (via ageS) when it was set. So the host remembers that identity in
-// head-ref.json, and on the first tick of every (re)connection compares: a
-// different source, or a set time more than REF_IDENTITY_TOLERANCE_MS away,
-// means the reference changed behind our back and the calibration's frame
-// can no longer be trusted (onMismatch -> CalibrationStore.markFrameUnverified).
+// The host's memory of WHICH pan frame its calibration lives in (task-7 fix
+// rounds, E2). The head names every frame: a new `frameId` is minted for
+// every new zero (setpos, IMU north) and carried unchanged through restores
+// of its persisted position and through keeping a still-homed Pico's
+// position (docs/HEAD-API.md, `ref.frameId`). So "same id, same frame".
 //
-// `ref.pan === "none"` is not an identity: nothing is compared or written, so
-// the last referenced identity survives a drop -- and a restore of the
-// head's persisted position after it compares equal instead of flagging. The
-// unreferenced gate covers the "none" state itself.
+// The id the calibration is known to be in is persisted in head-ref.json.
+// Two inputs move it:
+//   - a `pan_reference` event (reference-shift.ts): the rename is EXPLAINED --
+//     shifted by its delta, or flagged by the E1 rule -- and its frameId is
+//     accepted here;
+//   - a tick whose `ref.frameId` differs from the known id with no event
+//     having explained it (checked on the first tick of every connection and
+//     on every tick where the id changes): a rename the host never saw (link
+//     down, host not running, or a head restart that minted a new frame), so
+//     the calibration's frame is unknown -> onMismatch ->
+//     CalibrationStore.markFrameUnverified. The new id is then accepted, so it
+//     flags once.
+//
+// A tick with `ref.pan === "none"` (frameId null) is skipped: the unreferenced
+// gate covers that state, and the known id survives the drop so a restore of
+// the same frame compares equal.
+//
+// The head emits `pan_reference` before any tick carrying the new id (it sets
+// the ref and publishes the event with no await between), and Device
+// delivers messages in order, so a live rename is always explained first.
 import { z } from "zod";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HeadRef } from "../shared/head-types.js";
+import type { PanFrameMemory } from "./reference-shift.js";
 
-// ageS has one decimal and the host stamps it with its own clock at receipt,
-// so the derived set time jitters by a tick or two; a real re-reference moves
-// it by the whole time the link was down.
-export const REF_IDENTITY_TOLERANCE_MS = 5000;
+const FileSchema = z.object({ frameId: z.string().min(1) }).strict();
 
-const IdentitySchema = z.object({ source: z.enum(["imu", "host"]), setAtMs: z.number() }).strict();
-type Identity = z.infer<typeof IdentitySchema>;
-
-export class HeadRefWatch {
-  private last: Identity | null = null;
+export class HeadRefWatch implements PanFrameMemory {
+  private known: string | null = null;
+  private lastTickFrameId: string | null = null;
 
   constructor(private readonly filePath: string, private readonly onMismatch: (why: string) => void) {}
 
   load(): void {
     try {
-      this.last = existsSync(this.filePath) ? IdentitySchema.parse(JSON.parse(readFileSync(this.filePath, "utf8"))) : null;
+      this.known = existsSync(this.filePath) ? FileSchema.parse(JSON.parse(readFileSync(this.filePath, "utf8"))).frameId : null;
     } catch {
-      this.last = null;   // missing/corrupt -> no history; never throw
+      this.known = null;   // missing/corrupt -> no history; never throw
     }
   }
 
-  observe(ref: HeadRef, firstSinceConnect: boolean, nowMs: number): void {
-    if (ref.pan === "none" || ref.ageS === null) return;
-    const cur: Identity = { source: ref.pan, setAtMs: nowMs - ref.ageS * 1000 };
-    const last = this.last;
-    const differs = last === null || last.source !== cur.source
-      || Math.abs(last.setAtMs - cur.setAtMs) > REF_IDENTITY_TOLERANCE_MS;
-    if (firstSinceConnect && last !== null && differs) {
-      this.onMismatch(
-        `the pan reference changed while the telemetry link was down (or the host was not running): ` +
-        `was ${last.source} set at ${new Date(last.setAtMs).toISOString()}, ` +
-        `on reconnect ${cur.source} set at ${new Date(cur.setAtMs).toISOString()}`,
-      );
-    }
-    if (differs) this.write(cur);
-  }
+  knownFrameId(): string | null { return this.known; }
 
-  private write(cur: Identity): void {
-    this.last = cur;
+  acceptFrame(frameId: string): void {
+    if (frameId === this.known) return;
+    this.known = frameId;
     mkdirSync(dirname(this.filePath), { recursive: true });
     const tmp = `${this.filePath}.tmp`;
-    writeFileSync(tmp, JSON.stringify(cur));
+    writeFileSync(tmp, JSON.stringify({ frameId }));
     renameSync(tmp, this.filePath);   // atomic on the same filesystem
+  }
+
+  observe(ref: HeadRef, firstSinceConnect: boolean): void {
+    const id = ref.pan === "none" ? null : ref.frameId;
+    const changed = firstSinceConnect || id !== this.lastTickFrameId;
+    this.lastTickFrameId = id;
+    if (id === null || !changed) return;
+    // No history at all (first run): nothing to compare against.
+    if (this.known === null) { this.acceptFrame(id); return; }
+    if (id === this.known) return;
+    this.onMismatch(
+      `the head's pan frame changed from ${this.known} to ${id} with no pan_reference event the host saw ` +
+      `(the telemetry link was down, the host was not running, or the head minted a new frame)`,
+    );
+    this.acceptFrame(id);
   }
 }
