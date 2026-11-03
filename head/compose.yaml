@@ -1,3 +1,5 @@
+# Run `mkdir -p data` as the operator user (uid 1000) before the first
+# `docker compose up`; otherwise Docker creates ./data as root.
 services:
   head:
     build: .
@@ -6,7 +8,7 @@ services:
     init: true
     stop_grace_period: 5s
     ports:
-      - "${HEAD_PORT:-8780}:8780"
+      - "${HEAD_HOST_PORT:-8780}:8780"
     devices:
       - "${HEAD_SERIAL_BY_ID}:/dev/ttyACM0"
       - "/dev/i2c-${HEAD_I2C_BUS}:/dev/i2c-${HEAD_I2C_BUS}"
