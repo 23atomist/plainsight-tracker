@@ -16,7 +16,7 @@ from .deadman import JogDeadman
 from .imu import BNO055, OFFSETS_LEN, ImuReader
 from .persist import JsonStore
 from .pico import PicoError, PicoLink
-from .protocol import PicoEvent, PicoStatus, ProtocolError, parse_cfg_lines
+from .protocol import AXES, PicoEvent, PicoStatus, ProtocolError, parse_cfg_lines
 from .reference import PanReference
 from .state import HeadState
 
@@ -47,7 +47,7 @@ class Head:
         factory = {} if serial_factory is None else {"serial_factory": serial_factory}  # else pyserial
         self.link = PicoLink(cfg.serial, cfg.baud, on_status=self._on_status,
                              on_event=self._on_pico_event, on_link=self._on_pico_link,
-                             on_reconnect=self.init_pico, **factory)
+                             on_reconnect=self._reinit_pico, **factory)
         self.imu = ImuReader(self._opener(imu_open), on_fully_calibrated=self._save_offsets,
                              on_link=self.state.set_imu_link)
         self.ref = PanReference(cfg, self.link, self.imu, self.state, store,
@@ -114,9 +114,10 @@ class Head:
         log.info("IMU fully calibrated; offsets saved to %s", OFFSETS_FILE)
 
     # --- Pico init (first connect and every reconnect) ---------------------
-    async def init_pico(self) -> None:
+    async def init_pico(self, *, reconnect: bool = False) -> None:
         cfg, link = self.cfg, self.link
         try:
+            await self._stop_orphans()
             ver = await link.command("VER")
             self.ctx.pico_version = ver[0].removeprefix("V ") if ver else ""
             log.info("pico: version %s", self.ctx.pico_version or "(none reported)")
@@ -124,11 +125,51 @@ class Head:
             await link.command(f"CFG global track_timeout_ms {cfg.track_timeout_ms}")
             await link.command(f"STREAM {cfg.stream_ms}")
             log.info("pico: initialised, streaming every %d ms", cfg.stream_ms)
-        except PicoError as exc:
-            log.warning("pico init failed (%s); the link supervisor will retry", exc.reason)
+        except (PicoError, ProtocolError) as exc:
+            log.warning("pico init failed (%s); the link supervisor will retry", exc)
+            return
         finally:
             # Also after a failure: no stream then goes stale, the link recycles, init re-runs.
             link.expect_stream = True
+
+    async def _reinit_pico(self) -> None:
+        await self.init_pico(reconnect=True)
+
+    async def _stop_orphans(self) -> None:
+        """Stop whatever motion survived the link: the Pico has no host-disconnect stop.
+
+        With the E-STOP latch set, re-send ESTOP (the Pico does not latch it). Otherwise STOP
+        every axis the Pico reports jogging (mode V: JOG has no Pico-side timeout, so a jog from
+        before a link drop or from a previous process runs forever) and every axis the dead-man
+        still holds armed. The status read here also refreshes `state` before anything else.
+        """
+        link, deadman = self.link, self.deadman
+        st: PicoStatus | None = None
+        try:
+            st = await link.status()
+        except ProtocolError as exc:
+            log.warning("pico: unreadable STATUS reply (%s)", exc)
+        else:
+            self._on_status(st)
+        if self.state.estop:
+            log.warning("pico: E-STOP latched; re-sending ESTOP")
+            await link.command("ESTOP")
+            deadman.clear()
+            return
+        if st is None:
+            log.warning("pico: motion state unknown; sending STOP to all axes")
+            await link.command("STOP")
+            deadman.clear()
+            return
+        jogging = [ax for ax in AXES if st.axes[ax].mode == "V"]
+        axes = [ax for ax in AXES if ax in deadman.armed or ax in jogging]
+        if not axes:
+            return
+        log.warning("pico: stopping %s (jogging: %s, dead-man armed: %s)", " ".join(axes),
+                    " ".join(jogging) or "none", " ".join(sorted(deadman.armed)) or "none")
+        snap = deadman.snapshot()
+        await link.command("STOP " + " ".join(axes))
+        deadman.clear_unchanged(snap, axes)
 
     # --- boot (spec 5.1 steps 4-6) -------------------------------------------
     async def boot(self) -> None:

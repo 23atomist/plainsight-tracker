@@ -17,7 +17,7 @@ from . import __version__
 from .config import HeadConfig
 from .deadman import JogDeadman
 from .imu import ImuReader, ImuSample
-from .pico import PicoError, PicoLink, PicoTimeout
+from .pico import PicoError, PicoLink, PicoLinkDown, PicoTimeout
 from .protocol import AXES, ProtocolError, fmt_axes, parse_cfg_lines, parse_drv_lines
 from .reference import PanReference
 from .state import HeadState
@@ -29,6 +29,8 @@ IMU_BURST_DEFAULT = 100
 IMU_BURST_MAX = 1000
 TRACK_AXES = ("pan", "tilt")
 GUARDED_KEYS = ("socket", "host_baud")
+COMMAND_TIMEOUT_S = 2.0
+SAFETY_TIMEOUT_S = 5.0  # STOP and ESTOP may queue behind another command's full 2 s timeout
 _TOKEN = re.compile(r"[A-Za-z0-9_]+")
 
 
@@ -67,14 +69,14 @@ def _ok(status: int = 200) -> web.Response:
 
 
 def pico_stop_axes(pico: PicoLink) -> Callable[[list[str]], Awaitable[None]]:
-    """The jog dead-man's stop action: `STOP <axes>`; a down link has nothing left to stop."""
+    """The jog dead-man's stop action: `STOP <axes>`.
+
+    Every failure propagates, PicoLinkDown included: the Pico has no host-disconnect stop and
+    JOG no timeout of its own, so a jog survives a link drop. The dead-man keeps the axis armed
+    and retries each poll until a STOP goes through (main.init_pico also stops it on reconnect).
+    """
     async def stop_axes(axes: list[str]) -> None:
-        try:
-            await pico.command("STOP " + " ".join(axes))
-        except PicoError as exc:
-            if pico.connected:
-                raise
-            log.warning("dead-man STOP %s skipped, pico link down: %s", " ".join(axes), exc.reason)
+        await pico.command("STOP " + " ".join(axes))
 
     return stop_axes
 
@@ -148,16 +150,16 @@ def _pico_errors(*, setpos: bool = False) -> Iterator[None]:
         raise _error(web.HTTPGatewayTimeout, exc.reason) from exc
     except PicoError as exc:
         log.warning("pico refused: %s", exc.reason)
-        if exc.reason == "link down":
+        if isinstance(exc, PicoLinkDown):
             raise _error(web.HTTPServiceUnavailable, "pico link down") from exc
         if setpos and ("moving" in exc.reason or "stopped" in exc.reason):
             raise _error(web.HTTPConflict, exc.reason) from exc
         raise _error(web.HTTPBadRequest, exc.reason) from exc
 
 
-async def _command(ctx: HeadContext, line: str) -> list[str]:
+async def _command(ctx: HeadContext, line: str, timeout_s: float = COMMAND_TIMEOUT_S) -> list[str]:
     with _pico_errors():
-        return await ctx.pico.command(line)
+        return await ctx.pico.command(line, timeout_s)
 
 
 def _guard_motion(ctx: HeadContext) -> None:
@@ -271,7 +273,7 @@ def _reference_done(api: _ApiState) -> Callable[[asyncio.Task], None]:
 async def stop(request: web.Request) -> web.Response:
     ctx = request.app[CTX]
     axes = _axis_list(await _body(request, required=False))
-    await _command(ctx, " ".join(["STOP", *axes]))
+    await _command(ctx, " ".join(["STOP", *axes]), SAFETY_TIMEOUT_S)
     if axes:
         for ax in axes:
             ctx.deadman.clear(ax)
@@ -285,10 +287,12 @@ async def estop(request: web.Request) -> web.Response:
     # Latch before the round trip: ESTOP may queue behind an in-flight command, and motion
     # requests arriving meanwhile must be refused, not queued to go out after it.
     ctx.state.set_estop(True)
-    ctx.deadman.clear()
     ctx.state.publish_event("estop")
     log.warning("E-STOP latched")
-    await _command(ctx, "ESTOP")
+    await _command(ctx, "ESTOP", SAFETY_TIMEOUT_S)
+    # Only now: if ESTOP did not go through, the dead-man keeps retrying STOP for any jog, and
+    # main.init_pico re-sends ESTOP when the link comes back while the latch is set.
+    ctx.deadman.clear()
     return _ok()
 
 

@@ -181,3 +181,30 @@ async def test_read_error_closes_reopens_and_commands_work_again():
     assert seen["link"] == [True, False, True] and link.connected
     assert await link.command("VER") == ["V plainsight-ptz 0.1.0"]
     await link.close()
+
+
+async def test_link_down_errors_are_picolinkdown():
+    from plainsight_head.pico import PicoLinkDown
+
+    fake = FakeSerial(); link, _ = await make_link(fake, reconnect_s=5.0)
+    fake.fail_next_reads(1)
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if not link.connected:
+            break
+    with pytest.raises(PicoLinkDown) as e:
+        await link.command("VER")
+    assert isinstance(e.value, PicoError) and e.value.reason == "link down"
+    await link.close()
+
+
+async def test_status_round_trip_parses_the_reply():
+    fake = FakeSerial(); fake.model["pan"].update(mode="V", vel=2.0)
+    link, _ = await make_link(fake)
+    st = await link.status()
+    assert st.axes["pan"].mode == "V" and st.axes["pan"].vel == 2.0 and fake.sent == ["STATUS"]
+    fake.reply_override["STATUS"] = "ok"
+    from plainsight_head.protocol import ProtocolError
+    with pytest.raises(ProtocolError):
+        await link.status()
+    await link.close()

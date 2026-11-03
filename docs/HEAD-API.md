@@ -231,7 +231,8 @@ Constant rate in degrees per second. Returns **200**.
 A non-zero rate arms a dead-man timer for that axis. If the host does not
 refresh it within `jog_deadman_ms` (default 500), the head sends `STOP` for the
 axis. A zero rate stops the axis and clears its timer. If the Pico times out,
-the timers stay armed.
+the timers stay armed. A timer whose `STOP` fails (link down, timeout) stays
+armed and retries until a `STOP` goes through.
 
 Guards: 423, 503.
 
@@ -246,9 +247,18 @@ fails with 503).
 ### POST /api/estop
 
 Pico line: `ESTOP`. No body. The head latches E-STOP **before** the round
-trip, clears all jog timers, and publishes an `estop` event. Then it sends
-`ESTOP`. The latch stays set even if the send fails (503, 504, 400). Drivers
-stay enabled. Every motion route returns 423 until cleared. Returns **200**.
+trip and publishes an `estop` event. Then it sends `ESTOP`, and clears all jog
+timers once the Pico has accepted it. The latch stays set even if the send
+fails (503, 504, 400); the jog timers then stay armed and keep retrying
+`STOP`, and the head re-sends `ESTOP` as soon as the Pico link comes back
+while the latch is set. Drivers stay enabled. Every motion route returns 423
+until cleared. Returns **200**.
+
+The Pico has no host-disconnect stop, its `JOG` has no timeout of its own, and
+its `ESTOP` does not latch. So on every (re)connect, before anything else, the
+head reads `STATUS` and sends `ESTOP` if its latch is set, or else `STOP` for
+every axis the Pico reports jogging (mode `V`, for example left running by a
+previous head process) and every axis whose jog timer is still armed.
 
 ### POST /api/estop/clear
 

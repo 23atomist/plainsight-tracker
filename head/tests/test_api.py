@@ -403,3 +403,11 @@ async def test_pico_link_events_reach_ws_clients(client, ctx, ws):
         "type": "event", "name": "pico_link", "axis": None, "detail": {"up": False}}
     ctx.link._on_link(True)
     assert (await next_event(ws, "pico_link"))["detail"] == {"up": True}
+
+
+async def test_estop_that_does_not_go_through_leaves_the_deadman_armed(client, ctx):
+    await post(client, "/api/jog", {"pan": 2})
+    ctx.fake.reply_override["ESTOP"] = "err busy"
+    await post(client, "/api/estop", None, 400)
+    assert ctx.state.estop is True and ctx.deadman.armed == {"pan"}
+    await wait_for(lambda: "STOP pan" in ctx.fake.sent, "dead-man STOP pan after a refused ESTOP")

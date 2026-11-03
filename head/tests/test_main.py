@@ -14,7 +14,7 @@ from plainsight_head.main import run
 from plainsight_head.persist import JsonStore
 from tests.fakes import FakeBNO055, FakeSerial
 
-INIT = ["VER", "CFG", "CFG global track_timeout_ms 1000", "STREAM 100"]
+INIT = ["STATUS", "VER", "CFG", "CFG global track_timeout_ms 1000", "STREAM 100"]
 MOTION_VERBS = ("HOME", "MOVE", "MOVER", "TRACK", "JOG", "SETPOS")
 WAIT_S = 3.5  # IMU north averages heading for 2 s
 STREAM_S = 0.02
@@ -61,6 +61,7 @@ class Rig:
     def serial_factory(self, port: str, baud: int) -> FakeSerial:
         if not self.pico_present:
             raise FileNotFoundError(port)
+        self.fake.is_open = True
         return self.fake
 
     def seed(self, name: str, obj: dict) -> None:
@@ -145,8 +146,8 @@ async def test_boot_sequence_order(tmp_path, caplog):
         assert not rig.fake.model["tilt"]["homed"]
         released.set()
         await until(lambda: booted(caplog), "boot complete")
-        assert rig.fake.sent[:5] == [*INIT, "HOME tilt"]
-        assert rig.fake.sent.index("SETPOS pan 90.00000") > 4
+        assert rig.fake.sent[:len(INIT) + 1] == [*INIT, "HOME tilt"]
+        assert rig.fake.sent.index("SETPOS pan 90.00000") > len(INIT)
         assert rig.fake.model["tilt"]["homed"]
         state = await rig.get("/api/state")
         assert state["ref"]["pan"] == "imu" and state["ref"]["persisted"] is True
@@ -338,4 +339,104 @@ async def test_stalled_http_close_does_not_delay_stop(tmp_path, caplog, monkeypa
     assert rig.task.exception() is None
     assert rig.fake.sent[-1] == "STOP"
     assert rig.imu_fake.closed and not rig.fake.is_open
+    assert_no_leaked_tasks()
+
+
+# --- C1: motion that survives a link drop or a restart is stopped ---------------------------
+
+@pytest.fixture
+def heads(monkeypatch):
+    """Every main.Head that run() builds, so a test can inspect its dead-man."""
+    from plainsight_head import main as main_mod
+
+    built = []
+
+    class Recording(main_mod.Head):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    monkeypatch.setattr(main_mod, "Head", Recording)
+    return built
+
+
+async def post_json(rig: Rig, path: str, body=None) -> tuple[int, dict]:
+    async with rig.http.post(path, json=body) as r:
+        return r.status, await r.json()
+
+
+async def drop_link(rig: Rig, *, stay_down: bool = False) -> int:
+    """Fail one read (the Pico keeps power and keeps jogging); returns the `sent` mark."""
+    if stay_down:
+        rig.pico_present = False
+    mark = len(rig.fake.sent)
+    rig.fake.fail_next_reads(1)
+
+    async def down() -> bool:
+        return (await rig.get("/healthz"))["pico"] is False
+    await until(down, "pico link down")
+    return mark
+
+
+async def test_jog_across_a_link_flap_is_stopped_on_reconnect(tmp_path, caplog, heads):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "none"})
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        head = heads[0]
+        assert (await post_json(rig, "/api/jog", {"pan": 2}))[0] == 200
+        assert rig.fake.model["pan"]["mode"] == "V"
+        mark = await drop_link(rig)
+        await asyncio.sleep(0.7)  # the 500 ms dead-man expires while the link is down
+        assert head.deadman.armed == {"pan"}  # a failed STOP must not disarm it
+        await until(lambda: "STOP pan" in rig.fake.sent[mark:], "STOP pan after reconnect")
+        await until(lambda: head.deadman.armed == set(), "dead-man disarmed")
+        assert rig.fake.model["pan"]["mode"] == "I" and rig.fake.model["pan"]["vel"] == 0.0
+    failures = [r for r in caplog.records if "jog dead-man: STOP pan failed" in r.getMessage()]
+    assert len(failures) == 1, [r.getMessage() for r in failures]  # one line, not one per poll
+    assert_no_leaked_tasks()
+
+
+async def test_armed_jog_is_stopped_by_init_on_reconnect(tmp_path, caplog, heads):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "none",
+                         "HEAD_JOG_DEADMAN_MS": "10000"})  # the dead-man cannot be what stops it
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        head = heads[0]
+        await post_json(rig, "/api/jog", {"tilt": -1.5})
+        mark = await drop_link(rig)
+        await until(lambda: "STATUS" in rig.fake.sent[mark:], "re-init after reconnect")
+        await until(lambda: "STREAM 100" in rig.fake.sent[mark:], "re-init complete")
+        after = rig.fake.sent[mark:]
+        assert after[:2] == ["STATUS", "STOP tilt"], after
+        assert head.deadman.armed == set()
+        assert rig.fake.model["tilt"]["mode"] == "I"
+
+
+async def test_estop_while_link_down_is_resent_on_reconnect(tmp_path, caplog, heads):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "none"})
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        head = heads[0]
+        await post_json(rig, "/api/jog", {"pan": 2})
+        mark = await drop_link(rig, stay_down=True)
+        await until(lambda: not head.state.pico_link, "link down in state")
+        status, body = await post_json(rig, "/api/estop")
+        assert status == 503 and body["error"] == "pico link down"
+        assert head.state.estop is True
+        assert head.deadman.armed == {"pan"}  # ESTOP did not go through; keep guarding the jog
+        rig.pico_present = True
+        await until(lambda: "ESTOP" in rig.fake.sent[mark:], "ESTOP re-sent on reconnect")
+        await until(lambda: head.deadman.armed == set(), "dead-man cleared after ESTOP")
+        assert rig.fake.model["pan"]["mode"] == "I"
+        assert (await rig.get("/healthz"))["estop"] is True  # the head's latch is unchanged
+
+
+async def test_fresh_process_stops_an_orphan_jog_at_init(tmp_path, caplog):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "none"})
+    rig.fake.model["pan"].update(mode="V", vel=2.0)  # left jogging by a SIGKILLed predecessor
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        assert rig.fake.sent[:2] == ["STATUS", "STOP pan"]
+        assert rig.fake.sent[2:] == INIT[1:]
+        assert rig.fake.model["pan"]["mode"] == "I"
     assert_no_leaked_tasks()

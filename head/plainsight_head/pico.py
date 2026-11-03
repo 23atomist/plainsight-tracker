@@ -25,6 +25,13 @@ class PicoTimeout(PicoError):
     pass
 
 
+class PicoLinkDown(PicoError):
+    """The serial link is down (or dropped while the command waited); nothing reached the Pico."""
+
+    def __init__(self, reason: str = "link down") -> None:
+        super().__init__(reason)
+
+
 def _pyserial_factory(port: str, baud: int) -> Any:
     import serial  # imported lazily so tests never need a real port
 
@@ -249,11 +256,11 @@ class PicoLink:
         if "\n" in line or "\r" in line:  # one command per line; never let a caller inject a second
             raise PicoError("line contains a newline")
         if not self.connected:
-            raise PicoError("link down")
+            raise PicoLinkDown()
         async with self._cmd_lock:
             ser = self._serial
             if not self.connected or ser is None:
-                raise PicoError("link down")
+                raise PicoLinkDown()
             while not self._replies.empty():
                 stray = self._replies.get_nowait()
                 if stray is not None:
@@ -272,9 +279,16 @@ class PicoLink:
                 except asyncio.TimeoutError:
                     raise PicoTimeout(f"no reply to {line!r} within {timeout_s}s") from None
                 if reply is None:
-                    raise PicoError("link down")
+                    raise PicoLinkDown()
                 if reply == "ok":
                     return data
                 if reply == "err" or reply.startswith("err "):
                     raise PicoError(reply[4:])
                 data.append(reply)
+
+    async def status(self, timeout_s: float = 2.0) -> PicoStatus:
+        """One `STATUS` round trip. ProtocolError if the reply is missing or unparseable."""
+        lines = await self.command("STATUS", timeout_s)
+        if not lines:
+            raise ProtocolError("STATUS: no status line in the reply")
+        return parse_status(lines[0])
