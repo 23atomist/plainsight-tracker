@@ -194,3 +194,62 @@ class FakeSerial:
             self._reply("ok")
         else:
             self._reply("err unknown command")
+
+
+class FakeBNO055:
+    """In-memory stand-in for plainsight_head.imu.BNO055 (settable readings, injectable failures)."""
+
+    def __init__(self, heading: float = 0.0, roll: float = 0.0, pitch: float = 0.0,
+                 cal: tuple[int, int, int, int] = (0, 0, 0, 0),
+                 quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+                 gravity: tuple[float, float, float] = (0.0, 0.0, 9.81),
+                 linacc: tuple[float, float, float] = (0.0, 0.0, 0.0),
+                 temp: int = 25) -> None:
+        self.heading, self.roll, self.pitch = heading, roll, pitch
+        self.cal, self.quat, self.gravity, self.linacc, self.temp = cal, quat, gravity, linacc, temp
+        self.offsets: bytes = bytes(range(22))
+        self.closed = False
+        self._fail = 0
+
+    def fail_next(self, n: int) -> None:
+        self._fail = n
+
+    def _maybe_fail(self) -> None:
+        if self._fail > 0:
+            self._fail -= 1
+            raise OSError("fake BNO055 failure")
+
+    def read_sample(self, now: float):
+        from plainsight_head.imu import ImuSample
+
+        self._maybe_fail()
+        return ImuSample(t=now, heading=self.heading % 360.0, roll=self.roll, pitch=self.pitch,
+                         quat=self.quat, gravity=self.gravity, linacc=self.linacc,
+                         cal=self.cal, temp_c=self.temp)
+
+    def euler(self) -> tuple[float, float, float]:
+        self._maybe_fail()
+        return self.heading, self.roll, self.pitch
+
+    def quaternion(self) -> tuple[float, float, float, float]:
+        self._maybe_fail()
+        return self.quat
+
+    def calibration(self) -> tuple[int, int, int, int]:
+        self._maybe_fail()
+        return self.cal
+
+    def temperature(self) -> int:
+        self._maybe_fail()
+        return self.temp
+
+    def get_offsets(self) -> bytes:
+        self._maybe_fail()
+        return self.offsets
+
+    def set_offsets(self, data: bytes) -> None:
+        self._maybe_fail()
+        self.offsets = bytes(data)
+
+    def close(self) -> None:
+        self.closed = True
