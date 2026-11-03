@@ -161,5 +161,9 @@ describe("server", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
     });
     expect(r.status).toBe(401);
+
+    // /healthz stays open even with a token configured.
+    const hz = await fetch(`http://127.0.0.1:${MCP_PORT}/healthz`);
+    expect(hz.status).toBe(200);
   });
 });

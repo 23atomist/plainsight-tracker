@@ -3,8 +3,14 @@
 # processes and WebRTC ICE from a bridged container needs extra candidates.
 # Profiles come from COMPOSE_PROFILES in .env (adsb,gps by default; vision is opt-in).
 #
+# DATA DIRECTORY OWNERSHIP: the Node services run as uid 1000 and mediamtx is
+# pinned to 1000:1000. Create the tree before the first `up`, otherwise Docker
+# creates the bind-mount dirs as root and state/snapshots/keep are unwritable:
+#   sudo mkdir -p ${PLAINSIGHT_DATA}/{config,state,recordings,snapshots,adsb} \
+#     && sudo chown -R 1000:1000 ${PLAINSIGHT_DATA}
+#
 # Time discipline (chrony/NTP sync from the GPS) is NOT containerised; it is a
-# host-OS choice. The gpsd service below only exposes the receiver on :2947.
+# host-OS choice. The gpsd service below only exposes the receiver on :2947 (loopback; gpsd without -G).
 x-host-service: &host-service
   build: ./host
   image: plainsight-host
@@ -65,6 +71,8 @@ services:
 
   mediamtx:
     image: bluenviron/mediamtx:1.19.3
+    # Operator uid so recordings are hardlinkable/deletable by the Node services.
+    user: "1000:1000"
     network_mode: host
     restart: unless-stopped
     volumes:
@@ -91,14 +99,22 @@ services:
       - --gain
       - "${PLUTO_GAIN:-60}"
       - --net
-      - --net-only=no
-      # Beast out on 31005, loopback only. NOT 30005/30004: ultrafeeder runs
-      # with host networking and binds its own 30004/30005, so reusing those
-      # ports would make whichever service starts second fail to bind.
+      # Beast out on 31005, loopback only. --net also enables readsb's default
+      # listeners on 30001-30004 (raw-in, raw-out, SBS-out, Beast-in) and
+      # ultrafeeder (host network) binds its own 30001-30005, so every listener
+      # except Beast-out is disabled explicitly and Beast-out moves to 31005.
       - --net-bind-address
       - 127.0.0.1
       - --net-bo-port
       - "31005"
+      - --net-ri-port
+      - "0"
+      - --net-ro-port
+      - "0"
+      - --net-sbs-port
+      - "0"
+      - --net-bi-port
+      - "0"
       - --lat
       - "${FEEDER_LAT}"
       - --lon
@@ -176,7 +192,7 @@ services:
     image: plainsight-gpsd
     network_mode: host
     restart: unless-stopped
-    command: ["-N", "-n", "${GPS_DEVICE}", "-G"]
+    command: ["-N", "-n", "${GPS_DEVICE}"]
     devices:
       - "${GPS_DEVICE}:${GPS_DEVICE}"
     profiles: ["gps"]

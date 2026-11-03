@@ -13,7 +13,21 @@ type Svc = {
   environment?: Record<string, string>;
   devices?: unknown[];
   device_cgroup_rules?: string[];
+  user?: string;
+  group_add?: unknown[];
+  command?: string[];
+  healthcheck?: { test: string[] };
+  depends_on?: Record<string, { condition?: string }>;
 };
+
+const dockerAvailable = (() => {
+  try {
+    execFileSync("docker", ["compose", "version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 function render(): Record<string, Svc> {
   const out = execFileSync(
@@ -24,8 +38,8 @@ function render(): Record<string, Svc> {
   return JSON.parse(out).services;
 }
 
-describe("compose.yaml", () => {
-  const services = render();
+describe.skipIf(!dockerAvailable)("compose.yaml", () => {
+  const services = dockerAvailable ? render() : {};
 
   it("defines every service", () => {
     for (const name of ["mcp", "agent", "dashboard", "mediamtx", "adsb", "readsb-pluto", "gpsd", "detector"]) {
@@ -33,8 +47,35 @@ describe("compose.yaml", () => {
     }
   });
 
-  it("uses host networking for the Node services", () => {
-    expect(services.mcp.network_mode).toBe("host");
+  it("uses host networking for all Node services", () => {
+    for (const n of ["mcp", "agent", "dashboard"]) expect(services[n].network_mode, n).toBe("host");
+  });
+
+  it("health-gates the agent on mcp /healthz", () => {
+    expect(services.mcp.healthcheck?.test.join(" ")).toContain("/healthz");
+    expect(services.agent.depends_on?.mcp?.condition).toBe("service_healthy");
+  });
+
+  it("gives the dashboard the render node and both groups", () => {
+    expect(JSON.stringify(services.dashboard.devices)).toContain("/dev/dri/renderD128");
+    expect(services.dashboard.group_add).toHaveLength(2);
+  });
+
+  it("runs mediamtx as uid 1000 with /recordings writable", () => {
+    expect(services.mediamtx.user).toBe("1000:1000");
+    const rec = services.mediamtx.volumes?.find((v) => v.target === "/recordings") as
+      { read_only?: boolean } | undefined;
+    expect(rec).toBeDefined();
+    expect(rec?.read_only).toBeFalsy();
+  });
+
+  it("keeps readsb-pluto off ultrafeeder's ports", () => {
+    const cmd = (services["readsb-pluto"].command ?? []).join(" ");
+    expect(cmd).toContain("--net-bo-port 31005");
+    for (const f of ["--net-ri-port", "--net-ro-port", "--net-sbs-port", "--net-bi-port"]) {
+      expect(cmd).toContain(`${f} 0`);
+    }
+    expect(cmd).not.toContain("--net-only");
   });
 
   it("gates optional services behind profiles", () => {
