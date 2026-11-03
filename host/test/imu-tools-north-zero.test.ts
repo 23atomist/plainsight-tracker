@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 import { registerImuTools } from "../src/mcp/imu-tools.js";
@@ -24,7 +24,7 @@ import { wrapDeg180 } from "../src/shared/track/control.js";
 const field = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/imu-calib-field.json", import.meta.url)), "utf8"));
 
 const PORT = 8796;
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let dev: Device | null = null;
 
 const textOf = (r: any) => r.content.map((c: any) => c.text).join("");
@@ -36,7 +36,7 @@ function azimuthDeg(v: Vec3): number {
 }
 
 async function harness(env: Record<string, string> = {}) {
-  mock = new MockTb3(); await mock.start(PORT);
+  mock = new FakeHead(); await mock.start({ port: PORT });
   const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, ...env });
   dev = new Device(cfg); dev.start();
   const t0 = Date.now();

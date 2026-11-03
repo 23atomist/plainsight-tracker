@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 
 const PORT = 8798;
-let mock: MockTb3;
+let mock: FakeHead;
 let device: Device;
 let clockMs = 1_000_000;
 
@@ -13,7 +13,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // Intercepts every write to mock.lastJog so callers can see each frame in the
 // order it actually arrived, instead of only the latest one. Same technique
 // as the duration=0 test below, factored out for reuse.
-function captureJogFrames(m: MockTb3): Array<{ x: number; y: number; aux: number }> {
+function captureJogFrames(m: FakeHead): Array<{ x: number; y: number; aux: number }> {
   const frames: Array<{ x: number; y: number; aux: number }> = [];
   Object.defineProperty(m, "lastJog", {
     configurable: true,
@@ -25,8 +25,8 @@ function captureJogFrames(m: MockTb3): Array<{ x: number; y: number; aux: number
 
 beforeEach(async () => {
   clockMs = 1_000_000;
-  mock = new MockTb3();
-  await mock.start(PORT);
+  mock = new FakeHead();
+  await mock.start({ port: PORT });
   const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
   device = new Device(cfg, () => clockMs);
   device.start();

@@ -3,12 +3,14 @@ import { Geodetic } from "../geo/wgs84.js";
 import { Device, DeviceHttpError } from "../device.js";
 import { Config } from "../config.js";
 import { CalibrationStore } from "../calibration.js";
-import { stepsToDeg, applySign } from "../angles.js";
+import { applySign } from "../angles.js";
+// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
+import { stepsToDeg } from "../legacy-transitional.js";
 import { moveToUserAngle } from "../../mcp/move.js";
 import { reachablePanTilt } from "../../mcp/geo-tools.js";
 import { EstimatorState, emptyEstimator, withFix, lastFixMs } from "./estimator.js";
 import {
-  TargetAim, targetAimAt, controlRate, limitGuard, boresightEnu, rateToDeflection, limitHorizonMs,
+  TargetAim, targetAimAt, controlRate, limitGuard, boresightEnu, limitHorizonMs,
   slewTowards, GuardLimits,
 } from "./control.js";
 import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
@@ -501,11 +503,10 @@ export class TrackingSession {
     this.lastCmdPanDps = cmdPanDps;
     this.lastCmdTiltDps = cmdTiltDps;
 
-    // NOT the linear mapping layer 1's jog tool uses -- the firmware curve is
-    // cubic (measured on hardware). See rateToDeflection.
-    const x = rateToDeflection(cmdPanDps * this.cfg.panSign, this.cfg.maxJogDps);
-    const y = rateToDeflection(cmdTiltDps * this.cfg.tiltSign, this.cfg.maxJogDps);
-    this.device.setJogVector(x, y, 0, this.cfg.jogVectorTtlMs);
+    // TRANSITIONAL — Task 5 replaces this servo tail with the head's TRACK. The
+    // head jogs in deg/s, so the ESP32 deflection mapping (rateToDeflection)
+    // is no longer applied here.
+    this.device.setJogVector(cmdPanDps * this.cfg.panSign, cmdTiltDps * this.cfg.tiltSign, this.cfg.jogVectorTtlMs);
     this.lastStatus = {
       ...this.lastStatus,
       commandedPanDps: cmdPanDps,

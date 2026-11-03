@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { loadConfig } from "../src/shared/config.js";
 import { Device } from "../src/shared/device.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
@@ -116,7 +116,7 @@ describe("AUDIT 1: solveStepResponse's axisSign under an independent projection"
 // calibrate_vision_scale.
 // ==========================================================================
 const PORT = 8817;
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let dev: Device | null = null;
 // NOTE (adoption fix): Device.stop() is the E-STOP HTTP command
 // (POST /api/stop), not a teardown method -- close() is. Calling stop()
@@ -127,7 +127,7 @@ let dev: Device | null = null;
 afterEach(async () => { dev?.close(); dev = null; await mock?.stop(); mock = null; });
 
 async function calibrateThroughTheRealTool(m: Mount) {
-  mock = new MockTb3(); await mock.start(PORT);
+  mock = new FakeHead(); await mock.start({ port: PORT });
   const startPan = 12, startTilt = 25;
   mock.setPosition(startPan * STEPS_PER_DEG, startTilt * STEPS_PER_DEG);
   const cfg = loadConfig(undefined, {

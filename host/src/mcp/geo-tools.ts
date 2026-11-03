@@ -2,7 +2,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
-import { stepsToDeg, applySign } from "../shared/angles.js";
+import { applySign } from "../shared/angles.js";
+// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
+import { stepsToDeg } from "../shared/legacy-transitional.js";
 import { CalibrationStore } from "../shared/calibration.js";
 import { Geodetic, enuDirection, azElRange, geodeticToEcef } from "../shared/geo/wgs84.js";
 import { solveOrientation, separationDeg, resolvePanInRange } from "../shared/geo/orientation.js";

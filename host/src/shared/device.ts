@@ -1,32 +1,40 @@
 import WebSocket from "ws";
 import { Config } from "./config.js";
 import { DeviceState } from "./types.js";
-import { STEPS_PER_DEG } from "./angles.js";
-import { gravityFromBurst } from "./geo/gravity.js";
-import { Vec3 } from "./geo/vec3.js";
-import { ImuBurst } from "./imu-stats.js";
+import {
+  HeadAxisConfig, HeadAxisConfigResponseZ, HeadEvent, HeadEventZ, HeadImuBurstZ, HeadRef,
+  HeadTick, HeadTickZ, HeadTrackCmd, PanReferenceDetailZ,
+} from "./head-types.js";
+import { legacyDeviceStateFields } from "./legacy-transitional.js";
+import { Vec3, normalize } from "./geo/vec3.js";
 
-const ARRIVAL_TOL_STEPS = 0.25 * STEPS_PER_DEG;
+const ARRIVAL_TOL_DEG = 0.25;
 const COMMAND_TIMEOUT_MS = 2000;
+// A 100-sample burst at the BNO055's rate takes about a second; the margin is
+// for a slow link. characterize_imu handles retries per rig position.
+const IMU_TIMEOUT_MS = 20000;
+const RECONNECT_MS = 1000;
 const JOG_KEEPALIVE_MS = 100;
 
-// The firmware serializes absent float sensors as the bare tokens `nan`/`inf`
-// (invalid JSON) -- e.g. a 6-axis MPU-6050 has no barometer, so a tick's
-// tempC/pressHpa arrive as `nan`. Left as-is, JSON.parse throws and the ENTIRE
-// tick (position, battery, IMU angles) is dropped, freezing the daemon's view
-// of the rig. Coerce those literals to null so one missing sensor value never
-// costs us the whole telemetry tick.
-export function sanitizeTickJson(raw: string): string {
-  return raw.replace(/:\s*-?(?:nan|inf(?:inity)?)\b/gi, ":null");
+/** A pan reference change, from a `pan_reference` event. */
+export interface ReferenceChange {
+  source: HeadRef["pan"];
+  /** The new pan value of the physical position (null when the reference was dropped). */
+  pan: number | null;
+  /** The same position in the old frame (null when there was no frame to shift from). */
+  previous: number | null;
 }
 
+export type AxisConfig = Record<"pan" | "tilt", HeadAxisConfig>;
+
 /**
- * A non-OK HTTP response from the device, carrying the status code alongside
- * the firmware's error text. Callers that must react differently per cause
- * (409 "the rig is still moving" is routine and self-healing; a timeout is
- * not) need the code, and matching on the message string would couple them to
- * firmware wording. Thrown with the message the firmware sent, so existing
- * message-formatting call sites are unaffected.
+ * A non-OK HTTP response from the head, carrying the status code alongside
+ * the head's error text. Callers that must react differently per cause
+ * (409 "pan is moving" is routine and self-healing, 423 is a latched E-STOP,
+ * 503 a Pico link that is down) need the code, and matching on the message
+ * string would couple them to the head's wording. Thrown with the message the
+ * head sent (its `{ok:false, error}` envelope), so existing message-formatting
+ * call sites are unaffected.
  */
 export class DeviceHttpError extends Error {
   constructor(message: string, readonly status: number) {
@@ -35,36 +43,69 @@ export class DeviceHttpError extends Error {
   }
 }
 
+type FetchFn = typeof fetch;
+type WsFactory = (url: string) => WebSocket;
+
+/** The fields of DeviceState the head owns (the legacy step fields are derived). */
+type HeadState = Omit<DeviceState, keyof ReturnType<typeof legacyDeviceStateFields>>;
+
+/**
+ * The one module that talks to the head (docs/HEAD-API.md). Commands are HTTP;
+ * `/ws` is read-only telemetry (ticks and events). Single host, reconnect
+ * every second.
+ */
 export class Device {
-  private cfg: Config;
-  private hosts: string[];
-  private hostIdx = 0;
+  private readonly httpBase: string;
+  private readonly wsUrl: string;
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private closed = false;
-  private state: DeviceState = {
-    connected: false, panSteps: 0, tiltSteps: 0, auxSteps: 0,
-    moving: false, programEngaged: false, batteryV: 0, staIp: "", lastUpdateMs: 0,
+  private state: HeadState = {
+    connected: false, panDeg: 0, tiltDeg: 0, zoomDeg: 0, focusDeg: 0,
+    moving: false, enabled: false, estop: false, tiltDisagreeDeg: null,
+    ref: { pan: "none", persisted: false, ageS: null },
+    link: { pico: false, imu: false },
+    lastUpdateMs: 0,
   };
-  private jogVec: { x: number; y: number; aux: number; expiresAtMs: number } | null = null;
+  private axisConfig: AxisConfig | null = null;
+  private configGeneration = 0;
+
+  private jogVec: { panDps: number; tiltDps: number; expiresAtMs: number } | null = null;
   private jogTimer: NodeJS.Timeout | null = null;
   private jogLocked = false;
-  // Fired once per REAL parsed telemetry tick (see onTick(raw) below), not on
+  // Jog frames are HTTP requests now, not WebSocket frames, and two requests
+  // in flight can land out of order: a stale non-zero refresh overtaking the
+  // final zero would leave the axis jogging until the head's 500ms dead-man.
+  // So frames go out one at a time; while one is in flight only the LATEST
+  // pending frame is kept (a stop is always the latest frame after a clear).
+  private jogPending: { pan: number; tilt: number } | null = null;
+  private jogInflight: Promise<void> | null = null;
+  private jogError: unknown = null;
+
+  // Fired once per REAL parsed telemetry tick (see onMessage below), not on
   // a timer -- a caller that needs one sample per tick with no drops and no
   // duplicates (PostureHistory's feed in server.ts, added in vision-lock
   // fix round 2) should use this instead of polling getState() on its own
   // schedule, which can both miss a tick (two land between polls) and
   // duplicate one (a poll lands between two ticks with nothing new to
-  // report).
+  // report). Only ticks that carry `axes` count: an IMU-only tick (Pico link
+  // down) has no posture in it, and replaying the frozen one would be exactly
+  // the duplicate this listener exists to avoid.
   private telemetryListeners: ((s: DeviceState) => void)[] = [];
+  private eventListeners: ((e: HeadEvent) => void)[] = [];
+  private referenceListeners: ((c: ReferenceChange) => void)[] = [];
+  private configListeners: ((c: AxisConfig) => void)[] = [];
 
-  constructor(cfg: Config, private readonly now: () => number = Date.now) {
-    this.cfg = cfg;
-    this.hosts = [cfg.deviceHost, ...(cfg.deviceIpFallback ? [cfg.deviceIpFallback] : [])];
+  constructor(
+    cfg: Config,
+    private readonly now: () => number = Date.now,
+    private readonly fetchFn: FetchFn = fetch,
+    private readonly wsFactory: WsFactory = (url) => new WebSocket(url),
+  ) {
+    const base = new URL(cfg.headUrl);
+    this.httpBase = base.origin;
+    this.wsUrl = `${base.protocol === "https:" ? "wss:" : "ws:"}//${base.host}/ws`;
   }
-
-  private httpBase(): string { return `http://${this.hosts[this.hostIdx]}`; }
-  private wsUrl(): string { return `ws://${this.hosts[this.hostIdx]}/ws`; }
 
   start(): void {
     this.closed = false;
@@ -77,29 +118,62 @@ export class Device {
     this.stopJogTimer();
     this.jogVec = null;
     this.ws?.removeAllListeners();
+    this.ws?.on("error", () => { /* a close() during CONNECTING errors; nothing listens any more */ });
     this.ws?.close();
     this.ws = null;
     this.state.connected = false;
   }
 
-  getState(): DeviceState { return { ...this.state }; }
+  getState(): DeviceState { return this.snapshot(); }
 
-  // Registers a listener fired once per successfully parsed telemetry tick,
-  // with a snapshot of the state as of that tick. A listener must never
-  // throw here for the same reason TrackingSession.setState()'s listeners
-  // don't: one caller's bug must not stop telemetry processing for every
-  // other consumer (or, worse, break the WS message handler itself).
-  onTelemetry(cb: (s: DeviceState) => void): void {
-    this.telemetryListeners.push(cb);
+  getAxisConfig(): AxisConfig | null {
+    return this.axisConfig ? cloneAxisConfig(this.axisConfig) : null;
   }
+
+  // Registers a listener fired once per successfully parsed telemetry tick
+  // that carries `axes`, with a snapshot of the state as of that tick. A
+  // listener must never throw here for the same reason TrackingSession.
+  // setState()'s listeners don't: one caller's bug must not stop telemetry
+  // processing for every other consumer (or, worse, break the WS message
+  // handler itself). The same isolation applies to every listener below.
+  onTelemetry(cb: (s: DeviceState) => void): void { this.telemetryListeners.push(cb); }
+
+  /** Every head event, as parsed against the event schema. */
+  onEvent(cb: (e: HeadEvent) => void): void { this.eventListeners.push(cb); }
+
+  /** `pan_reference` events: the pan frame was renamed (or dropped: source "none"). */
+  onReferenceChanged(cb: (c: ReferenceChange) => void): void { this.referenceListeners.push(cb); }
+
+  /** After each successful `GET /api/config` (on connect and on every `config` event). */
+  onConfig(cb: (c: AxisConfig) => void): void { this.configListeners.push(cb); }
+
+  private snapshot(): DeviceState {
+    const s = this.state;
+    return {
+      ...s,
+      ref: { ...s.ref },
+      link: { ...s.link },
+      ...(s.imu ? { imu: { ...s.imu } } : {}),
+      ...legacyDeviceStateFields(s),
+    };
+  }
+
+  // --- telemetry -------------------------------------------------------------
 
   private connect(): void {
     if (this.closed) return;
-    const ws = new WebSocket(this.wsUrl());
+    const ws = this.wsFactory(this.wsUrl);
     this.ws = ws;
-    ws.on("open", () => { this.state.connected = true; });
-    ws.on("message", (buf) => this.onTick(buf.toString()));
-    ws.on("close", () => { this.state.connected = false; this.scheduleReconnect(); });
+    ws.on("open", () => {
+      this.state.connected = true;
+      void this.refreshConfig();
+    });
+    ws.on("message", (buf) => this.onMessage(buf.toString()));
+    ws.on("close", () => {
+      if (this.ws !== ws) return;
+      this.state.connected = false;
+      this.scheduleReconnect();
+    });
     ws.on("error", () => { /* close will follow */ });
   }
 
@@ -107,114 +181,226 @@ export class Device {
     if (this.closed || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (this.hosts.length > 1) this.hostIdx = (this.hostIdx + 1) % this.hosts.length;
       this.connect();
-    }, 1000);
+    }, RECONNECT_MS);
   }
 
-  private onTick(raw: string): void {
+  private onMessage(raw: string): void {
+    let msg: unknown;
+    try { msg = JSON.parse(raw); } catch { return; }
+    const type = (msg as { type?: unknown } | null)?.type;
+    if (type === "tick") {
+      const r = HeadTickZ.safeParse(msg);
+      if (r.success) this.onTick(r.data);
+    } else if (type === "event") {
+      const r = HeadEventZ.safeParse(msg);
+      if (r.success) this.onHeadEvent(r.data);
+    }
+  }
+
+  private onTick(t: HeadTick): void {
+    const s = this.state;
+    s.estop = t.estop;
+    s.imu = { ...t.imu, cal: t.imu.cal ? { ...t.imu.cal } : null };
+    s.tiltDisagreeDeg = t.tiltDisagreeDeg;
+    s.ref = { ...t.ref };
+    s.link = { ...t.link };
+    if (!t.axes) return; // IMU-only tick: no motion telemetry (see DeviceState)
+    s.axes = {
+      pan: { ...t.axes.pan }, tilt: { ...t.axes.tilt },
+      zoom: { ...t.axes.zoom }, focus: { ...t.axes.focus },
+    };
+    s.panDeg = t.axes.pan.pos;
+    s.tiltDeg = t.axes.tilt.pos;
+    s.zoomDeg = t.axes.zoom.pos;
+    s.focusDeg = t.axes.focus.pos;
+    s.moving = t.moving ?? Object.values(t.axes).some((a) => a.vel !== 0 || a.mode === "H");
+    s.enabled = t.enabled ?? s.enabled;
+    s.lastUpdateMs = this.now();
+    if (this.telemetryListeners.length > 0) {
+      const snap = this.snapshot();
+      for (const cb of this.telemetryListeners) {
+        try { cb(snap); } catch { /* a listener must never break telemetry processing */ }
+      }
+    }
+  }
+
+  private onHeadEvent(e: HeadEvent): void {
+    // The tick that follows carries the same facts; applying them now saves
+    // the gate up to a tick period.
+    if (e.name === "estop") this.state.estop = true;
+    else if (e.name === "estop_cleared") this.state.estop = false;
+    else if (e.name === "pico_link") {
+      this.state.link.pico = (e.detail as { up: boolean }).up;
+      // GET /api/config is a Pico round trip: it 503s while the link is down
+      // (e.g. at connect), and a Pico that rebooted may come back with other
+      // limits. Re-read whenever the link comes up.
+      if (this.state.link.pico) void this.refreshConfig();
+    } else if (e.name === "config") void this.refreshConfig();
+
+    for (const cb of this.eventListeners) {
+      try { cb(e); } catch { /* isolated, see onTelemetry */ }
+    }
+    if (e.name === "pan_reference") {
+      const d = PanReferenceDetailZ.parse(e.detail);
+      const change: ReferenceChange = "pan" in d
+        ? { source: d.source, pan: d.pan, previous: d.previous }
+        : { source: d.source, pan: null, previous: null };
+      for (const cb of this.referenceListeners) {
+        try { cb({ ...change }); } catch { /* isolated, see onTelemetry */ }
+      }
+    }
+  }
+
+  // Fetches the Pico limits and rates. Overlapping fetches (a burst of config
+  // events) resolve in any order; only the newest one is applied.
+  private async refreshConfig(): Promise<void> {
+    const gen = ++this.configGeneration;
+    let config: AxisConfig;
     try {
-      const d = JSON.parse(sanitizeTickJson(raw));
-      if (d.type !== "tick" || !Array.isArray(d.pos)) return;
-      this.state.panSteps = d.pos[0];
-      this.state.tiltSteps = d.pos[1];
-      this.state.auxSteps = d.pos[2];
-      this.state.moving = d.moving !== 0;
-      this.state.programEngaged = d.prog === 1;
-      this.state.batteryV = d.batt ?? this.state.batteryV;
-      this.state.staIp = d.sta ?? this.state.staIp;
-      this.state.lastUpdateMs = this.now();
-      if (d.imu && typeof d.imu === "object") {
-        this.state.imu = {
-          ok: d.imu.ok === true || d.imu.ok === 1,
-          pitchDeg: Number(d.imu.pitch),
-          rollDeg: Number(d.imu.roll),
-          tempC: Number(d.imu.tempC),
-          pressHpa: Number(d.imu.pressHpa),
-        };
-      }
-      if (this.telemetryListeners.length > 0) {
-        const snapshot = { ...this.state };
-        for (const cb of this.telemetryListeners) {
-          try { cb(snapshot); } catch { /* a listener must never break telemetry processing */ }
-        }
-      }
-    } catch { /* ignore malformed tick */ }
+      const raw = await this.request("GET", "/api/config");
+      const parsed = HeadAxisConfigResponseZ.safeParse(raw);
+      if (!parsed.success || gen !== this.configGeneration) return;
+      const pick = (a: HeadAxisConfig): HeadAxisConfig => ({ min: a.min, max: a.max, vmax: a.vmax, amax: a.amax });
+      config = { pan: pick(parsed.data.pan), tilt: pick(parsed.data.tilt) };
+    } catch {
+      return; // the head is unreachable or the link is down; the next connect or config event retries
+    }
+    this.axisConfig = config;
+    for (const cb of this.configListeners) {
+      try { cb(cloneAxisConfig(config)); } catch { /* isolated, see onTelemetry */ }
+    }
   }
 
-  private async post(path: string, body?: object): Promise<Response> {
-    return fetch(`${this.httpBase()}${path}`, {
-      method: "POST",
+  // --- HTTP ------------------------------------------------------------------
+
+  private async request(
+    method: "GET" | "POST", path: string, body?: object, timeoutMs = COMMAND_TIMEOUT_MS,
+  ): Promise<unknown> {
+    const r = await this.fetchFn(`${this.httpBase}${path}`, {
+      method,
       headers: body ? { "content-type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
+    const text = await r.text();
+    let json: unknown = null;
+    try { json = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
+    if (!r.ok) {
+      const err = (json as { error?: unknown } | null)?.error;
+      throw new DeviceHttpError(typeof err === "string" ? err : `HTTP ${r.status}`, r.status);
+    }
+    return json;
   }
 
-  // One-shot burst read of the IMU. Reuses the burst-fetch pattern from
-  // scripts/imu-probe.mjs but simpler: a single attempt with a generous
-  // timeout (marginal WiFi can make a 100-sample burst slow). The caller in
-  // characterize_imu handles retries per rig position.
-  async getGravity(n = 100): Promise<Vec3> {
-    const res = await fetch(`${this.httpBase()}/api/imu?n=${n}`, { signal: AbortSignal.timeout(20000) });
-    if (!res.ok) throw new Error(`GET /api/imu failed: HTTP ${res.status}`);
-    // /api/imu sample ARRAYS carry bare `nan` for the absent baro columns --
-    // invalid JSON. Sanitize both the object form (:nan) and the array form
-    // (,nan, and ,-nan,) before parsing. The leading `-?` matters: without it
-    // `-nan` -> `-null`, which is still invalid JSON, so the whole burst
-    // would be dropped exactly like the un-sanitized case this exists to fix.
-    const raw = await res.text();
-    const burst = JSON.parse(sanitizeTickJson(raw).replace(/-?\bnan\b/gi, "null")) as ImuBurst;
-    if (!burst.info?.present) throw new Error("IMU not present");
-    return gravityFromBurst(burst);
+  private async post(path: string, body?: object): Promise<void> {
+    await this.request("POST", path, body);
   }
 
-  private async errText(r: Response): Promise<string> {
-    try { const j = await r.json(); return (j as any).error ?? `HTTP ${r.status}`; }
-    catch { return `HTTP ${r.status}`; }
+  // --- motion ----------------------------------------------------------------
+
+  /** `POST /api/goto` (202). The head moves at the Pico's `vmax`; `speedDps` is accepted for callers and ignored. */
+  async gotoAngle(devicePanDeg: number, deviceTiltDeg: number, _speedDps?: number): Promise<void> {
+    await this.post("/api/goto", { pan: devicePanDeg, tilt: deviceTiltDeg });
   }
 
-  async gotoAngle(devicePanDeg: number, deviceTiltDeg: number, speedDps?: number): Promise<void> {
-    const r = await this.post("/api/goto", {
-      pan_deg: devicePanDeg, tilt_deg: deviceTiltDeg, speed_dps: speedDps,
-    });
-    if (r.status !== 202) throw new DeviceHttpError(await this.errText(r), r.status);
+  /** `POST /api/track`: position-now plus rate; the Pico extrapolates and servos. */
+  async track(cmd: HeadTrackCmd): Promise<void> {
+    await this.post("/api/track", cmd);
   }
 
   async waitForArrival(
-    targetPanSteps: number, targetTiltSteps: number, timeoutMs: number,
+    targetPanDeg: number, targetTiltDeg: number, timeoutMs: number,
   ): Promise<DeviceState> {
     const t0 = this.now();
-    // allow the device a moment to set moving=1 before we test for arrival
+    // allow the head a moment to report moving before we test for arrival
     await new Promise((res) => setTimeout(res, 150));
     while (this.now() - t0 < timeoutMs) {
       const s = this.state;
       if (!s.moving &&
-          Math.abs(s.panSteps - targetPanSteps) < ARRIVAL_TOL_STEPS &&
-          Math.abs(s.tiltSteps - targetTiltSteps) < ARRIVAL_TOL_STEPS) {
-        return { ...s };
+          Math.abs(s.panDeg - targetPanDeg) < ARRIVAL_TOL_DEG &&
+          Math.abs(s.tiltDeg - targetTiltDeg) < ARRIVAL_TOL_DEG) {
+        return this.snapshot();
       }
       await new Promise((res) => setTimeout(res, 50));
     }
     throw new Error(
-      `goto timed out after ${timeoutMs}ms at pan=${(this.state.panSteps / STEPS_PER_DEG).toFixed(2)}° ` +
-      `tilt=${(this.state.tiltSteps / STEPS_PER_DEG).toFixed(2)}°`,
+      `goto timed out after ${timeoutMs}ms at pan=${this.state.panDeg.toFixed(2)}° ` +
+      `tilt=${this.state.tiltDeg.toFixed(2)}°`,
     );
   }
 
+  /** `POST /api/stop`: all axes. Not guarded by the E-STOP latch. */
   async stop(): Promise<void> {
-    const r = await this.post("/api/stop");
-    if (!r.ok) throw new Error(await this.errText(r));
+    await this.post("/api/stop");
   }
 
-  async setHome(): Promise<void> {
-    const r = await this.post("/api/home");
-    if (r.status !== 202) throw new DeviceHttpError(await this.errText(r), r.status);
+  /** `POST /api/estop`: latches the head; every motion route returns 423 until cleared. */
+  async estop(): Promise<void> {
+    // Nothing would accept the keep-alive's frames now; stop pumping them.
+    this.jogVec = null;
+    this.stopJogTimer();
+    await this.post("/api/estop");
   }
 
-  private sendJog(x: number, y: number, aux: number): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ x, y, aux }));
+  async clearEstop(): Promise<void> {
+    await this.post("/api/estop/clear");
+  }
+
+  /** `POST /api/home` (202). Completion arrives as a `homed`/`home_failed` event. */
+  async home(axes?: string[]): Promise<void> {
+    await this.post("/api/home", axes ? { axes } : undefined);
+  }
+
+  /** `POST /api/setpos`: declares the current position. A pan value re-references pan (`pan_reference` event). */
+  async setPos(pos: { pan?: number; tilt?: number }): Promise<void> {
+    await this.post("/api/setpos", pos);
+  }
+
+  /** `POST /api/reference` (202): re-runs the IMU north reference; the result arrives as an event. */
+  async reference(): Promise<void> {
+    await this.post("/api/reference");
+  }
+
+  // Normalized gravity direction in the IMU frame: the mean of the burst's
+  // `gravity` vectors (the BNO055's fused gravity estimate, m/s²). Only the
+  // direction matters to the gravity-anchoring callers (characterize_imu,
+  // set_north_zero, solve_calibration), as with the old raw-accel burst.
+  async getGravity(n = 100): Promise<Vec3> {
+    if (this.state.imu?.ok === false) throw new Error("IMU not ok (the head reports imu.ok === false)");
+    const raw = await this.request("GET", `/api/imu?n=${n}`, undefined, IMU_TIMEOUT_MS);
+    const burst = HeadImuBurstZ.parse(raw);
+    if (burst.samples.length === 0) throw new Error("GET /api/imu returned no samples");
+    const sum = burst.samples.reduce<[number, number, number]>(
+      (acc, s) => [acc[0] + s.gravity[0], acc[1] + s.gravity[1], acc[2] + s.gravity[2]], [0, 0, 0]);
+    const k = burst.samples.length;
+    const mean: Vec3 = [sum[0] / k, sum[1] / k, sum[2] / k];
+    if (!mean.every(Number.isFinite) || Math.hypot(...mean) === 0) {
+      throw new Error("GET /api/imu: degenerate mean gravity");
+    }
+    return normalize(mean);
+  }
+
+  // --- jog -------------------------------------------------------------------
+
+  private sendJog(pan: number, tilt: number): void {
+    this.jogPending = { pan, tilt };
+    if (!this.jogInflight) this.jogInflight = this.drainJog();
+  }
+
+  private async drainJog(): Promise<void> {
+    try {
+      while (this.jogPending) {
+        const frame = this.jogPending;
+        this.jogPending = null;
+        try {
+          await this.post("/api/jog", frame);
+        } catch (e) {
+          this.jogError ??= e; // first failure wins: it names the cause
+        }
+      }
+    } finally {
+      this.jogInflight = null;
     }
   }
 
@@ -223,36 +409,38 @@ export class Device {
   }
 
   // The keep-alive. A vector older than its TTL means whoever set it stopped
-  // proving it was alive — drop it and zero the rig rather than keep slewing.
+  // proving it was alive — drop it and zero the head rather than keep slewing.
+  // The head's own jog dead-man (500ms) is the second net, for when this
+  // process dies or the network does.
   private pumpJog(): void {
     const v = this.jogVec;
     if (!v) { this.stopJogTimer(); return; }
     if (this.now() >= v.expiresAtMs) {
       this.jogVec = null;
-      this.sendJog(0, 0, 0);
+      this.sendJog(0, 0);
       this.stopJogTimer();
       return;
     }
-    this.sendJog(v.x, v.y, v.aux);
+    this.sendJog(v.panDps, v.tiltDps);
   }
 
-  // Set a sticky rate that is repeated to the device until it expires. The
-  // caller MUST keep refreshing it; see pumpJog. `ttlMs` must be comfortably
-  // greater than JOG_KEEPALIVE_MS (100ms): a TTL at or below the keep-alive
-  // interval expires on the very first watchdog tick regardless of how fresh
-  // the vector actually is -- it fails safe (stops early), but it will
-  // silently defeat the caller's intent.
+  // Set a sticky rate (deg/s, device frame) that is repeated to the head until
+  // it expires. The caller MUST keep refreshing it; see pumpJog. `ttlMs` must
+  // be comfortably greater than JOG_KEEPALIVE_MS (100ms): a TTL at or below
+  // the keep-alive interval expires on the very first watchdog tick regardless
+  // of how fresh the vector actually is -- it fails safe (stops early), but it
+  // will silently defeat the caller's intent.
   //
-  // The keep-alive interval is the ONLY sender: this call never writes to the
-  // socket itself except to kick off the very first frame when the timer is
-  // not already running. Subsequent calls (refreshing the vector/TTL while
-  // the timer is alive) just update state -- pumpJog's own tick sends it.
-  // This keeps exactly one frame in flight per JOG_KEEPALIVE_MS tick even
-  // when a caller (jog()'s loop, or a future tracking session) invokes this
-  // at roughly the keep-alive rate; sending here too would double it.
-  setJogVector(x: number, y: number, aux: number, ttlMs: number): void {
+  // The keep-alive interval is the ONLY sender: this call never posts a frame
+  // itself except to kick off the very first frame when the timer is not
+  // already running. Subsequent calls (refreshing the vector/TTL while the
+  // timer is alive) just update state -- pumpJog's own tick sends it. This
+  // keeps exactly one frame per JOG_KEEPALIVE_MS tick even when a caller
+  // (jog()'s loop, or a tracking session) invokes this at roughly the
+  // keep-alive rate; sending here too would double it.
+  setJogVector(panDps: number, tiltDps: number, ttlMs: number): void {
     if (this.jogLocked) return;
-    this.jogVec = { x, y, aux, expiresAtMs: this.now() + ttlMs };
+    this.jogVec = { panDps, tiltDps, expiresAtMs: this.now() + ttlMs };
     if (!this.jogTimer) {
       this.pumpJog();
       this.jogTimer = setInterval(() => this.pumpJog(), JOG_KEEPALIVE_MS);
@@ -262,7 +450,7 @@ export class Device {
   clearJog(): void {
     this.jogVec = null;
     this.stopJogTimer();
-    this.sendJog(0, 0, 0);
+    this.sendJog(0, 0);
   }
 
   // Driven by SunSupervisor's lock state (see setLocked). While latched, any
@@ -284,31 +472,46 @@ export class Device {
   // hanging here. Cadence is governed by JOG_KEEPALIVE_MS, the same interval
   // the watchdog runs on, and every refreshed vector still carries a real
   // this.now()-policed TTL — so even a stuck jog is not exempt from expiry.
-  async jog(x: number, y: number, aux: number, durationMs: number): Promise<void> {
+  // Resolves once the zero frame has been answered; rejects with the first
+  // frame the head refused (423 E-STOP, 503 link down), after stopping.
+  async jog(panDps: number, tiltDps: number, durationMs: number): Promise<void> {
+    this.jogError = null;
     const ticks = Math.ceil(durationMs / JOG_KEEPALIVE_MS);
-    this.setJogVector(x, y, aux, JOG_KEEPALIVE_MS * 5);
+    this.setJogVector(panDps, tiltDps, JOG_KEEPALIVE_MS * 5);
     for (let i = 0; i < ticks; i++) {
       await new Promise((res) => setTimeout(res, JOG_KEEPALIVE_MS));
-      this.setJogVector(x, y, aux, JOG_KEEPALIVE_MS * 5);
+      this.setJogVector(panDps, tiltDps, JOG_KEEPALIVE_MS * 5);
     }
     this.clearJog();
+    while (this.jogInflight) await this.jogInflight;
+    const err = this.jogError;
+    this.jogError = null;
+    if (err) throw err;
   }
 
+  // --- removed ESP32 features --------------------------------------------------
+
+  /** @deprecated TRANSITIONAL — removed in Task 4 (the head has no programs) */
   async listPrograms(): Promise<{ current: number; names: string[]; selectable: boolean }> {
-    const r = await fetch(`${this.httpBase()}/api/program`, {
-      signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS),
-    });
-    if (!r.ok) throw new Error(await this.errText(r));
-    return (await r.json()) as { current: number; names: string[]; selectable: boolean };
+    throw new Error("removed: the head has no programs");
   }
 
-  async selectProgram(index: number, commit: boolean): Promise<void> {
-    const r = await this.post("/api/program", { type: index, select: commit });
-    if (!r.ok) throw new Error(await this.errText(r));
+  /** @deprecated TRANSITIONAL — removed in Task 4 (the head has no programs) */
+  async selectProgram(_index: number, _commit: boolean): Promise<void> {
+    throw new Error("removed: the head has no programs");
   }
 
-  async triggerCamera(action: "shoot" | "focus", ms: number): Promise<void> {
-    const r = await this.post("/api/camera", { action, ms });
-    if (!r.ok) throw new Error(await this.errText(r));
+  /** @deprecated TRANSITIONAL — removed in Task 4 (the head has no camera trigger) */
+  async triggerCamera(_action: "shoot" | "focus", _ms: number): Promise<void> {
+    throw new Error("removed: the head has no camera trigger");
   }
+
+  /** @deprecated TRANSITIONAL — removed in Task 4 (use setPos({pan}) / home()) */
+  async setHome(): Promise<void> {
+    throw new Error("removed: use setPos({ pan }) or home()");
+  }
+}
+
+function cloneAxisConfig(c: AxisConfig): AxisConfig {
+  return { pan: { ...c.pan }, tilt: { ...c.tilt } };
 }

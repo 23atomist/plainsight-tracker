@@ -2,7 +2,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
-import { stepsToDeg, applySign } from "../shared/angles.js";
+import { applySign } from "../shared/angles.js";
+// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
+import { stepsToDeg } from "../shared/legacy-transitional.js";
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
@@ -136,7 +138,9 @@ export function registerTools(
       const x = clamp(Math.round((guarded.out.panDps / cfg.maxJogDps) * 100 * cfg.panSign), -100, 100);
       const y = clamp(Math.round((guarded.out.tiltDps / cfg.maxJogDps) * 100 * cfg.tiltSign), -100, 100);
       const a = clamp(Math.round((aux ?? 0) * cfg.auxSign), -100, 100);
-      await device.jog(x, y, a, duration_ms);
+      // TRANSITIONAL — Task 5 rewrites this tool (jog in dps, no aux, no joy reply);
+      // the head takes deg/s, so the joystick deflection above is reply-only until then.
+      await device.jog(guarded.out.panDps * cfg.panSign, guarded.out.tiltDps * cfg.tiltSign, duration_ms);
       // Surfaced so "I stopped because I'm at the limit" is distinguishable
       // from "the control is broken" — silence here is what makes an operator
       // push harder into a stop instead of backing off.

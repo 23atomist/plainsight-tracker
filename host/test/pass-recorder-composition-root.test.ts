@@ -26,7 +26,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { main, type MainHandle } from "../src/mcp/server.js";
 import { PassRecorder } from "../src/shared/capture/pass-recorder.js";
 import { CaptureController } from "../src/shared/capture/controller.js";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +40,7 @@ const ENV_KEYS = [
 const savedEnv: Record<string, string | undefined> = {};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let handle: MainHandle | null = null;
 
 afterEach(async () => {
@@ -53,7 +53,7 @@ afterEach(async () => {
 describe("composition root (main()) -- PassRecorder wiring (Task 9 fix round 1, Finding 1)", () => {
   it("wires a SECOND, independent onStateChange listener that drives PassRecorder, alongside the capture listener", async () => {
     for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
-    mock = new MockTb3(); await mock.start(DEV_PORT);
+    mock = new FakeHead(); await mock.start({ port: DEV_PORT });
 
     // Isolate every store this main() boots against a real device from the
     // developer's own ~/.tb3-mcp files (vision-composition-root.test.ts /

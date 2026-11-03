@@ -1,6 +1,8 @@
 import { Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
-import { stepsToDeg, degToSteps, applySign, checkPanTilt, checkSpeed, Limits } from "../shared/angles.js";
+import { applySign, checkPanTilt, checkSpeed, Limits } from "../shared/angles.js";
+// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
+import { stepsToDeg } from "../shared/legacy-transitional.js";
 
 export interface MoveResult {
   arrived: boolean;
@@ -51,7 +53,7 @@ export async function moveToUserAngle(
   const effSpeed = speedDps ?? cfg.maxSpeedDps;
   const timeoutMs = Math.max(5000, (distDeg / effSpeed) * 1000 * 3 + 3000);
 
-  const final = await device.waitForArrival(degToSteps(devPan), degToSteps(devTilt), timeoutMs);
+  const final = await device.waitForArrival(devPan, devTilt, timeoutMs);
   return {
     arrived: true,
     pan_deg: Number(applySign(stepsToDeg(final.panSteps), cfg.panSign).toFixed(3)),

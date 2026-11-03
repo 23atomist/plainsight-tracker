@@ -6,7 +6,9 @@ import { CalibrationStore } from "../shared/calibration.js";
 import { sunAzEl, sunEnu } from "../shared/geo/sun.js";
 import { boresightEnu } from "../shared/track/control.js";
 import { angleBetweenDeg, Vec3 } from "../shared/geo/vec3.js";
-import { stepsToDeg, applySign } from "../shared/angles.js";
+import { applySign } from "../shared/angles.js";
+// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
+import { stepsToDeg } from "../shared/legacy-transitional.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
 import { text } from "./tool-helpers.js";
 

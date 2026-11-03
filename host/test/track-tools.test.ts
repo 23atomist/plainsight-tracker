@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
@@ -20,7 +20,7 @@ const RIG = { lat: 45, lon: 10, height: 0 };
 const NORTH = { lat: 45 + 10 / 111.32, lon: 10, height: 0 };
 const I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] as const;
 
-let mock: MockTb3; let device: Device; let client: Client; let store: CalibrationStore;
+let mock: FakeHead; let device: Device; let client: Client; let store: CalibrationStore;
 let supervisor: SunSupervisor;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const textOf = (r: any) => r.content.map((c: any) => c.text).join("");
@@ -29,8 +29,8 @@ const textOf = (r: any) => r.content.map((c: any) => c.text).join("");
 // device's telemetry timestamp so a single tickForTest() trips telemetry_stale
 // (a fault, hence locked) without needing a real sun-aligned boresight fixture.
 async function harness(calibrated = true, supervisorNowMs?: number) {
-  mock = new MockTb3();
-  await mock.start(PORT);
+  mock = new FakeHead();
+  await mock.start({ port: PORT });
   // sunGuardEnabled is explicit, not inherited: the config default is `false` (the rig's
   // current site has no direct sun), and the lockout cases below exercise the guard itself.
   const cfg = { ...loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` }), sunGuardEnabled: true };

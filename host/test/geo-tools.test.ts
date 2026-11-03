@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 import { registerGeoTools, reachablePanTilt } from "../src/mcp/geo-tools.js";
@@ -23,7 +23,7 @@ import { AdsbSource } from "../src/shared/adsb/source.js";
 const field = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/imu-calib-field.json", import.meta.url)), "utf8"));
 
 const PORT = 8795;
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let dev: Device | null = null;
 let dir: string | null = null;
 
@@ -34,7 +34,7 @@ let dir: string | null = null;
 // `new AdsbSource(cfg)` convention for a source nothing here needs).
 async function harness(env: Record<string, string> = {}, aircraft: unknown[] = []) {
   dir = mkdtempSync(join(tmpdir(), "tb3geo-"));
-  mock = new MockTb3(); await mock.start(PORT);
+  mock = new FakeHead(); await mock.start({ port: PORT });
   const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20", ...env });
   dev = new Device(cfg); dev.start();
   // Wait for a real TICK, not just the socket opening: `connected` flips on
@@ -209,7 +209,7 @@ describe("geo tools — solve + point", () => {
   // the mock currently reports, so the solved R maps those ENU dirs to those
   // aims. Then point_at a third target and assert the mock was driven to a
   // pan/tilt consistent with re-sighting it.
-  async function calibrate(client: any, mock: MockTb3) {
+  async function calibrate(client: any, mock: FakeHead) {
     await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
     // Sighting A: aim pan=0,tilt=2 at a landmark to the north-ish
     mock.setPosition(0 * 444.444, 2 * 444.444);

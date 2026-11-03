@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import type { Server } from "node:http";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 import { buildApp } from "../src/mcp/server.js";
@@ -68,7 +68,7 @@ vi.mock("../src/mcp/tools.js", () => ({
 
 const DEV_PORT = 8796;
 const MCP_PORT = 8797;
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let dev: Device | null = null;
 let httpServer: Server | null = null;
 
@@ -80,7 +80,7 @@ afterEach(async () => {
 
 describe("server error handling", () => {
   it("returns a JSON-RPC 500 (not an unhandled rejection) when a handler throws", async () => {
-    mock = new MockTb3(); await mock.start(DEV_PORT);
+    mock = new FakeHead(); await mock.start({ port: DEV_PORT });
     const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT) });
     dev = new Device(cfg); dev.start();
     await new Promise((r) => setTimeout(r, 200));

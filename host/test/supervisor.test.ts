@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PORT = 8802;
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let dev: Device | null = null;
 
 // A manual scheduler: tests fire ticks explicitly, no wall clock.
@@ -53,7 +53,7 @@ function provisionalStore(): CalibrationStore {
 // fixture would see a huge telemetry age and wrongly fault. Freeze both to the
 // same instant and the age is ~0.
 async function harness(coneDeg = 25, fixedNowMs?: number) {
-  mock = new MockTb3(); await mock.start(PORT);
+  mock = new FakeHead(); await mock.start({ port: PORT });
   // sunGuardEnabled is explicit, not inherited: the config default is `false` (the rig's
   // current site has no direct sun), and these cases exercise the guard itself.
   const cfg = { ...loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" }), sunConeDeg: coneDeg, sunGuardEnabled: true };

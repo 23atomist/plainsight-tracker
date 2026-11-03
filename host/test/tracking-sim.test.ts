@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockTb3, mockJogRate, MOCK_JOG_MAX_DPS } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
@@ -21,7 +21,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const M_PER_DEG_LAT = 111_320;
 const M_PER_DEG_LON = 111_320 * Math.cos((45 * Math.PI) / 180);
 
-let mock: MockTb3; let device: Device; let session: TrackingSession;
+let mock: FakeHead; let device: Device; let session: TrackingSession;
 
 afterEach(async () => {
   session?.stop();
@@ -58,8 +58,8 @@ describe("mock jog model matches the control law's inverse", () => {
 
 describe("closed-loop tracking simulation", () => {
   it("holds pointing error bounded while chasing a crossing target", async () => {
-    mock = new MockTb3();
-    await mock.start(PORT);
+    mock = new FakeHead();
+    await mock.start({ port: PORT });
     const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
     device = new Device(cfg);
     device.start();
@@ -115,8 +115,8 @@ describe("closed-loop tracking simulation", () => {
   }, 15000);
 
   it("stops commanding motion when target updates dry up", async () => {
-    mock = new MockTb3();
-    await mock.start(PORT);
+    mock = new FakeHead();
+    await mock.start({ port: PORT });
     const cfg = loadConfig(undefined, {
       TB3_HEAD_URL: `http://127.0.0.1:${PORT}`,
       TB3_TRACK_MAX_TARGET_AGE_MS: "400",

@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { loadConfig } from "../src/shared/config.js";
 import { recordPostureSample, recordTargetSample, buildVisionFrameSource, visionRtspPullArgs } from "../src/mcp/server.js";
 import { PostureHistory } from "../src/shared/vision/posture-history.js";
@@ -515,13 +515,13 @@ describe("recordTargetSample", () => {
 
 // -----------------------------------------------------------------------
 // calibrate_vision_scale — MCP-tool-level tests (fix round 1, IMPORTANT 1
-// and IMPORTANT 2). Full harness (MockTb3 + real Device + real
+// and IMPORTANT 2). Full harness (FakeHead + real Device + real
 // TrackingSession) because the defect was specifically about ORDERING —
 // preconditions vs. commanded motion — which a pure-function test of
 // solveStepResponse etc. cannot exercise.
 // -----------------------------------------------------------------------
 const CALIB_PORT = 8804;
-let calibMock: MockTb3 | null = null;
+let calibMock: FakeHead | null = null;
 let calibDev: Device | null = null;
 
 afterEach(async () => {
@@ -557,7 +557,7 @@ async function calibHarness(
   frames?: FrameSource,
   givenDetector?: { detect: (jpeg: string, minConf: number) => Promise<DetectResponse | null> },
 ) {
-  calibMock = new MockTb3(); await calibMock.start(CALIB_PORT);
+  calibMock = new FakeHead(); await calibMock.start({ port: CALIB_PORT });
   calibMock.setPosition(10 * STEPS_PER_DEG, 5 * STEPS_PER_DEG);
   const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${CALIB_PORT}`, ...envOver });
   calibDev = new Device(cfg); calibDev.start();
@@ -732,7 +732,7 @@ describe("get_vision_status / set_vision_enabled — frame-size diagnosability (
 // original approach) silently eats part of its own "unsettled calls" budget
 // on the baseline poll and desyncs its synthetic clock from the real
 // panStepAppliedAtMs = Date.now() the tool captures -- verified: it produces
-// spurious negative latencies. makeLiveDeviceFakes reads the REAL MockTb3
+// spurious negative latencies. makeLiveDeviceFakes reads the REAL FakeHead
 // device position instead (through a ref, since the fakes must be built
 // BEFORE calibHarness creates the Device), which is immune to both problems
 // and naturally exercises pan AND tilt with one implementation.
@@ -754,7 +754,7 @@ function makeLiveDeviceFakes(opts: {
   deviceRef: { current: Device | null };
   startPanDeg: number; startTiltDeg: number; focalPx: number;
   panPhysical?: 1 | -1; tiltPhysical?: 1 | -1;
-  // Extra delay (beyond the real, physical settle time MockTb3 itself takes)
+  // Extra delay (beyond the real, physical settle time FakeHead itself takes)
   // before a position change becomes visible to the detector -- models the
   // detector/camera's own capture-to-answer lag.
   detectorLagMs?: number;
@@ -957,7 +957,7 @@ describe("calibrate_vision_scale — arrival epoch, not exposure epoch (C4)", ()
     });
     expect(res1.isError).toBeFalsy();
     const body1 = JSON.parse(textOf(res1));
-    // Real MockTb3 settle time adds on top of the injected lag, so this is a
+    // Real FakeHead settle time adds on top of the injected lag, so this is a
     // lower-bound/consistency check, not an exact peg -- the load-bearing
     // assertion is the SECOND run matching the first, not collapsing to 0.
     expect(body1.latency_ms).toBeGreaterThan(INJECTED_LATENCY_MS - 100);

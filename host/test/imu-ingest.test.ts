@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 
 const PORT = 8803;
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let dev: Device | null = null;
 
 async function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
@@ -16,7 +16,7 @@ afterEach(async () => { dev?.close(); dev = null; if (mock) { await mock.stop();
 
 describe("DeviceState.imu ingestion", () => {
   it("populates imu from the WS tick", async () => {
-    mock = new MockTb3(); await mock.start(PORT);
+    mock = new FakeHead(); await mock.start({ port: PORT });
     const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
     dev = new Device(cfg); dev.start();
     await waitFor(() => dev!.getState().imu !== undefined);
@@ -35,9 +35,9 @@ describe("DeviceState.imu ingestion", () => {
   // numeric 1 as well; lock that in against the mock mirroring the regressed
   // wire shape.
   it("treats a numeric wire ok:1 as true (firmware regression guard)", async () => {
-    mock = new MockTb3();
+    mock = new FakeHead();
     mock.imuOkAsNumber = true;
-    await mock.start(PORT);
+    await mock.start({ port: PORT });
     const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
     dev = new Device(cfg); dev.start();
     await waitFor(() => dev!.getState().imu !== undefined);

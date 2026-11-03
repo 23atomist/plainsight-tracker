@@ -1,13 +1,3 @@
-export const STEPS_PER_DEG = 444.444;
-
-export function stepsToDeg(steps: number): number {
-  return steps / STEPS_PER_DEG;
-}
-
-export function degToSteps(deg: number): number {
-  return deg * STEPS_PER_DEG;
-}
-
 // Device frame ↔ user frame. sign is +1 or -1; multiplying is its own inverse.
 export function applySign(deg: number, sign: number): number {
   return deg * sign;

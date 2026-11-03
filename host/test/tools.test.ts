@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 import { registerTools } from "../src/mcp/tools.js";
@@ -18,11 +18,11 @@ import { CaptureController, type CaptureDeps } from "../src/shared/capture/contr
 import { PassJournal } from "../src/shared/capture/pass-journal.js";
 
 const PORT = 8793;
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let dev: Device | null = null;
 
 async function harness(env: Record<string, string> = {}) {
-  mock = new MockTb3(); await mock.start(PORT);
+  mock = new FakeHead(); await mock.start({ port: PORT });
   const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, ...env });
   dev = new Device(cfg); dev.start();
   const t0 = Date.now();
@@ -70,7 +70,7 @@ const STEPS_PER_DEG = 444.444;
 // helper — jog() always ends by clearing the vector, so a bare post-await
 // read of mock.lastJog can never distinguish "blocked the whole time" from
 // "ran fine and then stopped normally").
-function captureJogFrames(m: MockTb3): Array<{ x: number; y: number; aux: number }> {
+function captureJogFrames(m: FakeHead): Array<{ x: number; y: number; aux: number }> {
   const frames: Array<{ x: number; y: number; aux: number }> = [];
   Object.defineProperty(m, "lastJog", {
     configurable: true,

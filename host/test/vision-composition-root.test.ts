@@ -33,7 +33,7 @@
 // either way); above ~3.7deg the gate REJECTS regardless of the mutation
 // too (the true detector-reported offset alone exceeds the gate radius,
 // independent of any prediction). Landing a live geo-tracking transient
-// reliably inside that ~1.9-3.7deg band, across MockTb3's own slew-timing
+// reliably inside that ~1.9-3.7deg band, across FakeHead's own slew-timing
 // variance, proved flaky even at HEAD in testing -- a flaky test is worse
 // than none.
 //
@@ -56,7 +56,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { main, type MainHandle } from "../src/mcp/server.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
 import { VisionScaleStore } from "../src/shared/vision-scale-store.js";
@@ -103,7 +103,7 @@ const ENV_KEYS = [
 ];
 const savedEnv: Record<string, string | undefined> = {};
 
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let handle: MainHandle | null = null;
 let streamServer: Server | null = null;
 let detectServer: Server | null = null;
@@ -173,7 +173,7 @@ function serveDetector(mount: Mount, deviceRef: { current: MainHandle["device"] 
 async function driveMain(mount: Mount, opts: { seedTiltSign: boolean; biasPanDeg: number; biasTiltDeg: number }) {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
 
-  mock = new MockTb3(); await mock.start(DEV_PORT);
+  mock = new FakeHead(); await mock.start({ port: DEV_PORT });
   mock.setPosition(0, 0);
 
   const dir = mkdtempSync(join(tmpdir(), "tb3-comproot-"));

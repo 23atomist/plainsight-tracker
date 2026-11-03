@@ -1,149 +1,413 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { MockTb3, MOCK_PROGRAM_NAMES } from "./mock-tb3.js";
-import { Device } from "../src/shared/device.js";
+import { FakeHead } from "./fake-head.js";
+import { Device, DeviceHttpError } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
+import type { DeviceState } from "../src/shared/types.js";
+import type { HeadAxisConfig, HeadEvent } from "../src/shared/head-types.js";
 
-const PORT = 8792;
-let mock: MockTb3 | null = null;
+let head: FakeHead | null = null;
 let dev: Device | null = null;
 
-function makeDevice(): Device {
-  const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
-  return new Device(cfg);
+// Manual ticks by default (tickMs: 0): every tick a test sees is one it published.
+async function startHead(tickMs = 0): Promise<FakeHead> {
+  head = new FakeHead();
+  await head.start({ tickMs });
+  return head;
+}
+
+function makeDevice(h: FakeHead): Device {
+  const cfg = loadConfig(undefined, { TB3_HEAD_URL: h.url });
+  dev = new Device(cfg);
+  return dev;
+}
+
+async function startDevice(h: FakeHead): Promise<Device> {
+  const d = makeDevice(h);
+  d.start();
+  await waitFor(() => d.getState().connected && d.getState().lastUpdateMs > 0);
+  return d;
 }
 
 afterEach(async () => {
   dev?.close(); dev = null;
-  if (mock) { await mock.stop(); mock = null; }
+  if (head) { await head.stop(); head = null; }
 });
 
 async function waitFor(pred: () => boolean, ms = 3000): Promise<void> {
   const t0 = Date.now();
-  while (!pred() && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 25));
+  while (!pred() && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 10));
   if (!pred()) throw new Error("waitFor timed out");
 }
 
-describe("Device", () => {
-  it("caches telemetry from the WS feed", async () => {
-    mock = new MockTb3(); await mock.start(PORT);
-    mock.setPosition(444.444 * 30, 0);
-    dev = makeDevice(); dev.start();
-    await waitFor(() => dev!.getState().connected && dev!.getState().panSteps > 0);
-    expect(dev.getState().panSteps).toBeCloseTo(444.444 * 30, -1);
-    expect(dev.getState().moving).toBe(false);
-  });
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  it("gotoAngle triggers a move that waitForArrival resolves", async () => {
-    mock = new MockTb3(); await mock.start(PORT);
-    mock.setPosition(0, 0);
-    dev = makeDevice(); dev.start();
-    await waitFor(() => dev!.getState().connected);
-    await dev.gotoAngle(15, 0);
-    expect(mock.lastGoto).toEqual({ pan_deg: 15, tilt_deg: 0, speed_dps: undefined });
-    const final = await dev.waitForArrival(15 * 444.444, 0, 8000);
-    expect(final.panSteps).toBeCloseTo(15 * 444.444, -1);
-  });
+function jogBodies(h: FakeHead): Array<{ pan?: number; tilt?: number }> {
+  return h.calls.filter((c) => c.method === "POST" && c.path === "/api/jog")
+    .map((c) => c.body as { pan?: number; tilt?: number });
+}
 
-  it("gotoAngle throws 409 message while a program is engaged", async () => {
-    mock = new MockTb3(); await mock.start(PORT);
-    mock.setProgramEngaged(true);
-    dev = makeDevice(); dev.start();
-    await waitFor(() => dev!.getState().connected);
-    await expect(dev.gotoAngle(1, 0)).rejects.toThrow(/program engaged/);
-  });
+function lastJogIsZero(h: FakeHead): boolean {
+  const f = jogBodies(h);
+  return f.length > 0 && f[f.length - 1].pan === 0 && f[f.length - 1].tilt === 0;
+}
 
-  it("setHome zeroes and stop/camera/program reach the device", async () => {
-    mock = new MockTb3(); await mock.start(PORT);
-    mock.setPosition(9999, 8888);
-    dev = makeDevice(); dev.start();
-    await waitFor(() => dev!.getState().connected);
-    await dev.setHome();
-    expect(mock.homeCount).toBe(1);
-    await dev.stop();
-    expect(mock.stopCount).toBe(1);
-    await dev.triggerCamera("shoot", 200);
-    expect(mock.lastCamera).toEqual({ action: "shoot", ms: 200 });
-    await dev.selectProgram(3, true);
-    expect(mock.lastProgram).toEqual({ type: 3, select: true });
-    const progs = await dev.listPrograms();
-    // The firmware's menu table is MENU_OPTIONS=9 entries, ending in the
-    // Track (Web) mode layer 3 drives. Asserted against the shared table so a
-    // future menu addition updates this in one place.
-    expect(progs.names.length).toBe(MOCK_PROGRAM_NAMES.length);
-    expect(progs.names[progs.names.length - 1]).toBe("Track (Web)");
-  });
+describe("Device (head API)", () => {
+  it("parses a tick into degrees and fires telemetry once per tick", async () => {
+    const h = await startHead();
+    h.setPosition(30.5, 12.25);
+    const d = makeDevice(h);
+    const seen: DeviceState[] = [];
+    d.onTelemetry((s) => seen.push(s));
+    d.start();
+    // The head sends the current tick on connect.
+    await waitFor(() => seen.length === 1);
+    expect(seen[0].panDeg).toBe(30.5);
+    expect(seen[0].tiltDeg).toBe(12.25);
+    expect(seen[0].moving).toBe(false);
+    expect(seen[0].connected).toBe(true);
+    expect(seen[0].axes?.pan.mode).toBe("I");
 
-  it("jog streams a joystick frame then a zero frame", async () => {
-    mock = new MockTb3(); await mock.start(PORT);
-    dev = makeDevice(); dev.start();
-    await waitFor(() => dev!.getState().connected);
-    await dev.jog(50, 0, 0, 250);
-    await waitFor(() => mock!.lastJog !== null && mock!.lastJog.x === 0);
-    expect(mock.lastJog).toEqual({ x: 0, y: 0, aux: 0 });
-  });
-
-  it("auto-reconnect survives close() while a reconnect backoff is pending", async () => {
-    mock = new MockTb3(); await mock.start(PORT);
-    dev = makeDevice(); dev.start();
-    await waitFor(() => dev!.getState().connected);
-
-    // Drop the mock so the device's WS closes and scheduleReconnect() arms
-    // its 1s backoff timer. Once state.connected flips false, that timer is
-    // guaranteed armed (both happen synchronously in the ws "close" handler)
-    // -- so close() right after this is guaranteed to race the pending timer.
-    await mock.stop();
-    await waitFor(() => !dev!.getState().connected);
-    dev.close();
-
-    // Fresh mock, fresh explicit start(): this bypasses scheduleReconnect()
-    // entirely (start() calls connect() directly), so it succeeds regardless
-    // of whether close() left a stale reconnectTimer handle behind.
-    mock = new MockTb3(); await mock.start(PORT);
-    dev.start();
-    await waitFor(() => dev!.getState().connected);
-
-    // Force a second disconnect. This is the actual regression check: before
-    // the fix, close() never nulled reconnectTimer, so this scheduleReconnect()
-    // call no-ops on the stale handle and the device never reconnects (test
-    // times out). After the fix, it reconnects within the 1s backoff.
-    await mock.stop();
-    await waitFor(() => !dev!.getState().connected);
-    mock = new MockTb3(); await mock.start(PORT);
-    await waitFor(() => dev!.getState().connected, 5000);
-  });
-
-  // Added alongside vision-lock fix round 2: PostureHistory's feed moved from
-  // an independent poll of getState() to this callback specifically to stop
-  // both dropping a tick (two land between polls) and flapping "no_posture"
-  // from a too-coarse poll interval -- see server.ts's recordPostureSample
-  // wiring and task-8-report.md's IMPORTANT-6/minors accounting.
-  it("onTelemetry fires once per parsed tick with a snapshot matching getState()", async () => {
-    mock = new MockTb3(); await mock.start(PORT);
-    mock.setPosition(444.444 * 12, 444.444 * 3);
-    dev = makeDevice();
-    const seen: number[] = [];
-    dev.onTelemetry((s) => seen.push(s.panSteps));
-    dev.start();
-    await waitFor(() => seen.length > 0 && dev!.getState().connected);
-    expect(seen[seen.length - 1]).toBeCloseTo(444.444 * 12, -1);
-    // The callback's own snapshot must agree with getState() at the same
-    // moment, not just eventually converge to it.
-    expect(seen[seen.length - 1]).toBe(dev.getState().panSteps);
+    h.setPosition(31, 13);
+    h.tick();
+    h.tick();
+    await waitFor(() => seen.length === 3);
+    await sleep(100);
+    expect(seen.length).toBe(3);
+    // The snapshot handed to the listener is the state as of that tick.
+    expect(seen[2].panDeg).toBe(31);
+    expect(d.getState().panDeg).toBe(31);
+    expect(d.getState().tiltDeg).toBe(13);
+    expect(d.getState().ref.pan).toBe("imu");
+    expect(d.getState().link).toEqual({ pico: true, imu: true });
   });
 
   it("a throwing onTelemetry listener does not stop telemetry processing or other listeners", async () => {
-    mock = new MockTb3(); await mock.start(PORT);
-    dev = makeDevice();
-    let goodCalls = 0;
-    dev.onTelemetry(() => { throw new Error("boom: simulated listener failure"); });
-    dev.onTelemetry(() => { goodCalls += 1; });
-    dev.start();
-    await waitFor(() => dev!.getState().connected && goodCalls > 0);
-    // getState() itself must still be updating (the throw must not have
-    // aborted onTick's own state assignments, which all happen before the
-    // listener loop).
-    mock.setPosition(444.444 * 7, 0);
-    await waitFor(() => dev!.getState().panSteps > 0);
-    expect(dev.getState().panSteps).toBeCloseTo(444.444 * 7, -1);
+    const h = await startHead();
+    const d = makeDevice(h);
+    let good = 0;
+    d.onTelemetry(() => { throw new Error("boom"); });
+    d.onTelemetry(() => { good += 1; });
+    d.start();
+    await waitFor(() => good === 1);
+    h.setPosition(7, 0);
+    h.tick();
+    await waitFor(() => good === 2);
+    expect(d.getState().panDeg).toBe(7);
+  });
+
+  it("a tick without axes updates link/imu/ref but not lastUpdateMs or angles", async () => {
+    const h = await startHead();
+    h.setPosition(40, 20);
+    const d = makeDevice(h);
+    let fired = 0;
+    d.onTelemetry(() => { fired += 1; });
+    d.start();
+    await waitFor(() => fired === 1);
+    const before = d.getState();
+    expect(before.panDeg).toBe(40);
+
+    h.model.link.pico = false;
+    h.model.imu.heading = 200;
+    h.model.ref = { pan: "none", persisted: false, ageS: null };
+    h.model.estop = true;
+    h.setPosition(99, 99); // the head cannot see this: the Pico link is down
+    await sleep(5);
+    h.tickNoAxes();
+    await waitFor(() => d.getState().link.pico === false);
+
+    const after = d.getState();
+    expect(after.link).toEqual({ pico: false, imu: true });
+    expect(after.imu?.heading).toBe(200);
+    expect(after.ref.pan).toBe("none");
+    expect(after.estop).toBe(true);
+    // No motion telemetry: angles, moving and lastUpdateMs stay as the last
+    // tick that carried axes left them, so staleness checks still fire.
+    expect(after.panDeg).toBe(40);
+    expect(after.tiltDeg).toBe(20);
+    expect(after.moving).toBe(before.moving);
+    expect(after.lastUpdateMs).toBe(before.lastUpdateMs);
+    expect(after.connected).toBe(true);
+    expect(fired).toBe(1);
+  });
+
+  it("goto posts /api/goto and resolves on 202; 423 becomes DeviceHttpError(423)", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    await d.gotoAngle(15, 30, 20);
+    expect(h.lastGoto).toEqual({ pan: 15, tilt: 30 });
+    expect(h.gotoCount).toBe(1);
+
+    h.model.estop = true;
+    const err = await d.gotoAngle(1, 2).catch((e) => e);
+    expect(err).toBeInstanceOf(DeviceHttpError);
+    expect((err as DeviceHttpError).status).toBe(423);
+    expect((err as Error).message).toMatch(/estop latched/);
+
+    // 423 is checked before 503.
+    h.model.link.pico = false;
+    expect(((await d.gotoAngle(1, 2).catch((e) => e)) as DeviceHttpError).status).toBe(423);
+    h.model.estop = false;
+    expect(((await d.gotoAngle(1, 2).catch((e) => e)) as DeviceHttpError).status).toBe(503);
+    expect(h.gotoCount).toBe(1);
+  });
+
+  it("gotoAngle + waitForArrival resolve against the simulated move", async () => {
+    const h = await startHead(50);
+    h.setPosition(0, 10);
+    const d = await startDevice(h);
+    await d.gotoAngle(15, 20);
+    const final = await d.waitForArrival(15, 20, 5000);
+    expect(final.panDeg).toBeCloseTo(15, 6);
+    expect(final.tiltDeg).toBeCloseTo(20, 6);
+    expect(final.moving).toBe(false);
+  });
+
+  it("track posts the pos/vel pairs exactly as given", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    await d.track({ pan: { pos: 123.4, vel: 0.8 }, tilt: { pos: 31.2, vel: -0.1 } });
+    expect(h.lastTrack).toEqual({ pan: { pos: 123.4, vel: 0.8 }, tilt: { pos: 31.2, vel: -0.1 } });
+    await d.track({ tilt: { pos: 5, vel: 0 } });
+    expect(h.lastTrack).toEqual({ tilt: { pos: 5, vel: 0 } });
+    h.model.link.pico = false;
+    const err = await d.track({ pan: { pos: 1, vel: 0 } }).catch((e) => e);
+    expect((err as DeviceHttpError).status).toBe(503);
+  });
+
+  it("jog refreshes every 100ms and sends zeros at the end; setJogVector expires via TTL", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    const t0 = Date.now();
+    await d.jog(10, -5, 300);
+    const elapsed = Date.now() - t0;
+    const frames = jogBodies(h);
+    const moving = frames.filter((f) => f.pan !== 0 || f.tilt !== 0);
+    // One frame up front plus one per 100ms keep-alive tick.
+    expect(moving.length).toBeGreaterThanOrEqual(3);
+    expect(moving.length).toBeLessThanOrEqual(5);
+    for (const f of moving) expect(f).toEqual({ pan: 10, tilt: -5 });
+    // jog() resolves only once the zero frame has reached the head.
+    expect(lastJogIsZero(h)).toBe(true);
+    expect(elapsed).toBeGreaterThanOrEqual(290);
+
+    h.calls.length = 0;
+    d.setJogVector(5, 0, 250);
+    await waitFor(() => lastJogIsZero(h), 1500);
+    const ttlFrames = jogBodies(h);
+    expect(ttlFrames[0]).toEqual({ pan: 5, tilt: 0 });
+    expect(ttlFrames.length).toBeGreaterThanOrEqual(3);
+    const n = ttlFrames.length;
+    await sleep(300);
+    expect(jogBodies(h).length).toBe(n); // the keep-alive stopped after expiry
+  });
+
+  it("jog resolves only after the zero frame is answered, even when the head is slow", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.responseDelayMs = 150; // slower than the keep-alive interval
+    await d.jog(8, 0, 250);
+    const frames = jogBodies(h);
+    expect(lastJogIsZero(h)).toBe(true);
+    expect(frames.slice(0, -1).every((f) => f.pan === 8)).toBe(true);
+  });
+
+  it("a jog refused by the head rejects with the head's status", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.model.estop = true;
+    const err = await d.jog(5, 0, 150).catch((e) => e);
+    expect(err).toBeInstanceOf(DeviceHttpError);
+    expect((err as DeviceHttpError).status).toBe(423);
+  });
+
+  it("lockJog clears and blocks refreshes until unlockJog", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    d.setJogVector(6, 1, 1000);
+    await waitFor(() => jogBodies(h).length >= 2);
+    d.lockJog();
+    await waitFor(() => lastJogIsZero(h));
+    await sleep(150);
+    const atLock = jogBodies(h).length;
+    d.setJogVector(7, 0, 1000); // no-op while locked
+    await sleep(250);
+    expect(jogBodies(h).length).toBe(atLock);
+
+    d.unlockJog();
+    d.setJogVector(7, 0, 1000);
+    await waitFor(() => jogBodies(h).some((f) => f.pan === 7));
+    d.clearJog();
+    await waitFor(() => lastJogIsZero(h));
+  });
+
+  it("estop/clearEstop/home/setPos/reference hit their routes", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    const events: HeadEvent[] = [];
+    d.onEvent((e) => events.push(e));
+
+    await d.stop();
+    expect(h.stopCount).toBe(1);
+
+    await d.estop();
+    expect(h.model.estop).toBe(true);
+    await waitFor(() => events.some((e) => e.name === "estop"));
+    await waitFor(() => d.getState().estop === true);
+    await d.clearEstop();
+    expect(h.model.estop).toBe(false);
+    await waitFor(() => events.some((e) => e.name === "estop_cleared"));
+    await waitFor(() => d.getState().estop === false);
+
+    await d.home(["tilt"]);
+    await d.home();
+    expect(h.homeCount).toBe(2);
+
+    await d.setPos({ pan: 0 });
+    await d.reference();
+
+    const posts = h.calls.filter((c) => c.method === "POST").map((c) => [c.path, c.body]);
+    expect(posts).toEqual([
+      ["/api/stop", undefined],
+      ["/api/estop", undefined],
+      ["/api/estop/clear", undefined],
+      ["/api/home", { axes: ["tilt"] }],
+      ["/api/home", undefined],
+      ["/api/setpos", { pan: 0 }],
+      ["/api/reference", undefined],
+    ]);
+
+    // 409 on a moving axis carries the head's text.
+    h.model.axes.pan.vel = 3;
+    const err = await d.setPos({ pan: 1 }).catch((e) => e);
+    expect((err as DeviceHttpError).status).toBe(409);
+    expect((err as Error).message).toMatch(/pan is moving/);
+  });
+
+  it("getGravity averages the burst gravity vectors and throws when imu.ok is false", async () => {
+    const h = await startHead();
+    h.model.imu.pitch = 10;
+    h.model.imu.roll = -4;
+    const d = await startDevice(h);
+    const g = await d.getGravity(20);
+    expect(h.calls.some((c) => c.method === "GET" && c.path === "/api/imu" && c.query.n === "20")).toBe(true);
+    const e = FakeHead.gravityFor(10, -4);
+    const len = Math.hypot(...e);
+    expect(g[0]).toBeCloseTo(e[0] / len, 6);
+    expect(g[1]).toBeCloseTo(e[1] / len, 6);
+    expect(g[2]).toBeCloseTo(e[2] / len, 6);
+    expect(Math.hypot(...g)).toBeCloseTo(1, 9);
+
+    // The head's 503 surfaces as a DeviceHttpError.
+    h.imuOk = false;
+    const httpErr = await d.getGravity(5).catch((x) => x);
+    expect(httpErr).toBeInstanceOf(DeviceHttpError);
+    expect((httpErr as DeviceHttpError).status).toBe(503);
+    expect((httpErr as Error).message).toMatch(/imu not ok/i);
+
+    // Once a tick has reported imu.ok === false the client refuses up front.
+    h.tick();
+    await waitFor(() => d.getState().imu?.ok === false);
+    const before = h.calls.length;
+    await expect(d.getGravity(5)).rejects.toThrow(/IMU not ok/);
+    expect(h.calls.length).toBe(before);
+  });
+
+  it("fetches /api/config on open and on a config event; getAxisConfig returns pan/tilt", async () => {
+    const h = await startHead();
+    const d = makeDevice(h);
+    const seen: Array<Record<"pan" | "tilt", HeadAxisConfig>> = [];
+    d.onConfig((c) => seen.push(c));
+    expect(d.getAxisConfig()).toBeNull();
+    d.start();
+    await waitFor(() => seen.length === 1);
+    expect(h.calls.filter((c) => c.method === "GET" && c.path === "/api/config").length).toBe(1);
+    expect(d.getAxisConfig()).toEqual({
+      pan: { min: -180, max: 180, vmax: 5, amax: 10 },
+      tilt: { min: 0, max: 90, vmax: 5, amax: 10 },
+    });
+
+    h.setConfig("pan", { vmax: 20, amax: 40 });
+    await waitFor(() => d.getAxisConfig()?.pan.vmax === 20 && d.getAxisConfig()?.pan.amax === 40);
+    expect(seen[seen.length - 1].pan).toEqual({ min: -180, max: 180, vmax: 20, amax: 40 });
+    expect(seen[seen.length - 1].tilt.vmax).toBe(5);
+  });
+
+  it("re-reads /api/config when the Pico link comes up (it 503s while the link is down)", async () => {
+    const h = await startHead();
+    h.model.link.pico = false;
+    const d = makeDevice(h);
+    d.start();
+    // The on-connect tick has no axes, so lastUpdateMs stays 0; wait on the fetch.
+    await waitFor(() => h.calls.some((c) => c.path === "/api/config"));
+    expect(d.getState().lastUpdateMs).toBe(0);
+    await sleep(50);
+    expect(d.getAxisConfig()).toBeNull();
+    h.model.link.pico = true;
+    h.emitEvent({ type: "event", t: 1, name: "pico_link", axis: null, detail: { up: true } });
+    await waitFor(() => d.getAxisConfig() !== null);
+    expect(d.getAxisConfig()?.tilt).toEqual({ min: 0, max: 90, vmax: 5, amax: 10 });
+  });
+
+  it("pan_reference events fire onReferenceChanged with source/pan/previous", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    const changes: Array<{ source: string; pan: number | null; previous: number | null }> = [];
+    d.onReferenceChanged((c) => changes.push(c));
+
+    h.emitEvent({ type: "event", t: 1, name: "homed", axis: "tilt", detail: null });
+    h.emitEvent({
+      type: "event", t: 2, name: "pan_reference", axis: null,
+      detail: { source: "imu", pan: 123.4, previous: 121.9 },
+    });
+    h.emitEvent({
+      type: "event", t: 3, name: "pan_reference", axis: null,
+      detail: { source: "host", pan: 0, previous: null },
+    });
+    h.emitEvent({
+      type: "event", t: 4, name: "pan_reference", axis: null,
+      detail: { source: "none", reason: "pan unhomed" },
+    });
+    h.emitEvent({
+      type: "event", t: 5, name: "pan_reference_failed", axis: null,
+      detail: { reason: "imu calibration timeout", source: "host" },
+    });
+    await waitFor(() => changes.length === 3);
+    await sleep(50);
+    expect(changes).toEqual([
+      { source: "imu", pan: 123.4, previous: 121.9 },
+      { source: "host", pan: 0, previous: null },
+      { source: "none", pan: null, previous: null },
+    ]);
+
+    // POST /api/setpos with pan makes the head announce the rename.
+    h.setPosition(42, 10);
+    await d.setPos({ pan: 90 });
+    await waitFor(() => changes.length === 4);
+    expect(changes[3]).toEqual({ source: "host", pan: 90, previous: 42 });
+  });
+
+  it("reconnects after the socket closes", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.dropClients();
+    await waitFor(() => !d.getState().connected);
+    await waitFor(() => d.getState().connected, 3000);
+    // The fresh socket triggers a fresh config fetch.
+    await waitFor(() => h.calls.filter((c) => c.path === "/api/config").length === 2);
+  });
+
+  it("close() while a reconnect backoff is pending leaves the device restartable", async () => {
+    const h = await startHead();
+    const d = await startDevice(h);
+    h.dropClients();
+    await waitFor(() => !d.getState().connected);
+    d.close();
+    await sleep(1200);
+    expect(d.getState().connected).toBe(false); // the pending reconnect was cancelled
+    d.start();
+    await waitFor(() => d.getState().connected);
+    h.dropClients();
+    await waitFor(() => !d.getState().connected);
+    await waitFor(() => d.getState().connected, 3000);
   });
 });

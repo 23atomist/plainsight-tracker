@@ -5,7 +5,9 @@ import { Device } from "../shared/device.js";
 import { TrackingSession } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
 import { wrapDeg180 } from "../shared/track/control.js";
-import { stepsToDeg, applySign, checkPanTilt } from "../shared/angles.js";
+import { applySign, checkPanTilt } from "../shared/angles.js";
+// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
+import { stepsToDeg } from "../shared/legacy-transitional.js";
 import { effectiveLimits, TaughtEdges } from "../shared/limits-store.js";
 import { moveToUserAngle } from "./move.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";

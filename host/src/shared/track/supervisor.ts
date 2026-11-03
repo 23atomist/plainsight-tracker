@@ -7,7 +7,9 @@ import { checkSun, planPark, ParkPlan } from "./sunguard.js";
 import { boresightEnu, limitHorizonMs } from "./control.js";
 import { Vec3 } from "../geo/vec3.js";
 import { moveToUserAngle } from "../../mcp/move.js";
-import { stepsToDeg, applySign } from "../angles.js";
+import { applySign } from "../angles.js";
+// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
+import { stepsToDeg } from "../legacy-transitional.js";
 import { TaughtEdges, effectiveLimits } from "../limits-store.js";
 
 export type SunState = "disabled" | "monitoring" | "parking" | "parked" | "fault";

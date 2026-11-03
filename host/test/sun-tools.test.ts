@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 import { CalibrationStore } from "../src/shared/calibration.js";
@@ -11,11 +11,11 @@ import { TrackingSession } from "../src/shared/track/session.js";
 import { SunSupervisor } from "../src/shared/track/supervisor.js";
 
 const PORT = 8801;
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let dev: Device | null = null;
 
 async function harness() {
-  mock = new MockTb3(); await mock.start(PORT);
+  mock = new FakeHead(); await mock.start({ port: PORT });
   const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
   dev = new Device(cfg); dev.start();
   const t0 = Date.now();

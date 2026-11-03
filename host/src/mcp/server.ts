@@ -9,7 +9,9 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, type Config } from "../shared/config.js";
 import { Device } from "../shared/device.js";
 import { DeviceState } from "../shared/types.js";
-import { stepsToDeg, applySign } from "../shared/angles.js";
+import { applySign } from "../shared/angles.js";
+// TRANSITIONAL — Task 4 ports this module to degrees and drops this import.
+import { stepsToDeg } from "../shared/legacy-transitional.js";
 import { registerTools } from "./tools.js";
 import { registerGeoTools } from "./geo-tools.js";
 import { registerImuTools } from "./imu-tools.js";

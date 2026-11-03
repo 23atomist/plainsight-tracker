@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import type { Server } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { MockTb3 } from "./mock-tb3.js";
+import { FakeHead } from "./fake-head.js";
 import { Device } from "../src/shared/device.js";
 import { loadConfig } from "../src/shared/config.js";
 import { buildApp } from "../src/mcp/server.js";
@@ -64,7 +64,7 @@ function fakeJournal(): PassJournal {
 
 const DEV_PORT = 8794;
 const MCP_PORT = 8795;
-let mock: MockTb3 | null = null;
+let mock: FakeHead | null = null;
 let dev: Device | null = null;
 let httpServer: Server | null = null;
 
@@ -76,7 +76,7 @@ afterEach(async () => {
 
 describe("server", () => {
   it("serves MCP over streamable HTTP and returns tool results", async () => {
-    mock = new MockTb3(); await mock.start(DEV_PORT);
+    mock = new FakeHead(); await mock.start({ port: DEV_PORT });
     mock.setPosition(45 * 444.444, 0);
     const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT) });
     dev = new Device(cfg); dev.start();
@@ -125,7 +125,7 @@ describe("server", () => {
   });
 
   it("rejects requests without a token when a token is configured", async () => {
-    mock = new MockTb3(); await mock.start(DEV_PORT);
+    mock = new FakeHead(); await mock.start({ port: DEV_PORT });
     const cfg = loadConfig(undefined, {
       TB3_HEAD_URL: `http://127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT), TB3_MCP_TOKEN: "sekret",
     });
