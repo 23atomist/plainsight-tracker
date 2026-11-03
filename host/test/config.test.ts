@@ -1,14 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { loadConfig } from "../src/shared/config.js";
+import { loadConfig, parseConfig } from "../src/shared/config.js";
 
 describe("loadConfig", () => {
   it("returns defaults when no file and no env", () => {
     const c = loadConfig(undefined, {});
-    expect(c.deviceHost).toBe("tb3.local");
+    expect(c.headUrl).toBe("http://192.168.4.96:8780");
     expect(c.mcpPort).toBe(8770);
     expect(c.panMin).toBe(-180);
     expect(c.panMax).toBe(180);
-    expect(c.tiltMin).toBe(-90);
+    expect(c.tiltMin).toBe(0);
     expect(c.tiltMax).toBe(90);
     expect(c.maxSpeedDps).toBe(22);
     expect(c.maxJogDps).toBe(19);   // measured rig plateau, not a preference
@@ -24,12 +24,12 @@ describe("loadConfig", () => {
 
   it("applies env overrides over defaults", () => {
     const c = loadConfig(undefined, {
-      TB3_DEVICE_HOST: "10.31.31.1",
+      TB3_HEAD_URL: "http://10.31.31.1:8780",
       TB3_MCP_PORT: "9999",
       TB3_MCP_TOKEN: "secret",
       TB3_MAX_SPEED_DPS: "12",
     });
-    expect(c.deviceHost).toBe("10.31.31.1");
+    expect(c.headUrl).toBe("http://10.31.31.1:8780");
     expect(c.mcpPort).toBe(9999);
     expect(c.mcpToken).toBe("secret");
     expect(c.maxSpeedDps).toBe(12);
@@ -72,17 +72,6 @@ describe("tracking config", () => {
     expect(c.jogVectorTtlMs).toBe(500);
   });
 
-  it("overrides tracking keys from env", () => {
-    const c = loadConfig(undefined, { TB3_TRACK_KP: "2.5", TB3_JOG_VECTOR_TTL_MS: "250" });
-    expect(c.trackKp).toBe(2.5);
-    expect(c.jogVectorTtlMs).toBe(250);
-  });
-
-  it("overrides the rate slew from env", () => {
-    const c = loadConfig(undefined, { TB3_TRACK_RATE_SLEW_DPS: "25" });
-    expect(c.trackRateSlewDps).toBe(25);
-  });
-
   it("rejects a non-positive tick rate", () => {
     expect(() => loadConfig(undefined, { TB3_TRACK_TICK_HZ: "0" })).toThrow();
   });
@@ -93,7 +82,7 @@ describe("sun-guard config", () => {
     const d = loadConfig(undefined, {});
     expect(d.sunGuardEnabled).toBe(false);
     expect(d.sunConeDeg).toBe(25);
-    expect(d.parkTiltDeg).toBe(-20);
+    expect(d.parkTiltDeg).toBe(60);
     expect(d.sunGuardTickHz).toBe(10);
     const o = loadConfig(undefined, { TB3_SUN_CONE_DEG: "18", TB3_PARK_TILT_DEG: "-30", TB3_SUN_GUARD_ENABLED: "1", TB3_SUN_GUARD_TICK_HZ: "5" });
     expect(o.sunConeDeg).toBe(18);
@@ -173,7 +162,7 @@ describe("dashboard config", () => {
     expect(c.cameraV4l2Device).toBe("/dev/video0");
     expect(c.cameraV4l2Size).toBe("1280x720");
     expect(c.cameraV4l2Framerate).toBe(30);
-    expect(c.cameraFfmpegBin).toBe("ffmpeg");
+    expect(c.cameraFfmpegBin).toBe("/usr/bin/ffmpeg");
   });
 
   it("camera v4l2 env overrides", () => {
@@ -200,7 +189,7 @@ describe("MediaMTX camera config", () => {
   it("defaults the MediaMTX fields", () => {
     const c = loadConfig(undefined, {});
     expect(c.cameraSource).toBe("mediamtx");        // the default source
-    expect(c.cameraEncoder).toBe("nvenc");
+    expect(c.cameraEncoder).toBe("vaapi");
     expect(c.cameraVideoBitrate).toBe("6M");
     expect(c.cameraMediamtxSize).toBe("1920x1080");
     expect(c.cameraMediamtxRtspUrl).toBe("rtsp://127.0.0.1:8554/tb3");
@@ -288,10 +277,10 @@ describe("capture config", () => {
   it("defaults capture fields", () => {
     const c = loadConfig(undefined, {});
     expect(c.captureAutoEnabled).toBe(true);
-    expect(c.captureSnapshotDir).toBe("/var/lib/tb3/snapshots");
+    expect(c.captureSnapshotDir).toBe("/data/snapshots");
     expect(c.captureDebounceMs).toBe(5000);
     expect(c.captureTimeoutMs).toBe(4000);
-    expect(c.captureFfmpegBin).toBe("ffmpeg");
+    expect(c.captureFfmpegBin).toBe("/usr/bin/ffmpeg");
   });
 
   it("applies capture env overrides", () => {
@@ -312,5 +301,53 @@ describe("capture config", () => {
   it("rejects non-positive capture timeouts", () => {
     expect(() => loadConfig(undefined, { TB3_CAPTURE_DEBOUNCE_MS: "0" })).toThrow();
     expect(() => loadConfig(undefined, { TB3_CAPTURE_TIMEOUT_MS: "-1" })).toThrow();
+  });
+  describe("head-controller topology (Task 2)", () => {
+    it("rejects retired keys by name with the replacement", () => {
+      for (const [key, hint] of [
+        ["deviceHost", "headUrl"],
+        ["deviceIpFallback", "removed"],
+        ["trackKp", "head"],
+        ["trackRateSlewDps", "head"],
+        ["jogVectorTtlMs", "head"],
+        ["auxSign", "removed"],
+      ])
+        expect(() => parseConfig({ [key]: 1 })).toThrow(new RegExp(`${key}.*${hint}`, "i"));
+    });
+
+    it("does not read env overrides for retired keys", () => {
+      const c = loadConfig(undefined, { TB3_DEVICE_HOST: "x", TB3_TRACK_KP: "9", TB3_AUX_SIGN: "-1" });
+      expect(c.headUrl).toBe("http://192.168.4.96:8780");
+    });
+
+    it("nvenc stays selectable; vaapi is the default", () => {
+      expect(parseConfig({}).cameraEncoder).toBe("vaapi");
+      expect(parseConfig({ cameraEncoder: "nvenc" }).cameraEncoder).toBe("nvenc");
+    });
+
+    it("new defaults", () => {
+      const c = parseConfig({});
+      expect(c).toMatchObject({
+        headUrl: "http://192.168.4.96:8780", stateDir: "/data/state", parkTiltDeg: 60, tiltMin: 0,
+        cameraFfmpegBin: "/usr/bin/ffmpeg", captureFfmpegBin: "/usr/bin/ffmpeg",
+        adsbUrl: "http://127.0.0.1:8088/data/aircraft.json", llmModel: "gpt-oss:120b",
+        captureSnapshotDir: "/data/snapshots", passJournalFile: "/data/state/passes.jsonl",
+      });
+      expect(c.llmUrl).toBe("https://ollama.com/v1/chat/completions");
+      expect(c.llmApiKey).toBeUndefined();
+    });
+
+    it("env overrides for the new keys", () => {
+      const c = loadConfig(undefined, { TB3_HEAD_URL: "http://h:1", TB3_LLM_API_KEY: "k", TB3_STATE_DIR: "/tmp/s" });
+      expect([c.headUrl, c.llmApiKey, c.stateDir]).toEqual(["http://h:1", "k", "/tmp/s"]);
+    });
+
+    it("headUrl must be http(s)", () => {
+      expect(() => parseConfig({ headUrl: "192.168.4.96" })).toThrow(/headUrl/);
+    });
+
+    it("keeps tiltMin < tiltMax", () => {
+      expect(() => parseConfig({ tiltMin: 50, tiltMax: 40 })).toThrow(/tiltMin/);
+    });
   });
 });

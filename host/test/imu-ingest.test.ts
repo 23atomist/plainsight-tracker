@@ -17,7 +17,7 @@ afterEach(async () => { dev?.close(); dev = null; if (mock) { await mock.stop();
 describe("DeviceState.imu ingestion", () => {
   it("populates imu from the WS tick", async () => {
     mock = new MockTb3(); await mock.start(PORT);
-    const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}` });
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
     dev = new Device(cfg); dev.start();
     await waitFor(() => dev!.getState().imu !== undefined);
     const imu = dev.getState().imu;
@@ -38,7 +38,7 @@ describe("DeviceState.imu ingestion", () => {
     mock = new MockTb3();
     mock.imuOkAsNumber = true;
     await mock.start(PORT);
-    const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}` });
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
     dev = new Device(cfg); dev.start();
     await waitFor(() => dev!.getState().imu !== undefined);
     const imu = dev.getState().imu;

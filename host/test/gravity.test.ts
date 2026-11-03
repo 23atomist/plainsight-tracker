@@ -67,7 +67,7 @@ describe("Device.getGravity", () => {
       "fetch",
       vi.fn(async (): Promise<Response> => new Response(RAW_IMU_JSON, { status: 200 })),
     );
-    const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: "127.0.0.1:1" });
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: "http://127.0.0.1:1" });
     const device = new Device(cfg);
 
     const g = await device.getGravity(2);
@@ -86,7 +86,7 @@ describe("Device.getGravity", () => {
       "fetch",
       vi.fn(async (): Promise<Response> => new Response(rawNegNan, { status: 200 })),
     );
-    const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: "127.0.0.1:1" });
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: "http://127.0.0.1:1" });
     const device = new Device(cfg);
 
     const g = await device.getGravity(2);

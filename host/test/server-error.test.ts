@@ -81,7 +81,7 @@ afterEach(async () => {
 describe("server error handling", () => {
   it("returns a JSON-RPC 500 (not an unhandled rejection) when a handler throws", async () => {
     mock = new MockTb3(); await mock.start(DEV_PORT);
-    const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT) });
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT) });
     dev = new Device(cfg); dev.start();
     await new Promise((r) => setTimeout(r, 200));
 

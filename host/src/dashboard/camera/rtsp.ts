@@ -5,6 +5,8 @@ import { KILL_GRACE_MS, type Spawner } from "./supervisor.js";
 // The ffmpeg encoder id for the configured encoder; null means stream copy.
 export function encoderName(cfg: Config): string | null {
   switch (cfg.cameraEncoder) {
+    // Task 10: real VAAPI args. Until then vaapi (the new default) falls through to the x264 branch.
+    case "vaapi": return "libx264";
     case "vulkan": return "h264_vulkan";
     case "nvenc": return "h264_nvenc";
     case "x264": return "libx264";

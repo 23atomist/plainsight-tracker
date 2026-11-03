@@ -13,7 +13,7 @@ import { loadConfig } from "../src/shared/config.js";
 
 describe("assertCaptureFfmpegUsable", () => {
   it("resolves for the schema default 'ffmpeg' when it is resolvable on PATH", async () => {
-    const cfg = loadConfig(undefined, {});
+    const cfg = loadConfig(undefined, { TB3_CAPTURE_FFMPEG_BIN: "ffmpeg" });
     await expect(assertCaptureFfmpegUsable(cfg)).resolves.toBeUndefined();
   });
 
@@ -101,7 +101,7 @@ describe("checkCaptureConfig", () => {
   });
 
   it("reports nothing on a mediamtx host with a WORKING captureFfmpegBin", async () => {
-    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx" });
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "mediamtx", TB3_CAPTURE_FFMPEG_BIN: "ffmpeg" });
     const capture = new CaptureController(fakeCaptureDeps(), { debounceMs: 5000, autoEnabled: true });
 
     await checkCaptureConfig(cfg, capture);

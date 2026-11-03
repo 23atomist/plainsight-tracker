@@ -96,7 +96,7 @@ function project(
 
 const DEV_PORT = 8850, MCP_PORT = 8851, STREAM_PORT = 8852, DETECT_PORT = 8853;
 const ENV_KEYS = [
-  "TB3_CONFIG", "TB3_DEVICE_HOST", "TB3_MCP_PORT", "TB3_DASHBOARD_PORT",
+  "TB3_CONFIG", "TB3_HEAD_URL", "TB3_TILT_MIN", "TB3_MCP_PORT", "TB3_DASHBOARD_PORT",
   "TB3_CAMERA_SOURCE", "TB3_CAMERA_V4L2_SIZE", "TB3_VISION_DETECTOR_URL", "TB3_VISION_TICK_HZ",
   "TB3_CALIBRATION_FILE", "TB3_SECTOR_FILE", "TB3_LIMITS_FILE", "TB3_VISION_SCALE_FILE",
   "TB3_VISION_ENABLED", "TB3_ADSB_ENABLED",
@@ -193,7 +193,8 @@ async function driveMain(mount: Mount, opts: { seedTiltSign: boolean; biasPanDeg
   });
 
   process.env.TB3_CONFIG = "";
-  process.env.TB3_DEVICE_HOST = `127.0.0.1:${DEV_PORT}`;
+  process.env.TB3_HEAD_URL = `http://127.0.0.1:${DEV_PORT}`;
+  process.env.TB3_TILT_MIN = "-90";  // pre-Task-2 default; these scenarios aim below the horizon
   process.env.TB3_MCP_PORT = String(MCP_PORT);
   process.env.TB3_DASHBOARD_PORT = String(STREAM_PORT);
   process.env.TB3_CAMERA_SOURCE = "v4l2";

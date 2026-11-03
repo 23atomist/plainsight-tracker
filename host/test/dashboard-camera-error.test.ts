@@ -15,7 +15,7 @@ import { loadConfig } from "../src/shared/config.js";
 
 describe("checkCameraConfig", () => {
   it("resolves null for a usable config (ffmpeg on PATH)", async () => {
-    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2" });
+    const cfg = loadConfig(undefined, { TB3_CAMERA_SOURCE: "v4l2", TB3_CAMERA_FFMPEG_BIN: "ffmpeg" });
     await expect(checkCameraConfig(cfg)).resolves.toBeNull();
   });
 
@@ -30,7 +30,7 @@ describe("checkCameraConfig", () => {
 describe("dashboard startup survives an unusable cameraFfmpegBin", () => {
   let handle: { close(): void } | null = null;
   const touchedEnvKeys = [
-    "TB3_CONFIG", "TB3_DASHBOARD_PORT", "TB3_MCP_PORT", "TB3_DEVICE_HOST",
+    "TB3_CONFIG", "TB3_DASHBOARD_PORT", "TB3_MCP_PORT", "TB3_HEAD_URL",
     "TB3_CAMERA_SOURCE", "TB3_CAMERA_FFMPEG_BIN",
   ];
   const savedEnv: Record<string, string | undefined> = {};
@@ -51,7 +51,7 @@ describe("dashboard startup survives an unusable cameraFfmpegBin", () => {
     process.env.TB3_CONFIG = "";
     process.env.TB3_DASHBOARD_PORT = "8940";
     process.env.TB3_MCP_PORT = "8941";              // nothing listens here -- tolerated (see main())
-    process.env.TB3_DEVICE_HOST = "127.0.0.1:8942";  // nothing listens here either
+    process.env.TB3_HEAD_URL = "http://127.0.0.1:8942";  // nothing listens here either
     process.env.TB3_CAMERA_SOURCE = "v4l2";
     process.env.TB3_CAMERA_FFMPEG_BIN = "/nope/does/not/exist/ffmpeg";
 

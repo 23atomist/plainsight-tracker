@@ -1,7 +1,6 @@
 import express, { type Express, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { accessSync, constants as fsConstants } from "node:fs";
-import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { spawn } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -510,31 +509,31 @@ export async function main(): Promise<MainHandle> {
   const cfg = loadConfig(process.env.TB3_CONFIG ?? "config.json");
   const device = new Device(cfg);
   device.start();
-  const calibFile = cfg.calibrationFile ?? join(homedir(), ".tb3-mcp", "calibration.json");
+  const calibFile = cfg.calibrationFile ?? join(cfg.stateDir, "calibration.json");
   const store = new CalibrationStore(calibFile, cfg.geoPanSign);
   store.load();
   console.error(`calibration file: ${calibFile} (calibrated: ${store.isCalibrated()})`);
-  const sectorFile = cfg.sectorFile ?? join(homedir(), ".tb3-mcp", "sector.json");
+  const sectorFile = cfg.sectorFile ?? join(cfg.stateDir, "sector.json");
   const sectorStore = new SectorStore(sectorFile);
   sectorStore.load();
-  const floorFile = cfg.floorFile ?? join(homedir(), ".tb3-mcp", "floor.json");
+  const floorFile = cfg.floorFile ?? join(cfg.stateDir, "floor.json");
   const floorStore = new FloorStore(floorFile);
   floorStore.load();
-  const rangeFile = cfg.rangeFile ?? join(homedir(), ".tb3-mcp", "range.json");
+  const rangeFile = cfg.rangeFile ?? join(cfg.stateDir, "range.json");
   const rangeStore = new RangeStore(rangeFile, cfg.trackMaxRangeKm);
   rangeStore.load();
   console.error(`track range file: ${rangeFile} (max ${rangeStore.get()} km)`);
-  const aimTrimFile = join(homedir(), ".tb3-mcp", "aim-trim.json");
+  const aimTrimFile = join(cfg.stateDir, "aim-trim.json");
   const aimTrimStore = new AimTrimStore(aimTrimFile, cfg.maxAimOffsetDeg);
   aimTrimStore.load();
   console.error(`aim trim file: ${aimTrimFile} (trim: ${JSON.stringify(aimTrimStore.get())})`);
   const fl = floorStore.get();
   console.error(`tracking elevation floor file: ${floorFile} (${fl.enabled ? `min ${fl.minElevationDeg}\u00b0 elevation` : "disabled"})`);
-  const limitsFile = cfg.limitsFile ?? join(homedir(), ".tb3-mcp", "limits.json");
+  const limitsFile = cfg.limitsFile ?? join(cfg.stateDir, "limits.json");
   const limitsStore = new LimitsStore(limitsFile);
   limitsStore.load();
   console.error(`taught travel limits file: ${limitsFile} (taught: ${JSON.stringify(limitsStore.get())})`);
-  const policyFile = join(homedir(), ".tb3-mcp", "policy.json");
+  const policyFile = join(cfg.stateDir, "policy.json");
   const policyStore = new PolicyStore(policyFile);
   policyStore.load();
   console.error(`agent target policy file: ${policyFile} (${policyStore.get().rules.filter((r) => r.enabled).length} enabled rules)`);
@@ -608,8 +607,7 @@ export async function main(): Promise<MainHandle> {
   // Every other file-backed store above announces its resolved path at
   // boot (calibration/limits/vision-scale); the journal gets the same
   // treatment -- it matters MORE here, since cfg.passJournalFile defaults
-  // to /var/lib/tb3/passes.jsonl (a different location from the ~/.tb3-mcp/
-  // the other stores use) and a write failure there is otherwise swallowed
+  // to /data/state/passes.jsonl (the stateDir default) and a write failure there is otherwise swallowed
   // into one `[tb3-pass] finish:` console line PER PASS, with no boot-time
   // signal that list_passes will stay permanently empty. Checks the
   // JOURNAL DIRECTORY's writability only (accessSync, not a real write) --
@@ -706,7 +704,7 @@ export async function main(): Promise<MainHandle> {
   // Follows CalibrationStore/SectorStore/LimitsStore's own file-then-load
   // convention exactly (this branch has no src/tuning-store.ts to follow
   // instead).
-  const visionScaleFile = cfg.visionScaleFile ?? join(homedir(), ".tb3-mcp", "vision-scale.json");
+  const visionScaleFile = cfg.visionScaleFile ?? join(cfg.stateDir, "vision-scale.json");
   const visionScaleStore = new VisionScaleStore(visionScaleFile);
   visionScaleStore.load();
   const loadedScale = visionScaleStore.get();

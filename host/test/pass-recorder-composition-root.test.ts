@@ -33,7 +33,7 @@ import { join } from "node:path";
 
 const DEV_PORT = 8960, MCP_PORT = 8961;
 const ENV_KEYS = [
-  "TB3_CONFIG", "TB3_DEVICE_HOST", "TB3_MCP_PORT", "TB3_ADSB_ENABLED",
+  "TB3_CONFIG", "TB3_HEAD_URL", "TB3_MCP_PORT", "TB3_ADSB_ENABLED",
   "TB3_CALIBRATION_FILE", "TB3_SECTOR_FILE", "TB3_LIMITS_FILE", "TB3_VISION_SCALE_FILE",
   "TB3_PASS_JOURNAL_FILE",
 ];
@@ -60,7 +60,7 @@ describe("composition root (main()) -- PassRecorder wiring (Task 9 fix round 1, 
     // vision-predictpixel-wiring.test.ts precedent).
     const dir = mkdtempSync(join(tmpdir(), "tb3-passrecorder-comproot-"));
     process.env.TB3_CONFIG = "";
-    process.env.TB3_DEVICE_HOST = `127.0.0.1:${DEV_PORT}`;
+    process.env.TB3_HEAD_URL = `http://127.0.0.1:${DEV_PORT}`;
     process.env.TB3_MCP_PORT = String(MCP_PORT);
     process.env.TB3_ADSB_ENABLED = "false";
     process.env.TB3_CALIBRATION_FILE = join(dir, "calibration.json");

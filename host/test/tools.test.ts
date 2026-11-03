@@ -23,7 +23,7 @@ let dev: Device | null = null;
 
 async function harness(env: Record<string, string> = {}) {
   mock = new MockTb3(); await mock.start(PORT);
-  const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}`, ...env });
+  const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, ...env });
   dev = new Device(cfg); dev.start();
   const t0 = Date.now();
   while (!dev.getState().connected && Date.now() - t0 < 3000) {

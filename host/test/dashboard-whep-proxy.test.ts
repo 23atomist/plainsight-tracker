@@ -52,7 +52,7 @@ describe("POST /camera/whep proxy", () => {
   let handle: { close(): void } | null = null;
   let mediamtx: HttpServer | null = null;
   const touchedEnvKeys = [
-    "TB3_CONFIG", "TB3_DASHBOARD_PORT", "TB3_MCP_PORT", "TB3_DEVICE_HOST",
+    "TB3_CONFIG", "TB3_DASHBOARD_PORT", "TB3_MCP_PORT", "TB3_HEAD_URL",
     "TB3_CAMERA_SOURCE", "TB3_CAMERA_MEDIAMTX_HTTP_URL",
   ];
   const savedEnv: Record<string, string | undefined> = {};
@@ -65,7 +65,7 @@ describe("POST /camera/whep proxy", () => {
     process.env.TB3_CONFIG = "";
     process.env.TB3_DASHBOARD_PORT = String(DASHBOARD_PORT);
     process.env.TB3_MCP_PORT = String(MCP_PORT);
-    process.env.TB3_DEVICE_HOST = `127.0.0.1:${DEVICE_PORT}`;
+    process.env.TB3_HEAD_URL = `http://127.0.0.1:${DEVICE_PORT}`;
     process.env.TB3_CAMERA_SOURCE = "mediamtx";
     process.env.TB3_CAMERA_MEDIAMTX_HTTP_URL = `http://127.0.0.1:${MEDIAMTX_PORT}`;
     for (const [k, v] of Object.entries(overrides)) process.env[k] = v;

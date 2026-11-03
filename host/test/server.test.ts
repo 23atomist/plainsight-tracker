@@ -78,7 +78,7 @@ describe("server", () => {
   it("serves MCP over streamable HTTP and returns tool results", async () => {
     mock = new MockTb3(); await mock.start(DEV_PORT);
     mock.setPosition(45 * 444.444, 0);
-    const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT) });
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT) });
     dev = new Device(cfg); dev.start();
     await new Promise((r) => setTimeout(r, 300));
 
@@ -122,7 +122,7 @@ describe("server", () => {
   it("rejects requests without a token when a token is configured", async () => {
     mock = new MockTb3(); await mock.start(DEV_PORT);
     const cfg = loadConfig(undefined, {
-      TB3_DEVICE_HOST: `127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT), TB3_MCP_TOKEN: "sekret",
+      TB3_HEAD_URL: `http://127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT), TB3_MCP_TOKEN: "sekret",
     });
     dev = new Device(cfg); dev.start();
     await new Promise((r) => setTimeout(r, 200));

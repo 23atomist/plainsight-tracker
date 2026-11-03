@@ -27,7 +27,7 @@ beforeEach(async () => {
   clockMs = 1_000_000;
   mock = new MockTb3();
   await mock.start(PORT);
-  const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}` });
+  const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
   device = new Device(cfg, () => clockMs);
   device.start();
   await sleep(150);   // let the websocket connect

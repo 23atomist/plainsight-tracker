@@ -41,7 +41,7 @@ import { join } from "node:path";
 
 const DEV_PORT = 8854, MCP_PORT = 8855;
 const ENV_KEYS = [
-  "TB3_CONFIG", "TB3_DEVICE_HOST", "TB3_MCP_PORT", "TB3_ADSB_ENABLED",
+  "TB3_CONFIG", "TB3_HEAD_URL", "TB3_MCP_PORT", "TB3_ADSB_ENABLED",
   "TB3_CALIBRATION_FILE", "TB3_SECTOR_FILE", "TB3_LIMITS_FILE", "TB3_VISION_SCALE_FILE",
 ];
 const savedEnv: Record<string, string | undefined> = {};
@@ -66,7 +66,7 @@ it("main() wires buildPredictPixel's tiltCalibrated argument to the real VisionR
   // vision-composition-root.test.ts precedent).
   const dir = mkdtempSync(join(tmpdir(), "tb3-predictpixel-wiring-"));
   process.env.TB3_CONFIG = "";
-  process.env.TB3_DEVICE_HOST = `127.0.0.1:${DEV_PORT}`;
+  process.env.TB3_HEAD_URL = `http://127.0.0.1:${DEV_PORT}`;
   process.env.TB3_MCP_PORT = String(MCP_PORT);
   process.env.TB3_ADSB_ENABLED = "false";
   process.env.TB3_CALIBRATION_FILE = join(dir, "calibration.json");

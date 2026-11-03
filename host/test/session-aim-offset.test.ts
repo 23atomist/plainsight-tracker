@@ -69,7 +69,7 @@ function tracking(overrideCfg: Partial<Config> = {}): TrackingSession {
 
 beforeEach(() => {
   clockMs = 1_000_000;
-  cfg = loadConfig(undefined, {});
+  cfg = loadConfig(undefined, { TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" });
   store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-offs-")), "cal.json"));
   store.load();
   store.setRigLocation(RIG.lat, RIG.lon, RIG.height);

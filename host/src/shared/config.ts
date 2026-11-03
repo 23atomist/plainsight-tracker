@@ -5,13 +5,15 @@ const sign = z.union([z.literal(1), z.literal(-1)]);
 
 const ConfigSchema = z
   .object({
-    deviceHost: z.string().min(1).default("tb3.local"),
-    deviceIpFallback: z.string().optional(),
+    // The head controller (pan/tilt + tracking servo) is reached over HTTP.
+    headUrl: z.string().regex(/^https?:\/\//, "must start with http:// or https://").default("http://192.168.4.96:8780"),
+    // Directory for every persisted store file (calibration, sector, floor, ...).
+    stateDir: z.string().min(1).default("/data/state"),
     mcpPort: z.number().int().positive().max(65535).default(8770),
     mcpToken: z.string().min(1).optional(),
     panMin: z.number().default(-180),
     panMax: z.number().default(180),
-    tiltMin: z.number().default(-90),
+    tiltMin: z.number().default(0),
     tiltMax: z.number().default(90),
     maxSpeedDps: z.number().positive().default(22),
     // Measured on real hardware (jog-probe.mjs, 2026-07-16): the steady-state
@@ -28,18 +30,16 @@ const ConfigSchema = z
     // sets TB3_GEO_PAN_SIGN=-1 (validated). Default +1 keeps legacy geo behavior.
     geoPanSign: sign.default(1),
     tiltSign: sign.default(1),
-    auxSign: sign.default(1),
     calibrationFile: z.string().optional(),
     sectorFile: z.string().optional(),
     floorFile: z.string().optional(),
     limitsFile: z.string().optional(),
     // Persists calibrate_vision_scale's result (see vision-scale-store.ts).
     // Added in vision-lock fix round 2, following the identical
-    // optional-path-with-a-homedir-fallback pattern the three files above
+    // optional-path-with-a-stateDir-fallback pattern the three files above
     // already use.
     visionScaleFile: z.string().optional(),
     trackTickHz: z.number().positive().max(50).default(10),
-    trackKp: z.number().nonnegative().default(1.0),
     trackLeadMs: z.number().nonnegative().max(5000).default(150),
     // How long the servo may keep driving on PREDICTION after the newest
     // accepted fix (the coast budget). Fixes are stamped with their true time
@@ -53,12 +53,6 @@ const ConfigSchema = z
     trackStaleTelemetryMs: z.number().positive().default(1000),
     trackDeadmanMs: z.number().positive().default(120000),
     trackReacquireDeg: z.number().positive().max(180).default(10),
-    // How fast the COMMANDED tracking rate may change, in deg/s per second.
-    // Bounds tick-to-tick command reversals upstream of the firmware's cubic
-    // jog curve so a noisy fix reads as a nudge rather than a jerk; sized to
-    // roughly match the jog accumulator's own ~1s zero-to-full ramp, which it
-    // complements rather than fights.
-    trackRateSlewDps: z.number().positive().default(40),
     // Ceiling on the standing drift-calibration aim-offset (see
     // src/track/offset.ts). Config rather than a bare constant because a
     // rough set_north_zero seed can leave a pointing error bigger than this,
@@ -66,10 +60,9 @@ const ConfigSchema = z
     // plane reaching centre. Keep it comfortably under trackReacquireDeg or a
     // converged offset starts reading as "lost track".
     maxAimOffsetDeg: z.number().positive().max(45).default(5),
-    jogVectorTtlMs: z.number().positive().default(500),
     sunGuardEnabled: z.boolean().default(false),
     sunConeDeg: z.number().positive().max(90).default(25),
-    parkTiltDeg: z.number().default(-20),
+    parkTiltDeg: z.number().default(60),
     // Where an otherwise-idle autonomous rig points between passes, so a pass
     // that ends near the horizon does not leave the lens resting on the
     // neighbours' houses. OPPOSITE direction from parkTiltDeg: the sun park
@@ -81,7 +74,7 @@ const ConfigSchema = z
     sunGuardTickHz: z.number().positive().max(50).default(10),
     // --- Layer 4: ADS-B target source ---
     adsbEnabled: z.boolean().default(false),
-    adsbUrl: z.string().min(1).default("http://127.0.0.1/data/aircraft.json"),
+    adsbUrl: z.string().min(1).default("http://127.0.0.1:8088/data/aircraft.json"),
     adsbPollHz: z.number().positive().max(10).default(1),
     adsbMaxRangeKm: z.number().positive().default(100),
     // Operator-facing trackability bound, distinct from adsbMaxRangeKm (which
@@ -107,8 +100,10 @@ const ConfigSchema = z
     // couple of seconds later once a fresher report lands.
     calibMaxPosAgeSec: z.number().positive().default(5),
     // --- Layer 4: host agent + local LLM ---
-    llmUrl: z.string().min(1).default("http://127.0.0.1:8000/v1/chat/completions"),
-    llmModel: z.string().min(1).default("qwen2.5-14b-instruct"),
+    llmUrl: z.string().min(1).default("https://ollama.com/v1/chat/completions"),
+    llmModel: z.string().min(1).default("gpt-oss:120b"),
+    // Secret: never log this or put it in a status payload (see redactConfig).
+    llmApiKey: z.string().min(1).optional(),
     agentTickSec: z.number().positive().max(600).default(5),
     agentMinDwellSec: z.number().nonnegative().max(3600).default(25),
     agentMcpUrl: z.string().min(1).default("http://127.0.0.1:8770/mcp"),
@@ -121,7 +116,7 @@ const ConfigSchema = z
     // default so nothing touches the camera (or its USB device) until the
     // operator clicks Start.
     cameraStartEnabled: z.boolean().default(false),
-    cameraFfmpegBin: z.string().min(1).default("ffmpeg"),
+    cameraFfmpegBin: z.string().min(1).default("/usr/bin/ffmpeg"),
     // Which capture backend produces frames, chosen at daemon startup (there is
     // no runtime switch -- the source changes only on a hardware swap):
     // "v4l2" = a UVC camera via ffmpeg producing MJPEG for the in-process
@@ -145,7 +140,7 @@ const ConfigSchema = z
     // h264_nvenc, and NVENC is far better exercised in WebRTC pipelines than
     // Vulkan encode. "vulkan" is a verified fallback on this hardware. All
     // values are validated against `ffmpeg -encoders` at startup.
-    cameraEncoder: z.enum(["nvenc", "vulkan", "x264", "copy"]).default("nvenc"),
+    cameraEncoder: z.enum(["vaapi", "nvenc", "vulkan", "x264", "copy"]).default("vaapi"),
     cameraVideoBitrate: z.string().min(1).default("6M"),
     // Separate from cameraV4l2Size ON PURPOSE: the MJPEG fallback must stay at
     // 720p because its fan-out has no backpressure. 4K is valid here but the
@@ -158,10 +153,10 @@ const ConfigSchema = z
     cameraMediamtxPath: z.string().min(1).default("tb3"),
     // --- MCP-driven capture (daemon side) ---
     captureAutoEnabled: z.boolean().default(true),
-    captureSnapshotDir: z.string().min(1).default("/var/lib/tb3/snapshots"),
+    captureSnapshotDir: z.string().min(1).default("/data/snapshots"),
     captureRecordingsDir: z.string().min(1).default("/var/lib/tb3/recordings/tb3"),
     captureKeepDir: z.string().min(1).default("/var/lib/tb3/keep"),
-    passJournalFile: z.string().min(1).default("/var/lib/tb3/passes.jsonl"),
+    passJournalFile: z.string().min(1).default("/data/state/passes.jsonl"),
     // Mirrors mediamtx.yml's recordDeleteAfter (deployed: 168h). Used ONLY to
     // label a pass with no file as "expired" vs "not-recorded"; drift
     // mislabels a row, never resolves a wrong file.
@@ -173,7 +168,7 @@ const ConfigSchema = z
     // Hard bound on EVERY capture call. The tracking tick is real-time control
     // of a physical rig and must never wait on capture.
     captureTimeoutMs: z.number().int().positive().default(4000),
-    captureFfmpegBin: z.string().min(1).default("ffmpeg"),
+    captureFfmpegBin: z.string().min(1).default("/usr/bin/ffmpeg"),
     // --- Layer 4/5: vision lock (camera-assisted aim correction) ---
     // Off by default and read-only on its first opt-in: the loop must be
     // switched on deliberately, and its first mode observes rather than
@@ -200,9 +195,48 @@ const ConfigSchema = z
     visionFrameMaxAgeMs: z.number().positive().default(3000),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
-  .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
+  .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" })
+  // TRANSITIONAL: the retired ESP32 keys are no longer configurable, but the
+  // legacy Device / TrackingSession / tools code (rewritten in host Tasks 3-5)
+  // still reads them. Expose their old fixed values until those tasks land,
+  // then delete this transform.
+  .transform((c) => ({
+    ...c,
+    deviceHost: new URL(c.headUrl).host,
+    deviceIpFallback: undefined as string | undefined,
+    auxSign: 1 as 1 | -1,
+    trackKp: 1.0,
+    trackRateSlewDps: 40,
+    jogVectorTtlMs: 500,
+  }));
 
 export type Config = z.infer<typeof ConfigSchema>;
+
+// Keys that belonged to the ESP32 head. Presence is an error, not a silent
+// ignore: a stale config file would otherwise look accepted while doing nothing.
+const RETIRED_KEYS: Readonly<Record<string, string>> = {
+  deviceHost: "replaced by headUrl (http://host:port of the head controller)",
+  deviceIpFallback: "removed (the head has a single headUrl)",
+  trackKp: "removed: tracking is servoed by the head",
+  trackRateSlewDps: "removed: tracking is servoed by the head",
+  jogVectorTtlMs: "removed: tracking is servoed by the head",
+  auxSign: "removed (no aux axis)",
+};
+
+export function parseConfig(raw: unknown): Config {
+  if (raw && typeof raw === "object") {
+    for (const [key, hint] of Object.entries(RETIRED_KEYS)) {
+      if (key in raw) throw new Error(`config key "${key}" is retired: ${hint}`);
+    }
+  }
+  return ConfigSchema.parse(raw);
+}
+
+// A copy of the config that is safe to log or return in a status payload.
+export function redactConfig(cfg: Config): Record<string, unknown> {
+  const { llmApiKey, mcpToken, ...rest } = cfg;
+  return { ...rest, llmApiKey: llmApiKey ? "[redacted]" : undefined, mcpToken: mcpToken ? "[redacted]" : undefined };
+}
 
 function num(v: string | undefined): number | undefined {
   if (v === undefined || v === "") return undefined;
@@ -230,8 +264,8 @@ export function loadConfig(
     if (value !== undefined) overrides[key] = value;
   };
 
-  set("deviceHost", env.TB3_DEVICE_HOST);
-  set("deviceIpFallback", env.TB3_DEVICE_IP_FALLBACK);
+  set("headUrl", env.TB3_HEAD_URL);
+  set("stateDir", env.TB3_STATE_DIR);
   set("mcpPort", num(env.TB3_MCP_PORT));
   set("mcpToken", env.TB3_MCP_TOKEN);
   set("panMin", num(env.TB3_PAN_MIN));
@@ -243,22 +277,18 @@ export function loadConfig(
   set("panSign", num(env.TB3_PAN_SIGN));
   set("geoPanSign", num(env.TB3_GEO_PAN_SIGN));
   set("tiltSign", num(env.TB3_TILT_SIGN));
-  set("auxSign", num(env.TB3_AUX_SIGN));
   set("calibrationFile", env.TB3_CALIBRATION_FILE);
   set("sectorFile", env.TB3_SECTOR_FILE);
   set("floorFile", env.TB3_FLOOR_FILE);
   set("limitsFile", env.TB3_LIMITS_FILE);
   set("visionScaleFile", env.TB3_VISION_SCALE_FILE);
   set("trackTickHz", num(env.TB3_TRACK_TICK_HZ));
-  set("trackKp", num(env.TB3_TRACK_KP));
   set("trackLeadMs", num(env.TB3_TRACK_LEAD_MS));
   set("trackMaxTargetAgeMs", num(env.TB3_TRACK_MAX_TARGET_AGE_MS));
-  set("trackRateSlewDps", num(env.TB3_TRACK_RATE_SLEW_DPS));
   set("trackStaleTelemetryMs", num(env.TB3_TRACK_STALE_TELEMETRY_MS));
   set("trackDeadmanMs", num(env.TB3_TRACK_DEADMAN_MS));
   set("trackReacquireDeg", num(env.TB3_TRACK_REACQUIRE_DEG));
   set("maxAimOffsetDeg", num(env.TB3_MAX_AIM_OFFSET_DEG));
-  set("jogVectorTtlMs", num(env.TB3_JOG_VECTOR_TTL_MS));
   set("sunGuardEnabled", bool(env.TB3_SUN_GUARD_ENABLED));
   set("sunConeDeg", num(env.TB3_SUN_CONE_DEG));
   set("parkTiltDeg", num(env.TB3_PARK_TILT_DEG));
@@ -276,6 +306,7 @@ export function loadConfig(
   set("calibMaxPosAgeSec", num(env.TB3_CALIB_MAX_POS_AGE_SEC));
   set("llmUrl", env.TB3_LLM_URL);
   set("llmModel", env.TB3_LLM_MODEL);
+  set("llmApiKey", env.TB3_LLM_API_KEY);
   set("agentTickSec", num(env.TB3_AGENT_TICK_SEC));
   set("agentMinDwellSec", num(env.TB3_AGENT_MIN_DWELL_SEC));
   set("agentMcpUrl", env.TB3_AGENT_MCP_URL);
@@ -316,5 +347,5 @@ export function loadConfig(
   set("visionMinConf", num(env.TB3_VISION_MIN_CONF));
   set("visionFrameMaxAgeMs", num(env.TB3_VISION_FRAME_MAX_AGE_MS));
 
-  return ConfigSchema.parse(overrides);
+  return parseConfig(overrides);
 }

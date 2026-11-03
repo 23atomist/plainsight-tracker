@@ -35,7 +35,7 @@ let dir: string | null = null;
 async function harness(env: Record<string, string> = {}, aircraft: unknown[] = []) {
   dir = mkdtempSync(join(tmpdir(), "tb3geo-"));
   mock = new MockTb3(); await mock.start(PORT);
-  const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}`, ...env });
+  const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20", ...env });
   dev = new Device(cfg); dev.start();
   // Wait for a real TICK, not just the socket opening: `connected` flips on
   // ws "open" while lastUpdateMs stays 0 until telemetry actually arrives, and

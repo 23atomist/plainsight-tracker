@@ -60,7 +60,7 @@ describe("closed-loop tracking simulation", () => {
   it("holds pointing error bounded while chasing a crossing target", async () => {
     mock = new MockTb3();
     await mock.start(PORT);
-    const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}` });
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
     device = new Device(cfg);
     device.start();
 
@@ -118,7 +118,7 @@ describe("closed-loop tracking simulation", () => {
     mock = new MockTb3();
     await mock.start(PORT);
     const cfg = loadConfig(undefined, {
-      TB3_DEVICE_HOST: `127.0.0.1:${PORT}`,
+      TB3_HEAD_URL: `http://127.0.0.1:${PORT}`,
       TB3_TRACK_MAX_TARGET_AGE_MS: "400",
     });
     device = new Device(cfg);

@@ -24,7 +24,7 @@ function store() {
 
 async function harness(env: Record<string, string> = {}) {
   mock = new MockTb3(); await mock.start(PORT);
-  const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}`, ...env });
+  const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20", ...env });
   dev = new Device(cfg); dev.start();
   const t0 = Date.now();
   while (!dev.getState().connected && Date.now() - t0 < 3000) {
@@ -51,7 +51,7 @@ function textOf(result: any): string {
 describe("applyTeachLimit (the teach_limit core)", () => {
   it("accepts a taught limit tighter than config", () => {
     const s = store();
-    const cfg = loadConfig(undefined, {});
+    const cfg = loadConfig(undefined, { TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" });
     const r = applyTeachLimit(s, cfg, "tiltMin", -40);
     expect(r).toEqual({ value: -40, clamped: false });
     expect(s.get().tiltMin).toBe(-40);
@@ -59,7 +59,7 @@ describe("applyTeachLimit (the teach_limit core)", () => {
 
   it("clamps a candidate wider than config to the config ceiling", () => {
     const s = store();
-    const cfg = loadConfig(undefined, {}); // default panMax 180
+    const cfg = loadConfig(undefined, { TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" }); // default panMax 180
     const r = applyTeachLimit(s, cfg, "panMax", 200);
     expect(r).toEqual({ value: 180, clamped: true });
     expect(s.get().panMax).toBe(180);
@@ -67,14 +67,14 @@ describe("applyTeachLimit (the teach_limit core)", () => {
 
   it("clamps a below-ceiling candidate on a min edge too", () => {
     const s = store();
-    const cfg = loadConfig(undefined, {}); // default tiltMin -90
+    const cfg = loadConfig(undefined, { TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" }); // default tiltMin -90
     const r = applyTeachLimit(s, cfg, "tiltMin", -120);
     expect(r).toEqual({ value: -90, clamped: true });
   });
 
   it("refuses (without persisting) a candidate that would invert the axis", () => {
     const s = store();
-    const cfg = loadConfig(undefined, {});
+    const cfg = loadConfig(undefined, { TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" });
     s.setEdge("panMax", 10);
     const r = applyTeachLimit(s, cfg, "panMin", 10.5);
     expect("error" in r).toBe(true);
@@ -83,7 +83,7 @@ describe("applyTeachLimit (the teach_limit core)", () => {
 
   it("clear then re-teach recovers from a would-be lockout", () => {
     const s = store();
-    const cfg = loadConfig(undefined, {});
+    const cfg = loadConfig(undefined, { TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" });
     s.setEdge("panMin", 50);
     s.setEdge("panMax", 60);
     s.clear();
@@ -162,7 +162,7 @@ describe("MCP limits tools", () => {
 describe("teach_limit with an inverted axis (field bug 2026-07-29)", () => {
   it("assigns the pair by value when the second capture lands on the far side of the first", () => {
     const s = store();
-    const cfg = loadConfig(undefined, {});
+    const cfg = loadConfig(undefined, { TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" });
 
     // "tilt_min at the bottom" -- but bottom reads HIGH on this rig.
     const a = applyTeachLimit(s, cfg, "tiltMin", 40);
@@ -180,7 +180,7 @@ describe("teach_limit with an inverted axis (field bug 2026-07-29)", () => {
 
   it("does not silently accept a degenerate pair", () => {
     const s = store();
-    const cfg = loadConfig(undefined, {});
+    const cfg = loadConfig(undefined, { TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" });
     applyTeachLimit(s, cfg, "panMin", 10);
     const r = applyTeachLimit(s, cfg, "panMax", 9.5); // inverted AND < MIN_SPAN apart
     expect("error" in r).toBe(true);
@@ -190,7 +190,7 @@ describe("teach_limit with an inverted axis (field bug 2026-07-29)", () => {
 
   it("leaves a correctly-ordered pair exactly as taught (no spurious swapping)", () => {
     const s = store();
-    const cfg = loadConfig(undefined, {});
+    const cfg = loadConfig(undefined, { TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" });
     applyTeachLimit(s, cfg, "panMin", -60);
     const r = applyTeachLimit(s, cfg, "panMax", 75);
     expect((r as { swappedWith?: string }).swappedWith).toBeUndefined();

@@ -73,9 +73,9 @@ describe("vision config", () => {
   });
 
   it("an existing config with no vision keys still loads", () => {
-    const c = loadConfig(undefined, { TB3_DEVICE_HOST: "192.168.4.56" });
+    const c = loadConfig(undefined, { TB3_HEAD_URL: "http://192.168.4.56:80" });
     expect(c.visionEnabled).toBe(false);
-    expect(c.deviceHost).toBe("192.168.4.56");
+    expect(c.headUrl).toBe("http://192.168.4.56:80");
   });
 
   it("TB3_VISION_ENABLED and TB3_VISION_READ_ONLY override the defaults", () => {
@@ -559,7 +559,7 @@ async function calibHarness(
 ) {
   calibMock = new MockTb3(); await calibMock.start(CALIB_PORT);
   calibMock.setPosition(10 * STEPS_PER_DEG, 5 * STEPS_PER_DEG);
-  const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${CALIB_PORT}`, ...envOver });
+  const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${CALIB_PORT}`, ...envOver });
   calibDev = new Device(cfg); calibDev.start();
   const t0 = Date.now();
   while (!calibDev.getState().connected && Date.now() - t0 < 3000) {

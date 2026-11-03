@@ -8,7 +8,7 @@ let mock: MockTb3 | null = null;
 let dev: Device | null = null;
 
 function makeDevice(): Device {
-  const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${PORT}` });
+  const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}` });
   return new Device(cfg);
 }
 
@@ -110,17 +110,6 @@ describe("Device", () => {
     await waitFor(() => !dev!.getState().connected);
     mock = new MockTb3(); await mock.start(PORT);
     await waitFor(() => dev!.getState().connected, 5000);
-  });
-
-  it("falls back to deviceIpFallback when the primary host is unreachable", async () => {
-    mock = new MockTb3(); await mock.start(PORT);
-    const cfg = loadConfig(undefined, {
-      TB3_DEVICE_HOST: "127.0.0.1:1",
-      TB3_DEVICE_IP_FALLBACK: `127.0.0.1:${PORT}`,
-    });
-    dev = new Device(cfg); dev.start();
-    await waitFor(() => dev!.getState().connected, 8000);
-    expect(dev.getState().connected).toBe(true);
   });
 
   // Added alongside vision-lock fix round 2: PostureHistory's feed moved from
