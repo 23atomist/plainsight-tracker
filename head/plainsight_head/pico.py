@@ -35,12 +35,11 @@ class PicoLink:
     """Serial link to the Pico.
 
     Any link loss (read error or a stale status stream) closes the port and
-    retries `serial_factory` every `reconnect_s`. After a read error the link
-    is up as soon as the port opens; after a stale stream it is up once a
-    status line arrives on the reopened port (re-probed every `stale_s` if none
-    does). On coming up, `on_link(True)` fires, `expect_stream` is cleared, and
-    `await on_reconnect()` runs. `on_reconnect` MUST re-send STREAM and set
-    `expect_stream = True` again; the caller owns that.
+    retries `serial_factory` every `reconnect_s`; so does a failed first open
+    in `start()`. After ANY successful (re)open the link is up: `on_link(True)`
+    fires, `expect_stream` is cleared, and `await on_reconnect()` runs.
+    `on_reconnect` MUST re-send STREAM and set `expect_stream = True` again;
+    the caller owns that. `command()` may be used from inside `on_reconnect`.
     """
 
     def __init__(
@@ -64,30 +63,25 @@ class PicoLink:
         self.expect_stream = False
         self.connected = False
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._replies: asyncio.Queue[str] = asyncio.Queue()
+        self._replies: asyncio.Queue[str | None] = asyncio.Queue()  # None = link dropped
         self._cmd_lock = asyncio.Lock()
         self._serial: Any = None
         self._thread: threading.Thread | None = None
         self._stop: threading.Event | None = None
         self._gen = 0
         self._reader_died = False
-        self._needs_reopen = False
-        self._probe_after_open = False
-        self._probing = False
-        self._probe_started = 0.0
         self._last_status = 0.0
-        self._down_at = 0.0
         self._next_try = 0.0
         self._supervisor: asyncio.Task | None = None
+        self._teardowns: set[asyncio.Future] = set()
 
     # --- lifecycle ----------------------------------------------------------
     async def start(self) -> None:
         self._loop = asyncio.get_running_loop()
-        self._serial = await asyncio.to_thread(self._factory, self._port, self._baud)
-        self._begin_reading()
-        self._last_status = self._loop.time()
-        self.connected = True
-        self._on_link(True)
+        if await self._open():
+            await self._come_up(first=True)
+        else:  # absent port at boot is not fatal; the supervisor keeps retrying
+            self._on_link(False)
         self._supervisor = asyncio.create_task(self._supervise(), name="pico-supervisor")
 
     async def close(self) -> None:
@@ -96,9 +90,11 @@ class PicoLink:
             await asyncio.gather(self._supervisor, return_exceptions=True)
             self._supervisor = None
         self.connected = False
-        await asyncio.to_thread(self._end_reading)
+        self._schedule_teardown()
+        if self._teardowns:
+            await asyncio.gather(*self._teardowns)
 
-    # --- reader thread ------------------------------------------------------
+    # --- reader thread / teardown --------------------------------------------
     def _begin_reading(self) -> None:
         self._gen += 1
         self._reader_died = False
@@ -108,20 +104,29 @@ class PicoLink:
             name="pico-reader", daemon=True)
         self._thread.start()
 
-    def _end_reading(self) -> None:
-        if self._stop is not None:
-            self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            if self._thread.is_alive():
+    def _schedule_teardown(self) -> None:
+        """Detach the reader/port on the loop thread, then finish them off-thread."""
+        thread, stop, ser = self._thread, self._stop, self._serial
+        self._thread = self._stop = self._serial = None
+        if thread is None and ser is None:
+            return
+        fut = asyncio.ensure_future(asyncio.to_thread(self._teardown, thread, stop, ser))
+        self._teardowns.add(fut)
+        fut.add_done_callback(self._teardowns.discard)
+
+    @staticmethod
+    def _teardown(thread: threading.Thread | None, stop: threading.Event | None, ser: Any) -> None:
+        if stop is not None:
+            stop.set()
+        if thread is not None:
+            thread.join(timeout=2.0)
+            if thread.is_alive():
                 log.warning("pico reader thread did not stop in time")
-            self._thread = None
-        if self._serial is not None:
+        if ser is not None:
             try:
-                self._serial.close()
+                ser.close()
             except OSError:
                 log.warning("error closing serial port", exc_info=True)
-            self._serial = None
 
     def _post(self, fn: Callable[..., None], *args: Any) -> None:
         try:
@@ -144,11 +149,15 @@ class PicoLink:
             while b"\n" in buf:
                 raw, _, rest = bytes(buf).partition(b"\n")
                 buf = bytearray(rest)
-                line = raw.decode("utf-8", errors="replace").strip()
-                if line:
-                    self._dispatch_line(line, gen)
+                self._dispatch_line(raw.decode("utf-8", errors="replace").strip(), gen)
 
     def _dispatch_line(self, line: str, gen: int) -> None:
+        if not line:
+            log.warning("dropping blank line from pico")
+            return
+        if "\ufffd" in line:
+            log.warning("dropping garbled line %r", line)
+            return
         kind, payload = classify_line(line)
         try:
             if kind == "status":
@@ -179,55 +188,57 @@ class PicoLink:
             now = self._loop.time()
             if self.connected:
                 if self._reader_died:
-                    await self._go_down("reader died", reopen=True)
+                    self._go_down("reader died")
                 elif self.expect_stream and now - self._last_status > self._stale_s:
-                    await self._go_down("status stream stale", reopen=True, probe=True)
-            elif self._needs_reopen:
-                if now >= self._next_try:
-                    await self._try_reopen()
-            elif self._probing:
-                if self._last_status > self._down_at:
-                    self._probing = False
+                    self._go_down("status stream stale")
+            elif self._serial is None and now >= self._next_try:
+                if self._teardowns:  # never reopen while the old port is still closing
+                    await asyncio.gather(*self._teardowns)
+                if await self._open():
                     await self._come_up()
-                elif now - self._probe_started > self._stale_s:
-                    log.warning("no status after reopen; reopening again")
-                    self._probing = False
-                    await asyncio.to_thread(self._end_reading)
-                    self._needs_reopen = True
-                    self._next_try = now + self._reconnect_s
 
-    async def _go_down(self, why: str, *, reopen: bool, probe: bool = False) -> None:
+    def _go_down(self, why: str) -> None:
         log.warning("pico link down: %s", why)
         self.connected = False
-        self._down_at = self._loop.time()
-        self._needs_reopen = reopen
-        self._probe_after_open = probe
-        self._next_try = self._down_at + self._reconnect_s
-        if reopen:
-            await asyncio.to_thread(self._end_reading)
+        self._next_try = self._loop.time() + self._reconnect_s
+        self._replies.put_nowait(None)  # wake any command waiting on a reply
+        self._schedule_teardown()
         self._on_link(False)
 
-    async def _try_reopen(self) -> None:
+    async def _open(self) -> bool:
+        """Open the port and start the reader; False (and a retry time) on failure."""
+        fut = asyncio.ensure_future(asyncio.to_thread(self._factory, self._port, self._baud))
         try:
-            self._serial = await asyncio.to_thread(self._factory, self._port, self._baud)
+            ser = await asyncio.shield(fut)
+        except asyncio.CancelledError:
+            fut.add_done_callback(self._close_orphan)
+            raise
         except Exception:
-            log.warning("pico reopen failed; retrying", exc_info=True)
+            log.warning("pico open failed; retrying in %ss", self._reconnect_s, exc_info=True)
             self._next_try = self._loop.time() + self._reconnect_s
-            return
-        self._needs_reopen = False
+            return False
+        try:
+            ser.reset_input_buffer()
+        except OSError:
+            log.warning("reset_input_buffer failed", exc_info=True)
+        self._serial = ser
         self._begin_reading()
-        if self._probe_after_open:
-            self._probing = True
-            self._probe_started = self._loop.time()
-        else:
-            await self._come_up()
+        return True
 
-    async def _come_up(self) -> None:
+    @staticmethod
+    def _close_orphan(fut: asyncio.Future) -> None:
+        if not fut.cancelled() and fut.exception() is None:
+            try:
+                fut.result().close()
+            except OSError:
+                log.warning("error closing orphaned port", exc_info=True)
+
+    async def _come_up(self, *, first: bool = False) -> None:
         self.connected = True
         self._last_status = self._loop.time()
-        self.expect_stream = False  # the stream died with the link; on_reconnect re-arms it
+        self.expect_stream = False
         self._on_link(True)
-        if self._on_reconnect is not None:
+        if self._on_reconnect is not None and not first:
             try:
                 await self._on_reconnect()
             except Exception:
@@ -238,10 +249,15 @@ class PicoLink:
         if not self.connected:
             raise PicoError("link down")
         async with self._cmd_lock:
+            ser = self._serial
+            if not self.connected or ser is None:
+                raise PicoError("link down")
             while not self._replies.empty():
-                log.warning("discarding stray reply %r", self._replies.get_nowait())
+                stray = self._replies.get_nowait()
+                if stray is not None:
+                    log.warning("discarding stray reply %r", stray)
             try:
-                await asyncio.to_thread(self._serial.write, (line + "\n").encode())
+                await asyncio.to_thread(ser.write, (line + "\n").encode())
             except OSError as exc:
                 self._reader_died = True
                 raise PicoError(f"write failed: {exc}") from exc
@@ -253,6 +269,8 @@ class PicoLink:
                     reply = await asyncio.wait_for(self._replies.get(), max(remaining, 0.0))
                 except asyncio.TimeoutError:
                     raise PicoTimeout(f"no reply to {line!r} within {timeout_s}s") from None
+                if reply is None:
+                    raise PicoError("link down")
                 if reply == "ok":
                     return data
                 if reply == "err" or reply.startswith("err "):

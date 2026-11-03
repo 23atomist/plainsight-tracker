@@ -7,7 +7,6 @@ from collections import deque
 
 from plainsight_head.protocol import AXES
 
-_MODES = "IPTVH"
 
 
 class FakeClock:
