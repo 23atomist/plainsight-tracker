@@ -394,3 +394,12 @@ async def test_enable_off_timeout_still_clears_ref(client, ctx):
     ctx.fake.reply_override["ENABLE"] = ""
     await post(client, "/api/enable", {"on": False}, 504)
     assert ctx.state.ref.source == "none"
+
+
+async def test_pico_link_events_reach_ws_clients(client, ctx, ws):
+    ctx.link._on_link(False)
+    down = await next_event(ws, "pico_link")
+    assert {k: down[k] for k in ("type", "name", "axis", "detail")} == {
+        "type": "event", "name": "pico_link", "axis": None, "detail": {"up": False}}
+    ctx.link._on_link(True)
+    assert (await next_event(ws, "pico_link"))["detail"] == {"up": True}

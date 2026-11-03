@@ -46,7 +46,7 @@ class Head:
         self._tilt_home: asyncio.Future[str] | None = None
         factory = {} if serial_factory is None else {"serial_factory": serial_factory}  # else pyserial
         self.link = PicoLink(cfg.serial, cfg.baud, on_status=self._on_status,
-                             on_event=self._on_pico_event, on_link=self.state.set_pico_link,
+                             on_event=self._on_pico_event, on_link=self._on_pico_link,
                              on_reconnect=self.init_pico, **factory)
         self.imu = ImuReader(self._opener(imu_open), on_fully_calibrated=self._save_offsets,
                              on_link=self.state.set_imu_link)
@@ -70,6 +70,10 @@ class Head:
         fut = self._tilt_home
         if ev.axis == "tilt" and ev.name in _HOME_DONE and fut is not None and not fut.done():
             fut.set_result(ev.name)
+
+    def _on_pico_link(self, up: bool) -> None:
+        self.state.set_pico_link(up)
+        self.state.publish_event("pico_link", None, {"up": up})
 
     def _on_ref_event(self, name: str, detail: dict) -> None:
         self.state.publish_event(name, None, detail)

@@ -317,7 +317,7 @@ class HeadCtx:
         self.events: list[tuple[str, dict]] = []
         self.pico_events: list = []
         self.link = PicoLink("/dev/fake", 115200, on_status=self._on_status,
-                             on_event=self._on_pico_event, on_link=self.state.set_pico_link,
+                             on_event=self._on_pico_event, on_link=self._on_pico_link,
                              serial_factory=lambda p, b: self.fake)
         self.imu = ImuReader(lambda: self.imu_fake, rate_hz=200, on_link=self.state.set_imu_link)
         self._ref_kw: dict = {"heading_window_s": 0.1}
@@ -341,6 +341,10 @@ class HeadCtx:
     def _on_pico_event(self, ev) -> None:
         self.pico_events.append(ev)
         self.state.publish_event(ev.name, ev.axis, ev.detail)
+
+    def _on_pico_link(self, up: bool) -> None:
+        self.state.set_pico_link(up)
+        self.state.publish_event("pico_link", None, {"up": up})
 
     def _on_ref_event(self, name: str, detail: dict) -> None:
         self.events.append((name, detail))

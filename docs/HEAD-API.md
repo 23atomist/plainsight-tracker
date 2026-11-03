@@ -98,7 +98,7 @@ Tick fields:
 |---|---|---|
 | `type` | `"tick"` | |
 | `t` | integer | Head clock, milliseconds since the Unix epoch. |
-| `seq` | integer | Count of status-driven ticks published. |
+| `seq` | integer | Count of ticks published, including IMU-only ticks. |
 | `axes` | object | Optional. Keys `pan`, `tilt`, `zoom`, `focus`, all present. Omitted while the Pico link is down. |
 | `axes.*.pos`, `vel`, `tgt` | number | Degrees, degrees per second, target degrees. |
 | `axes.*.mode` | `I P T V H` | I idle, P position, T tracking, V velocity, H homing. |
@@ -155,12 +155,17 @@ Events from the head:
 | `estop` | `null` | `null`. The latch was set. |
 | `estop_cleared` | `null` | `null`. The latch was cleared. |
 | `config` | `null` | `{"scope": string, "key": string, "value": number}`. A setting was written through `POST /api/config`. |
-| `pan_reference` | `null` | `{"source": "imu" or "host" or "none", "pan"?: number, "previous"?: number, "reason"?: string}`. See below. |
+| `pico_link` | `null` | `{"up": boolean}`. The Pico serial link went down (`false`) or came up (`true`). |
+| `pan_reference` | `null` | `{"source": "imu" or "host" or "none", "pan"?: number, "previous"?: number or null, "reason"?: string}`. See below. |
+
+```json event
+{"type": "event", "t": 1762150002000, "name": "pico_link", "axis": null, "detail": {"up": false}}
+```
 
 `pan_reference` detail by case:
 
 - `{"source": "imu", "pan": n}`: IMU north reference succeeded.
-- `{"source": "host", "pan": n, "previous": m}`: `POST /api/setpos` set pan.
+- `{"source": "host", "pan": n, "previous": m}`: `POST /api/setpos` set pan. `m` is `null` if no Pico status was known.
 - `{"source": "none", "reason": text}`: no reference. For example
   `"pan unhomed"`, `"pico: <reason>"`, or an IMU failure reason.
 
@@ -174,9 +179,9 @@ Motion routes (`goto`, `track`, `jog`, `home`, `setpos`, `reference`, and
 with **503** while the Pico link is down. `stop`, `estop`, `enable` and the
 read-only routes are not guarded.
 
-Numbers must be finite. JSON cannot carry NaN or Infinity, so that rule is a
-parser rule: the head also rejects values that overflow to infinity. Booleans
-are not numbers.
+Numbers must be finite. The head rejects `NaN`, `Infinity` and overflowing
+values with 400 (Python's JSON parser would otherwise accept the literals).
+Booleans are not numbers.
 
 Common error statuses for any command that reaches the Pico:
 
@@ -224,7 +229,7 @@ Constant rate in degrees per second. Returns **200**.
 ```
 
 A non-zero rate arms a dead-man timer for that axis. If the host does not
-refresh it within `jogDeadmanMs` (default 500), the head sends `STOP` for the
+refresh it within `jog_deadman_ms` (default 500), the head sends `STOP` for the
 axis. A zero rate stops the axis and clears its timer. If the Pico times out,
 the timers stay armed.
 
@@ -233,7 +238,7 @@ Guards: 423, 503.
 ### POST /api/stop
 
 Pico line: `STOP [axes...]`. Body optional: `{"axes": ["pan", "tilt"]}`. No
-body or `[]` means all axes. Duplicates are dropped. Clears the matching jog
+body, or `{"axes": []}`, means all axes. Duplicates are dropped. Clears the matching jog
 dead-man timers. Returns **200**. 400 for an unknown axis or key. Not guarded:
 a stop works under E-STOP and is attempted when the link is down (it then
 fails with 503).
@@ -413,8 +418,6 @@ The code wins. Where it differs from section 4 of the design spec:
 - `pan_reference` events carry `{"source", "pan"?, "previous"?, "reason"?}`.
 - The `config` event carries `{"scope", "key", "value"}`.
 - `estop` and `estop_cleared` events carry no detail.
-- There is no `pico_link` event. Link state is in the tick's `link` and in
-  `/healthz`.
 - `GET /healthz` always returns 200; read `pico` and `imu` for link health.
 
 ## Schemas
