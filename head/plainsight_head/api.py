@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from aiohttp import web
+from aiohttp.abc import AbstractAccessLogger
 
 from . import __version__
 from .config import HeadConfig
@@ -30,6 +31,7 @@ IMU_BURST_MAX = 1000
 TRACK_AXES = ("pan", "tilt")
 GUARDED_KEYS = ("socket", "host_baud")
 COMMAND_TIMEOUT_S = 2.0
+QUIET_ROUTES = ("/api/track", "/api/jog")  # streamed by the host: access-logged at DEBUG only
 SAFETY_TIMEOUT_S = 5.0  # STOP and ESTOP may queue behind another command's full 2 s timeout
 _TOKEN = re.compile(r"[A-Za-z0-9_]+")
 
@@ -449,6 +451,16 @@ async def _json_errors(request: web.Request, handler: Callable) -> web.StreamRes
     except Exception as exc:
         log.exception("unhandled error on %s %s", request.method, request.path)
         raise _error(web.HTTPInternalServerError, f"internal error: {exc}") from exc
+
+
+class AccessLog(AbstractAccessLogger):
+    """aiohttp's access log, but the 2..10 Hz streaming routes log at DEBUG (SD-card volume)."""
+
+    def log(self, request: web.BaseRequest, response: web.StreamResponse, time: float) -> None:
+        level = logging.DEBUG if request.path in QUIET_ROUTES else logging.INFO
+        if self.logger.isEnabledFor(level):
+            self.logger.log(level, "%s %s %s %d %.1f ms", request.remote, request.method,
+                            request.path_qs, response.status, time * 1000)
 
 
 def make_app(ctx: HeadContext) -> web.Application:

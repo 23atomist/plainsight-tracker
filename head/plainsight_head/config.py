@@ -73,7 +73,7 @@ class HeadConfig:
     auto_home: bool = True
     pan_restore: str = "persisted"
     pan_restore_max_age_s: float = 604800
-    ref_tilt_deg: float = 0.0
+    ref_tilt_deg: float = 2.0  # off the tilt endstop: 0 sits on the switch and fires endstop_hit
     ref_timeout_s: float = 120
     imu_heading_offset_deg: float = 0.0
     imu_pitch_offset_deg: float = 0.0

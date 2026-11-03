@@ -12,7 +12,7 @@ import pytest
 from plainsight_head.config import HeadConfig
 from plainsight_head.main import run
 from plainsight_head.persist import JsonStore
-from tests.fakes import FakeBNO055, FakeSerial
+from tests.fakes import FAKE_ENV, FakeBNO055, FakeSerial
 
 INIT = ["STATUS", "VER", "CFG", "CFG global track_timeout_ms 1000", "STREAM 100"]
 MOTION_VERBS = ("HOME", "MOVE", "MOVER", "TRACK", "JOG", "SETPOS")
@@ -46,8 +46,8 @@ class Rig:
     def __init__(self, tmp_path, env: dict | None = None, *, pico_present: bool = True) -> None:
         self.port = free_port()
         self.data = tmp_path / "data"
-        self.cfg = HeadConfig.from_env({"HEAD_PORT": str(self.port), "HEAD_DATA_DIR": str(self.data),
-                                        **(env or {})})
+        self.cfg = HeadConfig.from_env({**FAKE_ENV, "HEAD_PORT": str(self.port),
+                                        "HEAD_DATA_DIR": str(self.data), **(env or {})})
         self.store = JsonStore(str(self.data))
         self.fake = FakeSerial()
         self.imu_fake = FakeBNO055(heading=90.0, cal=(3, 3, 3, 3))
@@ -528,3 +528,56 @@ async def test_stop_orphans_warns_once_until_the_link_streams_again(tmp_path, ca
         await until(lambda: head._orphan_logged is None, "a streamed status")  # streaming again
         await head._stop_orphans()
         assert count() == 2
+
+
+# --- first light follow-ups -------------------------------------------------------------
+
+def _event_lines(caplog, level=None):
+    return [r for r in caplog.records if r.name == "plainsight_head.main"
+            and r.getMessage().startswith("pico event:") and (level is None or r.levelno == level)]
+
+
+async def test_pico_events_are_logged_and_repeats_rate_limited(tmp_path, caplog, heads, monkeypatch):
+    from plainsight_head import main as main_mod
+    from plainsight_head.protocol import PicoEvent
+
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "none"})
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        head, now = heads[0], [1000.0]
+        head._clock = lambda: now[0]
+        ev = head._on_pico_event
+        ev(PicoEvent("homed", "tilt", None))
+        ev(PicoEvent("home_failed", "tilt", "aborted"))
+        ev(PicoEvent("driver_fault", "pan", "drv_status=0x2"))
+        ev(PicoEvent("driver_online", "zoom", None))
+        for _ in range(5):  # a stuck switch repeats
+            ev(PicoEvent("endstop_hit", "tilt", None))
+            ev(PicoEvent("track_timeout", "pan", None))
+            now[0] += 1.0
+        now[0] += main_mod.PICO_EVENT_LOG_EVERY_S
+        ev(PicoEvent("endstop_hit", "tilt", None))
+    info = [r.getMessage() for r in _event_lines(caplog, logging.INFO)]
+    warn = [r.getMessage() for r in _event_lines(caplog, logging.WARNING)]
+    assert warn == ["pico event: home_failed tilt aborted", "pico event: driver_fault pan drv_status=0x2"]
+    assert info == ["pico event: homed tilt", "pico event: driver_online zoom",
+                    "pico event: endstop_hit tilt", "pico event: track_timeout pan",
+                    "pico event: endstop_hit tilt (+4 more in the last 10 s)"]
+
+
+async def test_streaming_track_and_jog_requests_log_nothing_at_info(tmp_path, caplog):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "none"})
+    caplog.set_level(logging.INFO)  # aiohttp.access included
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        mark = len(caplog.records)
+        for i in range(20):
+            status, _ = await post_json(rig, "/api/track", {"pan": {"pos": i * 0.1, "vel": 1.0}})
+            assert status == 200
+        for _ in range(5):
+            assert (await post_json(rig, "/api/jog", {"tilt": 0}))[0] == 200
+        quiet = [r for r in caplog.records[mark:] if r.levelno >= logging.INFO]
+        assert quiet == [], [r.getMessage() for r in quiet]
+        await rig.get("/api/state")  # other routes keep their INFO access line
+        assert any(r.name == "aiohttp.access" and "/api/state" in r.getMessage()
+                   and r.levelno == logging.INFO for r in caplog.records[mark:])

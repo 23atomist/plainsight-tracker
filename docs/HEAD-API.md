@@ -380,7 +380,7 @@ Guards: 423, 503. Also:
 ### POST /api/reference
 
 Re-runs the IMU north reference in the background. It moves tilt to the
-reference angle, so it fails with reason `estop latched` if the latch is set
+reference angle (`HEAD_REF_TILT_DEG`, default 2°, just off the tilt endstop), so it fails with reason `estop latched` if the latch is set
 before the move or while tilt settles (the boot-time `HOME tilt` is skipped
 under the latch too). Body optional:
 `{"timeoutS": 30}`. `timeoutS` must be a positive finite number; it defaults

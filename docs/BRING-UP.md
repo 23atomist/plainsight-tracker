@@ -200,3 +200,26 @@ pan 60.37 -> 62.03 deg, then idle.
 
 State left on the Pi: container `head-head-1` running (healthy), **E-STOP
 latched**, `ref.pan none`, Pico pan 0.0 (physically about -59 deg, see 1), tilt 0.5047.
+
+## Follow-ups
+
+Software, fixed after first light (head commit "log Pico events, quiet
+track/jog request logs, boot reference tilt 2°"):
+
+- Anomaly 2: `HEAD_REF_TILT_DEG` now defaults to 2.0. The boot reference stops
+  just above the tilt switch instead of on it.
+- Anomaly 4: the head logs every Pico event. `home_failed` and `driver_fault`
+  are logged at WARNING. `track_timeout` and `endstop_hit` are logged at most
+  once per 10 s per name, with a count of the repeats in between. The access
+  log for `/api/track` and `/api/jog` is at DEBUG; other routes stay at INFO.
+
+Hardware, still for the owner:
+
+- **Suspected pan stall at about 7° into the 2 deg/s bench** (anomaly 1). Check
+  for a cable or mount bind near +7° clockwise of the start orientation, and
+  check the low-speed StealthChop / 0.6 A run current. Then re-run the pan
+  bench with the IMU heading as the witness.
+- **The IMU reports 3 to 9 % more tilt than the Pico** (anomaly 3). Either the
+  tilt `gear` (10.7) is wrong or the IMU is not square on its mount. Measure
+  the tilt gear ratio, or check the mount, before `HEAD_IMU_TILT_*` is
+  trusted for the `tiltDisagreeDeg` check.
