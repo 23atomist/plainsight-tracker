@@ -1,12 +1,19 @@
-"""Scripted fake Pico (FakeSerial) and an injectable clock for tests."""
+"""Scripted fake Pico (FakeSerial), fake BNO055, an injectable clock, and the wired HeadCtx for tests."""
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import threading
 import time
 from collections import deque
 
+from plainsight_head.config import HeadConfig
+from plainsight_head.imu import ImuReader
+from plainsight_head.persist import JsonStore
+from plainsight_head.pico import PicoLink
 from plainsight_head.protocol import AXES
-
+from plainsight_head.reference import PanReference
+from plainsight_head.state import HeadState
 
 
 class FakeClock:
@@ -271,3 +278,80 @@ class FakeBNO055:
 
     def close(self) -> None:
         self.closed = True
+
+
+_CTX_STREAM_S = 0.02  # the real Pico streams every 100 ms; faster keeps tests short
+
+
+class HeadCtx:
+    """A HeadState wired to a started PicoLink (FakeSerial) and ImuReader (FakeBNO055).
+
+    A background task streams status lines like the Pico's `STREAM`, so code that
+    waits for a fresh status after a command sees one.
+    """
+
+    def __init__(self, env: dict, tmp_path) -> None:
+        self.cfg = HeadConfig.from_env(env)
+        self.fake = FakeSerial()
+        self.imu_fake = FakeBNO055()
+        self.state = HeadState(self.cfg)
+        self.store = JsonStore(str(tmp_path / "data"))
+        self.events: list[tuple[str, dict]] = []
+        self.pico_events: list = []
+        self.link = PicoLink("/dev/fake", 115200, on_status=self.state.on_pico_status,
+                             on_event=self.pico_events.append, on_link=self.state.set_pico_link,
+                             serial_factory=lambda p, b: self.fake)
+        self.imu = ImuReader(lambda: self.imu_fake, rate_hz=200, on_link=self.state.set_imu_link)
+        self.ref = self._make_ref()
+        self._streamer = None
+
+    def now(self) -> float:
+        return time.time()
+
+    def _make_ref(self):
+        return PanReference(self.cfg, self.link, self.imu, self.state, self.store,
+                            time_fn=self.now, on_event=lambda n, d: self.events.append((n, d)),
+                            heading_window_s=0.1)
+
+    def cfg_override(self, **kw) -> None:
+        self.cfg = dataclasses.replace(self.cfg, **kw)
+        self.ref = self._make_ref()
+
+    async def status_now(self, timeout_s: float = 1.0) -> None:
+        """Emit one status line and wait until HeadState has taken it."""
+        before = self.state.pico
+        self.fake.emit_status()
+        deadline = time.monotonic() + timeout_s
+        while self.state.pico is before:
+            if time.monotonic() > deadline:
+                raise AssertionError("fake Pico status never reached HeadState")
+            await asyncio.sleep(0.005)
+
+    async def start(self) -> None:
+        await self.link.start()
+        await self.imu.start()
+        await self.status_now()
+        deadline = time.monotonic() + 1.0
+        while not self.imu.ok:
+            if time.monotonic() > deadline:
+                raise AssertionError("fake IMU never came up")
+            await asyncio.sleep(0.005)
+        self._streamer = asyncio.create_task(self._stream(), name="fake-pico-stream")
+
+    async def _stream(self) -> None:
+        while True:
+            await asyncio.sleep(_CTX_STREAM_S)
+            self.fake.emit_status()
+
+    async def close(self) -> None:
+        if self._streamer is not None:
+            self._streamer.cancel()
+            await asyncio.gather(self._streamer, return_exceptions=True)
+        await self.imu.close()
+        await self.link.close()
+
+
+async def make_ctx(env: dict, tmp_path) -> HeadCtx:
+    c = HeadCtx(env, tmp_path)
+    await c.start()
+    return c
