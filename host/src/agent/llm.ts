@@ -90,9 +90,41 @@ const RESPONSE_SCHEMA = {
   additionalProperties: false,
 };
 
+// First balanced {...} span, honouring JSON strings/escapes; null if none.
+function firstBalancedObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) return text.slice(start, i + 1);
+  }
+  return null;
+}
+
+// Ollama Cloud models sometimes wrap the JSON in prose or code fences.
+// Strict parse first, then a fenced block, then the first balanced object.
+// Throws (as before) when nothing parses so failSafeAction applies.
+function parseJsonTolerant(content: string): unknown {
+  try { return JSON.parse(content); } catch { /* fall through */ }
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(content);
+  const candidates = [fenced?.[1]?.trim(), firstBalancedObject(content)];
+  for (const c of candidates) {
+    if (!c) continue;
+    try { return JSON.parse(c); } catch { /* try next */ }
+  }
+  throw new Error("LLM response was not valid JSON");
+}
+
 export async function chooseTarget(
   llmUrl: string, model: string, input: ChooseInput,
-  fetchFn: typeof fetch = fetch, timeoutMs = 10000,
+  fetchFn: typeof fetch = fetch, timeoutMs = 10000, apiKey?: string,
 ): Promise<Decision> {
   const body = {
     model,
@@ -105,7 +137,10 @@ export async function chooseTarget(
   };
   const r = await fetchFn(llmUrl, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+    },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -113,5 +148,5 @@ export async function chooseTarget(
   const j = (await r.json()) as { choices?: { message?: { content?: unknown } }[] };
   const content = j.choices?.[0]?.message?.content;
   if (typeof content !== "string") throw new Error("LLM response had no message content");
-  return DecisionSchema.parse(JSON.parse(content));
+  return DecisionSchema.parse(parseJsonTolerant(content));
 }

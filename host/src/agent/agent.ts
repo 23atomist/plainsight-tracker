@@ -1,14 +1,19 @@
-import { loadConfig } from "../shared/config.js";
+import { loadConfig, type Config } from "../shared/config.js";
 import { realScheduler } from "../shared/track/session.js";
 import { McpRigClient } from "./mcp-client.js";
 import { chooseTarget } from "./llm.js";
 import { runOnce, type LoopState } from "./loop.js";
 
+// URL and model only -- the API key must never reach a log line.
+export function startupLine(cfg: Pick<Config, "agentMcpUrl" | "llmUrl" | "llmModel">): string {
+  return `[tb3-agent] connected to ${cfg.agentMcpUrl}; LLM ${cfg.llmUrl} (${cfg.llmModel})`;
+}
+
 export async function main(): Promise<void> {
   const cfg = loadConfig(process.env.TB3_CONFIG ?? "config.json");
   const client = new McpRigClient(cfg.agentMcpUrl, cfg.mcpToken);
   await client.connect();
-  console.log(`[tb3-agent] connected to ${cfg.agentMcpUrl}; LLM ${cfg.llmUrl} (${cfg.llmModel})`);
+  console.log(startupLine(cfg));
 
   let state: LoopState = { lastSwitchMs: 0 };
   let running = false;
@@ -18,7 +23,7 @@ export async function main(): Promise<void> {
     running = true;
     void runOnce({
       client,
-      choose: (input) => chooseTarget(cfg.llmUrl, cfg.llmModel, input),
+      choose: (input) => chooseTarget(cfg.llmUrl, cfg.llmModel, input, fetch, undefined, cfg.llmApiKey),
       cfg: { maxRangeKm: cfg.adsbMaxRangeKm, minDwellMs: cfg.agentMinDwellSec * 1000 },
       now: Date.now,
     }, state)

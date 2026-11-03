@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { startupLine } from "../src/agent/agent.js";
+import { loadConfig } from "../src/shared/config.js";
 import { chooseTarget, DecisionSchema, buildSystemPrompt, type ChooseInput } from "../src/agent/llm.js";
 
 const INPUT: ChooseInput = {
@@ -103,5 +105,45 @@ describe("buildSystemPrompt", () => {
   it("ties the preempt exception to the candidate's own canPreempt flag, not an aircraft class", () => {
     const p = buildSystemPrompt([{ tier: 1, rule: "Custom rule", canPreempt: true }]);
     expect(p).toMatch(/canPreempt/);
+  });
+});
+
+describe("chooseTarget — Ollama Cloud auth and tolerant parsing", () => {
+  const DEC = { action: "track", hex: "abc123", reason: "r" };
+  const headersOf = async (apiKey?: string): Promise<Record<string, string>> => {
+    let h: Record<string, string> = {};
+    const f = (async (_u: unknown, init?: { headers?: Record<string, string> }) => {
+      h = init?.headers ?? {};
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify(DEC) } }] }) };
+    }) as unknown as typeof fetch;
+    await chooseTarget("http://llm", "m", INPUT, f, 10000, apiKey);
+    return h;
+  };
+
+  it("sends a bearer header iff apiKey is set", async () => {
+    expect((await headersOf("sekret")).authorization).toBe("Bearer sekret");
+    expect(await headersOf()).not.toHaveProperty("authorization");
+  });
+
+  it("parses a fenced ```json reply", async () => {
+    const c = "Here you go:\n```json\n" + JSON.stringify(DEC) + "\n```\nDone.";
+    expect(await chooseTarget("http://llm", "m", INPUT, llmReturning(c))).toEqual(DEC);
+  });
+
+  it("parses a bare fenced reply and a JSON object embedded in prose", async () => {
+    expect(await chooseTarget("http://llm", "m", INPUT, llmReturning("```\n" + JSON.stringify(DEC) + "\n```"))).toEqual(DEC);
+    expect(await chooseTarget("http://llm", "m", INPUT, llmReturning("I pick: " + JSON.stringify(DEC) + " ok"))).toEqual(DEC);
+  });
+
+  it("throws on a prose-only reply", async () => {
+    await expect(chooseTarget("http://llm", "m", INPUT, llmReturning("I would track the first one."))).rejects.toThrow();
+  });
+
+  it("startup line shows url and model but never the key", () => {
+    const cfg = loadConfig(undefined, { TB3_LLM_API_KEY: "sekret-key-123" });
+    const line = startupLine(cfg);
+    expect(line).toContain(cfg.llmUrl);
+    expect(line).toContain(cfg.llmModel);
+    expect(line).not.toContain("sekret-key-123");
   });
 });
