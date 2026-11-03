@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
+import secrets
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
@@ -28,6 +30,7 @@ SETTLE_TOL_DEG = 0.5
 STILL_TOL_DEG = 0.05  # pan/tilt drift allowed across the heading window
 STATUS_WAIT_S = 3.0
 _SOURCES = ("host", "imu")
+_FRAME_ID = re.compile(r"[0-9a-f]{1,64}")
 _MIN_CAL = 2  # BNO055 calibration level needed for mag and sys
 
 
@@ -44,6 +47,11 @@ def wrap180(deg: float) -> float:
     """Wrap to (-180, 180]."""
     r = (deg + 180.0) % 360.0 - 180.0
     return 180.0 if r == -180.0 else r
+
+
+def new_frame_id() -> str:
+    """A fresh pan frame id: minted whenever pan gets a new zero (host SETPOS, IMU north)."""
+    return secrets.token_hex(8)
 
 
 def nearest_turn(deg: float, near: float) -> float:
@@ -108,12 +116,26 @@ class PanReference:
         return ReferenceResult("none", None, "pan_restore=none")
 
     def _keep_pico_position(self, pos: float, saved: dict | None) -> ReferenceResult:
-        source = saved["source"] if saved is not None else "host"
-        if saved is not None:
+        if saved is None:  # a homed Pico but no file: its frame is unnamed, so name it now
+            source, frame_id, persisted = "host", new_frame_id(), False
+        else:
+            source = saved["source"]
             self._last_written, self._last_write_t = saved["pos"], saved["t"]
-        self._state.set_ref(PanRef(source, saved is not None, self._time()))
-        log.info("pan reference: Pico still homed at %.3f; keeping source %s", pos, source)
+            frame_id, persisted = self._saved_frame_id(saved), True
+        self._state.set_ref(PanRef(source, persisted, self._time(), frame_id))
+        log.info("pan reference: Pico still homed at %.3f; keeping source %s, frame %s",
+                 pos, source, frame_id)
         return ReferenceResult(source, pos, None)
+
+    def _saved_frame_id(self, saved: dict) -> str:
+        """The file's frame id; a file from before frame ids gets one minted and stored, with
+        the file's own `t`, so the next restart restores the same id."""
+        if saved["frame_id"] is not None:
+            return saved["frame_id"]
+        frame_id = new_frame_id()
+        log.info("%s has no frame id (older file); assigning %s", REF_FILE, frame_id)
+        self._write(saved["pos"], saved["source"], frame_id, t=saved["t"])
+        return frame_id
 
     def _fresh(self, saved: dict | None) -> bool:
         return saved is not None and self._time() - saved["t"] <= self._cfg.pan_restore_max_age_s
@@ -169,20 +191,21 @@ class PanReference:
             self._failed(reason)
             return ReferenceResult("none", None, reason)
         self._last_written, self._last_write_t = pos, saved["t"]
-        self._state.set_ref(PanRef(source, True, self._time()))
-        log.info("pan reference: restored persisted pan %.3f (source %s)", pos, source)
-        self._changed(source, pos, previous, restored=True)
+        frame_id = self._saved_frame_id(saved)
+        self._state.set_ref(PanRef(source, True, self._time(), frame_id))
+        log.info("pan reference: restored persisted pan %.3f (source %s, frame %s)", pos, source, frame_id)
+        self._changed(source, pos, previous, frame_id, restored=True)
         return ReferenceResult(source, pos, None)
 
     # --- events (spec 6.8) ------------------------------------------------
-    def _changed(self, source: str, pan: float, previous: float | None, *,
+    def _changed(self, source: str, pan: float, previous: float | None, frame_id: str, *,
                  restored: bool = False) -> None:
         """Pan was renamed: old and new value for the same physical position (rule 1).
 
         `restored` tags a SETPOS from pan-reference.json: the frame the host already knows
         coming back, not a new reference.
         """
-        detail: dict = {"source": source, "pan": pan, "previous": previous}
+        detail: dict = {"source": source, "pan": pan, "previous": previous, "frameId": frame_id}
         if restored:
             detail["reason"] = "restored"
         self._on_event("pan_reference", detail)
@@ -210,10 +233,11 @@ class PanReference:
                 log.warning("pan reference from IMU failed: %s", reason)
                 self._failed(reason)
                 return ReferenceResult("none", None, reason)
-            persisted = self._write(pan, "imu")
-            self._state.set_ref(PanRef("imu", persisted, self._time()))
-            log.info("pan reference from IMU: pan %s -> %.3f", previous, pan)
-            self._changed("imu", pan, previous)
+            frame_id = new_frame_id()
+            persisted = self._write(pan, "imu", frame_id)
+            self._state.set_ref(PanRef("imu", persisted, self._time(), frame_id))
+            log.info("pan reference from IMU: pan %s -> %.3f, new frame %s", previous, pan, frame_id)
+            self._changed("imu", pan, previous, frame_id)
             return ReferenceResult("imu", pan, None)
 
     async def _imu_north(self, timeout_s: float) -> tuple[str | None, float | None, float | None]:
@@ -304,10 +328,11 @@ class PanReference:
         """SETPOS pan from the host. PicoError and ProtocolError propagate to the caller."""
         async with self._lock:
             previous = await self._setpos(pan)
-            persisted = self._write(pan, "host")
-            self._state.set_ref(PanRef("host", persisted, self._time()))
-            log.info("pan reference from host: pan %s -> %.3f", previous, pan)
-            self._changed("host", pan, previous)
+            frame_id = new_frame_id()
+            persisted = self._write(pan, "host", frame_id)
+            self._state.set_ref(PanRef("host", persisted, self._time(), frame_id))
+            log.info("pan reference from host: pan %s -> %.3f, new frame %s", previous, pan, frame_id)
+            self._changed("host", pan, previous, frame_id)
 
     def note_enable_off(self) -> None:
         if self._state.ref.source == "none":
@@ -322,7 +347,7 @@ class PanReference:
             await self._sleep(PERSIST_INTERVAL_S)
             pan = self._persistable_pan()
             if pan is not None and pan.vel == 0 and (pan.pos != self._last_written or self._stale()):
-                self._write(pan.pos, self._state.ref.source)
+                self._write(pan.pos, self._state.ref.source, self._state.ref.frame_id)
 
     def _stale(self) -> bool:
         """The file's age is measured from the last known-good write: refresh it hourly."""
@@ -331,7 +356,7 @@ class PanReference:
     async def persist_now(self) -> None:
         pan = self._persistable_pan()
         if pan is not None:
-            self._write(pan.pos, self._state.ref.source)
+            self._write(pan.pos, self._state.ref.source, self._state.ref.frame_id)
 
     def _persistable_pan(self) -> AxisStatus | None:
         """Pan's status if it is referenced, homed, and reported since the last SETPOS."""
@@ -341,10 +366,11 @@ class PanReference:
         pan = pico.axes["pan"]
         return pan if pan.homed else None
 
-    def _write(self, pos: float, source: str) -> bool:
+    def _write(self, pos: float, source: str, frame_id: str | None, *, t: float | None = None) -> bool:
+        """Persist the reference; `t` defaults to now (pass the file's own `t` to keep its age)."""
         try:
-            t = self._time()
-            self._store.write(REF_FILE, {"pos": pos, "source": source, "t": t})
+            t = self._time() if t is None else t
+            self._store.write(REF_FILE, {"pos": pos, "source": source, "t": t, "frame_id": frame_id})
         except OSError:
             log.exception("writing %s failed", REF_FILE)
             return False
@@ -367,4 +393,8 @@ class PanReference:
         if not ok:
             log.warning("%s: ignoring malformed contents %r", REF_FILE, saved)
             return None
-        return {"pos": float(pos), "t": float(t), "source": source}
+        frame_id = saved.get("frame_id")
+        if frame_id is not None and not (isinstance(frame_id, str) and _FRAME_ID.fullmatch(frame_id)):
+            log.warning("%s: ignoring malformed frame_id %r", REF_FILE, frame_id)
+            frame_id = None
+        return {"pos": float(pos), "t": float(t), "source": source, "frame_id": frame_id}

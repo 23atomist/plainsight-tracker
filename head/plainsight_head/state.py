@@ -29,6 +29,7 @@ class PanRef:
     source: str = "none"  # none | imu | host
     persisted: bool = False
     set_at: float | None = None
+    frame_id: str | None = None  # names pan's frame; carried through restores, None when none
 
 
 class HeadState:
@@ -100,7 +101,8 @@ class HeadState:
         out["imu"] = self._imu_obj()
         out["tiltDisagreeDeg"] = self.tilt_disagree_deg()
         age = None if self.ref.set_at is None else round(now - self.ref.set_at, 1)
-        out["ref"] = {"pan": self.ref.source, "persisted": self.ref.persisted, "ageS": age}
+        out["ref"] = {"pan": self.ref.source, "persisted": self.ref.persisted, "ageS": age,
+                      "frameId": self.ref.frame_id}
         out["link"] = {"pico": self.pico_link, "imu": self.imu_link}
         return out
 

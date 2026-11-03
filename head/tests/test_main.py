@@ -12,7 +12,7 @@ import pytest
 from plainsight_head.config import HeadConfig
 from plainsight_head.main import run
 from plainsight_head.persist import JsonStore
-from tests.fakes import FAKE_ENV, FakeBNO055, FakeSerial
+from tests.fakes import FAKE_ENV, FRAME_ID, FakeBNO055, FakeSerial
 
 INIT = ["STATUS", "VER", "CFG", "CFG global track_timeout_ms 1000", "STREAM 100"]
 MOTION_VERBS = ("HOME", "MOVE", "MOVER", "TRACK", "JOG", "SETPOS")
@@ -242,7 +242,8 @@ async def test_reconnect_after_pico_reboot_restores_a_fresh_persisted_reference(
     async with rig:
         mark, details = await _boot_referenced_then_reboot_pico(rig, caplog, stale_file=False)
         assert details == [{"source": "none", "reason": "pan unhomed"},
-                           {"source": "host", "pan": 12.5, "previous": None, "reason": "restored"}]
+                           {"source": "host", "pan": 12.5, "previous": None, "frameId": FRAME_ID,
+                            "reason": "restored"}]
         state = await rig.get("/api/state")
         assert state["ref"]["pan"] == "host" and state["link"]["pico"] is True
         await asyncio.sleep(0.2)  # rule 2 only: a SETPOS (no motion), no homing, no IMU north
@@ -590,3 +591,21 @@ async def test_streaming_track_and_jog_requests_log_nothing_at_info(tmp_path, ca
                    and r.levelno == logging.WARNING and "/api/track" in r.getMessage()
                    and " 423 " in r.getMessage()]
         assert len(refused) == 20
+
+
+async def test_a_restart_restores_the_same_frame_id(tmp_path, caplog):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "persisted"})
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        assert (await rig.get("/api/state"))["ref"]["frameId"] is None
+        assert (await post_json(rig, "/api/setpos", {"pan": 21.0}))[0] == 200
+        frame = (await rig.get("/api/state"))["ref"]["frameId"]
+        assert frame == FRAME_ID and rig.read("pan-reference.json")["frame_id"] == frame
+    caplog.clear()
+    rig2 = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "persisted"})  # same data dir,
+    async with rig2:                                                                  # a fresh Pico
+        await until(lambda: booted(caplog), "second boot complete")
+        assert rig2.fake.sent[len(INIT):] == ["SETPOS pan 21.00000"]
+        ref = (await rig2.get("/api/state"))["ref"]
+        assert ref["pan"] == "host" and ref["frameId"] == frame  # same frame, not a new one
+    assert_no_leaked_tasks()

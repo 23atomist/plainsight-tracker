@@ -2,6 +2,7 @@
 import asyncio, pytest
 from plainsight_head.reference import circular_mean_deg, wrap180, PanReference, ReferenceResult
 from plainsight_head.state import HeadState, PanRef
+from tests.fakes import FRAME_ID
 # fixture `ctx` builds HeadConfig(env), FakeSerial-backed PicoLink (started, homed flags controllable via fake.model),
 # ImuReader over FakeBNO055 (rate 200), HeadState wired to both, JsonStore(tmp_path), events list; see tests/fakes.py helper make_ctx(env, tmp_path)
 
@@ -36,11 +37,11 @@ async def test_imu_reference_requires_tilt_homed_and_times_out_on_cal(ctx):
 
 async def test_set_from_host_persists_and_reports_previous(ctx):
     await ctx.ref.set_from_host(10.0)  # pan was unhomed: its position named no frame
-    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 10.0, "previous": None})
+    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 10.0, "previous": None, "frameId": FRAME_ID})
     assert ctx.store.read("pan-reference.json")["source"] == "host"
     await ctx.status_now()  # SETPOS homed pan at 10
     await ctx.ref.set_from_host(25.0)
-    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 25.0, "previous": 10.0})
+    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 25.0, "previous": 10.0, "frameId": FRAME_ID})
 
 
 # --- review round 1: required behaviour -------------------------------------------------
@@ -78,7 +79,8 @@ async def test_run_persistence_writes_only_when_idle_changed_referenced_and_home
         assert ctx.store.read(REF)["pos"] == 10.0     # the stale 7 was not saved
         await _set_pan(ctx, pos=12.0)
         await step.step()
-        assert ctx.store.read(REF) == {"pos": 12.0, "source": "host", "t": pytest.approx(ctx.now(), abs=5)}
+        assert ctx.store.read(REF) == {"pos": 12.0, "source": "host", "t": pytest.approx(ctx.now(), abs=5),
+                                       "frame_id": ctx.state.ref.frame_id}
         await _set_pan(ctx, pos=13.0, vel=5.0)        # moving
         await step.step()
         assert ctx.store.read(REF)["pos"] == 12.0
@@ -240,7 +242,8 @@ async def test_imu_north_reports_previous_and_failure_keeps_the_current_source(c
     await c.status_now()
     c.imu_fake.heading = 42.0
     assert (await c.ref.reference_from_imu(1.0)).pan == pytest.approx(42.0)
-    assert c.events[-1] == ("pan_reference", {"source": "imu", "pan": pytest.approx(42.0), "previous": 10.0})
+    assert c.events[-1] == ("pan_reference", {"source": "imu", "pan": pytest.approx(42.0), "previous": 10.0,
+                                            "frameId": FRAME_ID})
     c.imu_fake.cal = (0, 0, 0, 0)
     await c.ref.reference_from_imu(0.1)
     assert c.events[-1] == ("pan_reference_failed", {"reason": "imu calibration timeout", "source": "imu"})
@@ -251,7 +254,7 @@ async def test_boot_restore_from_file_emits_pan_reference(ctx):
     ctx.store.write(REF, {"pos": 40.5, "source": "imu", "t": ctx.now() - 100})
     await ctx.ref.restore_at_boot()
     assert ctx.events == [("pan_reference", {"source": "imu", "pan": 40.5, "previous": None,
-                                             "reason": "restored"})]
+                                             "frameId": FRAME_ID, "reason": "restored"})]
 
 
 async def test_boot_restore_failure_emits_pan_reference_failed(ctx):
@@ -285,7 +288,7 @@ async def test_restore_after_reconnect_restores_a_fresh_file(ctx):
     assert r == ReferenceResult("host", 33.0, None)
     assert ctx.fake.sent[-1] == "SETPOS pan 33.00000" and ctx.state.ref.source == "host"
     assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 33.0, "previous": None,
-                                                "reason": "restored"})
+                                                "frameId": FRAME_ID, "reason": "restored"})
 
 
 @pytest.mark.parametrize("age_s,restore", [(10**7, "persisted"), (60, "imu"), (None, "persisted")])
@@ -316,7 +319,8 @@ async def test_run_persistence_refreshes_the_file_hourly_while_referenced(ctx):
         assert ctx.store.read(REF)["t"] == first_t  # unmoved, under an hour: no write
         clk.advance(1)
         await step.step()
-        assert ctx.store.read(REF) == {"pos": 10.0, "source": "host", "t": first_t + 3600}
+        assert ctx.store.read(REF) == {"pos": 10.0, "source": "host", "t": first_t + 3600,
+                                       "frame_id": FRAME_ID}
         ctx.ref.note_enable_off()
         clk.advance(7200)
         await step.step()
@@ -363,10 +367,11 @@ async def test_file_restore_is_tagged_restored_and_host_setpos_is_not(ctx):
     ctx.store.write(REF, {"pos": 40.5, "source": "imu", "t": ctx.now() - 100})
     await ctx.ref.restore_at_boot()
     assert ctx.events[-1] == ("pan_reference", {"source": "imu", "pan": 40.5, "previous": None,
-                                                "reason": "restored"})
+                                                "frameId": FRAME_ID, "reason": "restored"})
     await ctx.status_now()
     await ctx.ref.set_from_host(10.0)
-    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 10.0, "previous": 40.5})
+    assert ctx.events[-1] == ("pan_reference", {"source": "host", "pan": 10.0, "previous": 40.5,
+                                                "frameId": FRAME_ID})
     assert "reason" not in ctx.events[-1][1]
 
 
@@ -384,7 +389,8 @@ async def test_imu_north_keeps_the_pan_turn_nearest_the_counter(ctx_imu_ready):
     r = await c.ref.reference_from_imu(1.0)
     assert r.pan == pytest.approx(185.0)
     assert c.fake.sent[-1] == "SETPOS pan 185.00000"  # not -175: a 360 deg jump of the counter
-    assert c.events[-1] == ("pan_reference", {"source": "imu", "pan": pytest.approx(185.0), "previous": 170.0})
+    assert c.events[-1] == ("pan_reference", {"source": "imu", "pan": pytest.approx(185.0), "previous": 170.0,
+                                            "frameId": FRAME_ID})
 
 
 def test_nearest_turn():
@@ -394,3 +400,75 @@ def test_nearest_turn():
     assert nearest_turn(175.0, -170.0) == -185.0
     assert nearest_turn(10.0, 0.0) == 10.0
     assert nearest_turn(10.0, 700.0) == 730.0
+
+
+# --- pan frame id --------------------------------------------------------------------------
+
+async def test_host_setpos_mints_a_new_frame_id_shown_in_tick_event_and_file(ctx):
+    await ctx.ref.set_from_host(10.0)
+    first = ctx.state.ref.frame_id
+    assert first == FRAME_ID
+    assert ctx.state.tick()["ref"]["frameId"] == first == ctx.events[-1][1]["frameId"]
+    assert ctx.store.read(REF)["frame_id"] == first  # persisted with the reference
+    await ctx.status_now()
+    await ctx.ref.set_from_host(20.0)
+    assert ctx.state.ref.frame_id not in (None, first)  # every new zero is a new frame
+
+
+async def test_imu_north_mints_a_new_frame_id(ctx_imu_ready):
+    c = ctx_imu_ready
+    await c.ref.set_from_host(10.0)
+    host_frame = c.state.ref.frame_id
+    await c.status_now()
+    await c.ref.reference_from_imu(1.0)
+    assert c.state.ref.frame_id == FRAME_ID and c.state.ref.frame_id != host_frame
+    assert c.events[-1][1]["frameId"] == c.state.ref.frame_id == c.store.read(REF)["frame_id"]
+
+
+async def test_a_reference_loss_has_no_frame_id(ctx):
+    await ctx.ref.set_from_host(10.0)
+    ctx.ref.note_enable_off()
+    assert ctx.state.tick()["ref"]["frameId"] is None
+    assert "frameId" not in ctx.events[-1][1]  # the drop event names no frame
+
+
+async def test_restores_and_rule1_carry_the_stored_frame_id(ctx):
+    ctx.store.write(REF, {"pos": 40.5, "source": "imu", "t": ctx.now() - 100, "frame_id": "00c0ffee12345678"})
+    await ctx.ref.restore_at_boot()  # rule 2
+    assert ctx.state.ref.frame_id == "00c0ffee12345678"
+    assert ctx.events[-1][1] == {"source": "imu", "pan": 40.5, "previous": None,
+                                 "frameId": "00c0ffee12345678", "reason": "restored"}
+    assert ctx.state.tick()["ref"]["frameId"] == "00c0ffee12345678"
+    await ctx.status_now()  # pan homed now: a restart keeps the Pico's position (rule 1)
+    ctx.ref_override()
+    await ctx.ref.restore_at_boot()
+    assert ctx.state.ref.frame_id == "00c0ffee12345678"
+    ctx.fake.reboot()
+    await ctx.status_now()
+    await ctx.ref.restore_after_reconnect()
+    assert ctx.state.ref.frame_id == "00c0ffee12345678"
+    assert ctx.events[-1][1]["frameId"] == "00c0ffee12345678"
+    await ctx.ref.persist_now()
+    assert ctx.store.read(REF)["frame_id"] == "00c0ffee12345678"  # rewrites keep the id
+
+
+async def test_an_old_file_without_frame_id_gets_one_minted_once_and_kept(ctx):
+    t0 = ctx.now() - 100
+    ctx.store.write(REF, {"pos": 40.5, "source": "host", "t": t0})  # written before frame ids
+    await ctx.ref.restore_at_boot()
+    minted = ctx.state.ref.frame_id
+    assert minted == FRAME_ID
+    assert ctx.events[-1][1] == {"source": "host", "pan": 40.5, "previous": None,
+                                 "frameId": minted, "reason": "restored"}
+    assert ctx.store.read(REF) == {"pos": 40.5, "source": "host", "t": t0, "frame_id": minted}
+    ctx.fake.reboot()  # the next restore must bring back the same id
+    await ctx.status_now()
+    await ctx.ref.restore_after_reconnect()
+    assert ctx.state.ref.frame_id == minted
+
+
+@pytest.mark.parametrize("bad", [7, "", "NOT-HEX", "a" * 65])
+async def test_a_malformed_frame_id_counts_as_none(ctx, bad):
+    ctx.store.write(REF, {"pos": 1.0, "source": "imu", "t": ctx.now(), "frame_id": bad})
+    await ctx.ref.restore_at_boot()
+    assert ctx.state.ref.frame_id == FRAME_ID and ctx.state.ref.frame_id != bad
