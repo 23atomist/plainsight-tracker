@@ -46,6 +46,10 @@ is redrawn.
 5. Everything above the device boundary keeps its behaviour and its tests.
 6. Zoom and focus axes pass through the head API so the host can use them
    later.
+7. ADS-B capture moves onto the application host: the RTL-SDR plugs in
+   there (the .11 box is no longer near the antenna) and the existing
+   ultrafeeder container comes along unchanged, so the tracker reads
+   aircraft from localhost.
 
 ### Non-goals (explicitly later)
 
@@ -86,14 +90,14 @@ is redrawn.
   |        |-- /dev/ttyACM0  -> SKR Pico (plainsight-ptz 0.1.0)   +-- agent             LLM target chooser (MCP client)
   |        +-- /dev/i2c-3    -> BNO055 @0x29             |   +-- dashboard  :8788   ops UI, camera ingest (ffmpeg -> MediaMTX)
   |                                                     |   +-- mediamtx   :8189/udp WebRTC; api/rtsp/whep on 127.0.0.1
+  |                                                     |   +-- adsb       :8088   ultrafeeder (readsb + tar1090 + feeders), profile "adsb", on by default
   |                                                     |   +-- detector   (profile "vision", disabled)
   |                                                     |
-  |                                                     |  /dev/video*  USB camera
+  |                                                     |  /dev/bus/usb  RTL-SDR (serial 00001000) and USB camera, on separate root ports
   |                                                     |  /dev/dri/renderD128  Intel VAAPI
   |                                                     |  /srv/plainsight/{config,state,recordings,snapshots}
   |
-  external: ADS-B tar1090 at http://192.168.4.11:8088/data/aircraft.json (unchanged)
-            LLM endpoint: OpenAI-compatible chat completions, location TBD (section 9)
+  external: LLM = Ollama Cloud (6.11); optional InfluxDB on 192.168.4.11 for ultrafeeder stats
 ```
 
 The host stack talks to the head only through the head API over the LAN.
@@ -451,15 +455,18 @@ exposure control, as before.
 - `agent`: `node dist/agent/agent.js`, `depends_on: mcp`.
 - `dashboard`: `node dist/dashboard/server.js`, devices as in 6.5.
 - `mediamtx`: as in 6.6.
+- `adsb`: ultrafeeder as in 6.12, `profiles: ["adsb"]`, enabled by default
+  through `COMPOSE_PROFILES` in `.env`.
 - `detector`: `profiles: ["vision"]`, image left as a placeholder with a
   comment pointing at `TB3-ESP32/services/detector`; never started by
   default.
 
 Bind mounts, one root: `${PLAINSIGHT_DATA:-/srv/plainsight}` with
-`config/`, `state/`, `recordings/`, `snapshots/`. Bind mounts rather than
+`config/`, `state/`, `recordings/`, `snapshots/`, `adsb/`. Bind mounts rather than
 named volumes so the operator can read recordings and edit config with
-normal tools. `.env.example` lists `PLAINSIGHT_DATA`, `HEAD_HOST`
-(default `192.168.4.96`), `CAMERA_DEVICE` (by-id path), `TB3_ADSB_URL`,
+normal tools. `.env.example` lists `PLAINSIGHT_DATA`, `COMPOSE_PROFILES`, `HEAD_HOST`
+(default `192.168.4.96`), `CAMERA_DEVICE` (by-id path), the `FEEDER_*` and
+`ADSB_SDR_*` keys from 6.12, `TB3_ADSB_URL`,
 `TB3_LLM_URL`, `TB3_LLM_MODEL`, `TB3_LLM_API_KEY`, `TB3_DASHBOARD_AUTH`,
 `TB3_MCP_TOKEN`.
 `deviceHost` in config becomes `headUrl` (`http://192.168.4.96:8780`).
@@ -534,6 +541,42 @@ a bearer token. Consequences, from the August 2026 evaluation:
 - `TB3_LLM_MODEL` is an `.env` choice; the deploy doc suggests starting
   with a mid-size instruct model and lists how to switch.
 
+### 6.12 ADS-B capture on the host
+
+The .11 box ran `ghcr.io/sdr-enthusiasts/docker-adsb-ultrafeeder:telegraf`
+from `/media/data/adsb/docker-compose.yml` (readsb + tar1090 + graphs1090 +
+feeds to adsb.fi, adsb.lol, airplanes.live, planespotters, avdelphi,
+hpradar, flyitalyadsb, with MLAT). The dongle has already been unplugged
+there (not in `lsusb`, `aircraft.json` 404s). That service definition is
+copied into the root `compose.yaml` as service `adsb`, under profile
+`adsb`, which `.env` enables by default (`COMPOSE_PROFILES=adsb`). Changes
+from the original:
+
+- `network_mode: host` like the rest; tar1090 on port 8088 as before, the
+  telegraf ports 9273-9274 stay.
+- `/dev/bus/usb` bind plus `device_cgroup_rules: c 189:* rwm`, as before.
+- Site and dongle settings carried over into `.env.example`:
+  `FEEDER_LAT`, `FEEDER_LONG`,
+  `FEEDER_ALT_M`, `ADSB_SDR_SERIAL`, `FEEDER_TZ`,
+  `FEEDER_NAME`, `MULTIFEEDER_UUID`, HeyWhatsThat id and alts. **PPM is
+  unresolved:** the `.env` on .11 says `-8` while the container that was
+  actually running had `100`; bring-up measures it (`readsb` logs the
+  estimated ppm with `--enable-agc`/`rtl_test -p`) and sets it.
+- The InfluxDB stats output points at `http://192.168.4.11:8181` instead
+  of the compose-network name, with its token in `.env`; it is optional
+  and the service runs without it.
+- Persistent state (`globe_history`, `graphs1090`) under
+  `${PLAINSIGHT_DATA}/adsb/`.
+- The old `adsbnet` external network is dropped.
+
+The tracker's `adsbUrl` defaults to `http://127.0.0.1:8088/data/aircraft.json`.
+The site position in the tracker's calibration (`set_rig_location`) is
+entered during bring-up from the same `FEEDER_*` values, so the two agree.
+
+USB placement matters: the RTL-SDR and the camera both stream
+continuously, so they go on different USB root ports (the host has one
+USB 2.0 and one USB 3.0 root hub; dongle on the 2.0 port, camera on 3.0).
+
 ## 7. Repo layout
 
 ```
@@ -577,7 +620,9 @@ plainsight-tracker/
 4. BNO055 calibration dance until all four read 3; confirm
    `bno055-offsets.json` appears; `POST /api/reference`; point at a known
    landmark and set `HEAD_IMU_HEADING_OFFSET_DEG`.
-5. Host: plug the camera, fill `.env`, `docker compose up -d --build`; open
+5. Host: plug the RTL-SDR into the USB 2.0 port and the camera into the
+   USB 3.0 port, fill `.env`, `docker compose up -d --build`. Check
+   tar1090 at `:8088` shows aircraft and measure/set the dongle PPM. Open
    the dashboard; telemetry, joystick, E-STOP, camera tile.
 6. Host calibration as before (sightings, boresight, trims) from the
    dashboard procedures.
@@ -614,9 +659,10 @@ survives; they record field lessons.
 - **VAAPI on UHD 710 inside a container** is well-trodden but has
   driver-package traps (`intel-media-va-driver-non-free` vs the free one).
   Bring-up step 4 verifies `h264_vaapi` before anything depends on it.
-- **Two CPU cores** for ffmpeg, MediaMTX, three Node processes. VAAPI keeps
-  ffmpeg cheap; the agent is idle most of the time. If it is tight, the
-  dashboard's capture FPS is the knob.
+- **Two CPU cores** for ffmpeg, MediaMTX, three Node processes, and now
+  readsb (5-15% of a core with one dongle). VAAPI keeps ffmpeg cheap; the
+  agent is idle most of the time. Expected worst case is about one core
+  busy. If it is tight, the dashboard's capture FPS is the knob.
 - **Tracking behaviour changes** with the move from host-side rate servo to
   Pico-side `TRACK`. It should be strictly better (feed-forward in the
   controller, 1 kHz planner), but the first on-roof sessions will re-tune
