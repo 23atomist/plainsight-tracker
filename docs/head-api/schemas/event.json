@@ -169,7 +169,7 @@
                 "pan",
                 "previous"
               ],
-              "description": "Pan renamed by SETPOS: `previous` and `pan` name the same physical position (spec 6.8 rule 1). `previous` is null when pan had no frame (no status, or not homed).",
+              "description": "Pan renamed by SETPOS: `previous` and `pan` name the same physical position (spec 6.8 rule 1). `previous` is null when pan had no frame (no status, or not homed). `reason: \"restored\"` marks a restore of the persisted position.",
               "properties": {
                 "source": {
                   "enum": [
@@ -185,6 +185,10 @@
                     "number",
                     "null"
                   ]
+                },
+                "reason": {
+                  "const": "restored",
+                  "description": "Present only when the position was restored from pan-reference.json (the same frame coming back)."
                 }
               }
             },

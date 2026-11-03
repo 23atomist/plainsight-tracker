@@ -242,7 +242,7 @@ async def test_reconnect_after_pico_reboot_restores_a_fresh_persisted_reference(
     async with rig:
         mark, details = await _boot_referenced_then_reboot_pico(rig, caplog, stale_file=False)
         assert details == [{"source": "none", "reason": "pan unhomed"},
-                           {"source": "host", "pan": 12.5, "previous": None}]
+                           {"source": "host", "pan": 12.5, "previous": None, "reason": "restored"}]
         state = await rig.get("/api/state")
         assert state["ref"]["pan"] == "host" and state["link"]["pico"] is True
         await asyncio.sleep(0.2)  # rule 2 only: a SETPOS (no motion), no homing, no IMU north

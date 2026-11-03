@@ -46,6 +46,11 @@ def wrap180(deg: float) -> float:
     return 180.0 if r == -180.0 else r
 
 
+def nearest_turn(deg: float, near: float) -> float:
+    """The `deg + 360k` closest to `near` (a cable-limited pan must not jump across the seam)."""
+    return deg + 360.0 * round((near - deg) / 360.0)
+
+
 @dataclass(frozen=True)
 class ReferenceResult:
     source: str  # none | imu | host
@@ -166,13 +171,21 @@ class PanReference:
         self._last_written, self._last_write_t = pos, saved["t"]
         self._state.set_ref(PanRef(source, True, self._time()))
         log.info("pan reference: restored persisted pan %.3f (source %s)", pos, source)
-        self._changed(source, pos, previous)
+        self._changed(source, pos, previous, restored=True)
         return ReferenceResult(source, pos, None)
 
     # --- events (spec 6.8) ------------------------------------------------
-    def _changed(self, source: str, pan: float, previous: float | None) -> None:
-        """Pan was renamed: old and new value for the same physical position (rule 1)."""
-        self._on_event("pan_reference", {"source": source, "pan": pan, "previous": previous})
+    def _changed(self, source: str, pan: float, previous: float | None, *,
+                 restored: bool = False) -> None:
+        """Pan was renamed: old and new value for the same physical position (rule 1).
+
+        `restored` tags a SETPOS from pan-reference.json: the frame the host already knows
+        coming back, not a new reference.
+        """
+        detail: dict = {"source": source, "pan": pan, "previous": previous}
+        if restored:
+            detail["reason"] = "restored"
+        self._on_event("pan_reference", detail)
 
     def _dropped(self, reason: str) -> None:
         """The reference is gone (rule 2): the host must stop automated motion."""
@@ -231,6 +244,9 @@ class PanReference:
         if not self._held_still(window_start, self._state.pico):
             return "head moved during reference", None, None
         pan = wrap180(circular_mean_deg(headings) - self._cfg.imu_heading_offset_deg)
+        pico = self._state.pico
+        if pico is not None:  # never move the counter a turn: its soft limits are a physical arc
+            pan = nearest_turn(pan, pico.axes["pan"].pos)
         previous = await self._setpos(pan)
         return None, pan, previous
 
