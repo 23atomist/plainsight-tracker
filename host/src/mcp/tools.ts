@@ -72,6 +72,7 @@ export function registerTools(
         zoom_deg: Number(s.zoomDeg.toFixed(3)),
         focus_deg: Number(s.focusDeg.toFixed(3)),
         moving: s.moving,
+        axes: s.axes ?? null, // per-axis {pos, vel, tgt, mode, homed, endstop, driver}; null before the first motion tick
         enabled: s.enabled,
         estop: s.estop,
         pan_ref: { source: s.ref.pan, persisted: s.ref.persisted, age_s: s.ref.ageS },
@@ -177,77 +178,145 @@ export function registerTools(
     async () => { session.stop(); device.clearJog(); await device.stop(); return text("stopped"); },
   );
 
-  server.registerTool(
-    "set_home",
-    { description: "Zero the current position as the new software home.", inputSchema: {} },
-    async () => {
-      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
-      if (session.isActive()) {
-        return errText("tracking active; stop_tracking first");
-      }
-      try {
-        await device.setHome();
-        store.invalidateCalibration();
-        // Taught travel limits are captured positions relative to the
-        // software zero, exactly like calibration's orientation/sightings —
-        // re-zeroing invalidates them the same way, for the same reason.
-        limitsStore.clear();
-        return text(
-          "home set — calibration cleared (R was tied to the old zero) and taught travel limits cleared " +
-          "(they were relative to the old zero too); re-calibrate and re-teach before pointing/jogging near the stops",
-        );
-      } catch (e) { return errText(`device rejected set_home: ${(e as Error).message}`); }
-    },
-  );
+  // Shared by every tool that moves the head or rewrites its frame. NOT used by
+  // estop/clear_estop: an E-STOP must always be allowed.
+  const motionRefusal = (): ReturnType<typeof errText> | null => {
+    if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+    if (session.isActive()) return errText("tracking active; stop_tracking first");
+    return null;
+  };
 
   server.registerTool(
-    "trigger_camera",
-    {
-      description: "Fire the camera shutter or focus for a duration.",
-      inputSchema: {
-        action: z.enum(["shoot", "focus"]),
-        ms: z.number().int().positive().max(30000).default(150),
-      },
-    },
-    async ({ action, ms }) => { await device.triggerCamera(action, ms); return text(`camera ${action} for ${ms}ms`); },
-  );
-
-  server.registerTool(
-    "list_programs",
-    { description: "List the built-in programs and which is current.", inputSchema: {} },
-    async () => text(JSON.stringify(await device.listPrograms(), null, 2)),
-  );
-
-  server.registerTool(
-    "select_program",
+    "home",
     {
       description:
-        "Select a built-in program by 0-based index (call list_programs for the valid range " +
-        "and names). commit=true enters it (virtual C-press).",
+        "Home the tilt axis against its endstop (the head runs the homing move itself; completion arrives as " +
+        "a homed/home_failed event). Pan has no endstop: use reference_pan or set_position for pan. " +
+        "Refused while tracking or sun-locked.",
+      inputSchema: { axes: z.array(z.enum(["tilt"])).optional().describe("axes to home; default tilt") },
+    },
+    async ({ axes }) => {
+      const refused = motionRefusal();
+      if (refused) return refused;
+      try {
+        await device.home(axes);
+        return text("homing tilt — watch get_status.axes.tilt.homed");
+      } catch (e) { return errText(`device rejected home: ${(e as Error).message}`); }
+    },
+  );
+
+  server.registerTool(
+    "set_position",
+    {
+      description:
+        "Declare the head's CURRENT pose to be pan_deg/tilt_deg (user frame) without moving. A pan value " +
+        "re-references pan: the head emits a pan_reference event with the delta and the host shifts " +
+        "calibration, taught limits and the azimuth sector by it automatically (nothing is cleared, unlike the " +
+        "retired ESP32 home-zeroing tool). Refused while tracking or sun-locked.",
       inputSchema: {
-        // Deliberately NO hardcoded upper bound. The firmware's menu table
-        // (MENU_OPTIONS, src/TB3_Black_109_Release1.ino) is the only authority
-        // on how many programs exist, and a literal here has gone stale every
-        // time that table CHANGED -- it once kept WEBTRACK rejected at this
-        // boundary when the table grew, and the table has since SHRUNK to a
-        // single entry (Track (Web)) as the shooting programs were removed
-        // from the firmware. Deriving the bound per call from the device's own
-        // /api/program listing is what makes this survive both directions;
-        // the firmware bounds-checks again.
-        index: z.number().int().min(0),
-        commit: z.boolean().default(false),
+        pan_deg: z.number().optional().describe("pan angle the current pose should read, degrees (user frame)"),
+        tilt_deg: z.number().optional().describe("tilt angle the current pose should read, degrees (user frame)"),
       },
     },
-    async ({ index, commit }) => {
-      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+    async ({ pan_deg, tilt_deg }) => {
+      if (pan_deg === undefined && tilt_deg === undefined) return errText("give pan_deg and/or tilt_deg");
+      const refused = motionRefusal();
+      if (refused) return refused;
+      // User frame -> device frame, exactly as goto_angle does. NO
+      // invalidateCalibration()/limitsStore.clear() here: the head's
+      // pan_reference event carries the delta and the host shifts them.
+      const pos = {
+        ...(pan_deg !== undefined ? { pan: applySign(pan_deg, cfg.panSign) } : {}),
+        ...(tilt_deg !== undefined ? { tilt: applySign(tilt_deg, cfg.tiltSign) } : {}),
+      };
       try {
-        const { names } = await device.listPrograms();
-        if (index >= names.length) {
-          return errText(`index must be 0..${names.length - 1} (device reports ${names.length} programs)`);
-        }
-        await device.selectProgram(index, commit);
-        return text(`selected program ${index}${commit ? " (entered)" : ""}`);
-      } catch (e) { return errText(`device rejected select_program: ${(e as Error).message}`); }
+        await device.setPos(pos);
+        return text(
+          "position declared — the head will emit a pan_reference event and the host shifts calibration, " +
+          "taught limits and the azimuth sector by the delta automatically (nothing was cleared)",
+        );
+      } catch (e) { return errText(`device rejected set_position: ${(e as Error).message}`); }
+    },
+  );
+
+  server.registerTool(
+    "reference_pan",
+    {
+      description:
+        "Re-run the head's IMU north reference for pan. It also moves tilt to the reference angle on the " +
+        "head, so it is refused while tracking or sun-locked.",
+      inputSchema: {},
+    },
+    async () => {
+      const refused = motionRefusal();
+      if (refused) return refused;
+      try {
+        await device.reference();
+        return text("re-referencing pan from the IMU — result arrives as a pan_reference event (see get_status.pan_ref)");
+      } catch (e) { return errText(`device rejected reference_pan: ${(e as Error).message}`); }
+    },
+  );
+
+  server.registerTool(
+    "estop",
+    { description: "Emergency stop: latch the head (every motion route is refused until clear_estop) and end tracking.", inputSchema: {} },
+    // Always allowed: not gated by the sun lock or an active session. Order:
+    // end the session first so nothing re-issues motion, then latch. The
+    // supervisor has no abort method; its idle-park polls idleParkAbortReason(),
+    // which reads "estop" from device state, so the latch alone aborts it
+    // within one poll.
+    async () => {
+      session.stop();
+      try {
+        await device.estop();
+        return text("E-STOP latched; clear_estop to release");
+      } catch (e) { return errText(`E-STOP post failed: ${(e as Error).message} — press the physical stop if the rig is moving`); }
+    },
+  );
+
+  server.registerTool(
+    "clear_estop",
+    { description: "Release the E-STOP latch. Motion stays idle until commanded.", inputSchema: {} },
+    async () => {
+      try {
+        await device.clearEstop();
+        return text("E-STOP cleared");
+      } catch (e) { return errText(`device rejected clear_estop: ${(e as Error).message}`); }
+    },
+  );
+
+  server.registerTool(
+    "get_head_config",
+    {
+      description: "Read the head's whole config (pan/tilt/zoom/focus/global/head sections) as the head reports it.",
+      inputSchema: {},
+    },
+    async () => {
+      try { return text(JSON.stringify(await device.getHeadConfig(), null, 2)); }
+      catch (e) { return errText(`head config unavailable: ${(e as Error).message}`); }
+    },
+  );
+
+  server.registerTool(
+    "set_head_config",
+    {
+      description:
+        "Set one numeric head config value. Guarded keys (the global scope, socket/host_baud) are refused " +
+        "with 403 unless force=true. save=true also writes it to the Pico's flash, which PAUSES its step " +
+        "core for the duration: never while the rig is moving, so this is refused while tracking.",
+      inputSchema: {
+        scope: z.enum(["pan", "tilt", "zoom", "focus", "global"]),
+        key: z.string().regex(/^[A-Za-z0-9_]+$/),
+        value: z.number().finite(),
+        save: z.boolean().default(false),
+        force: z.boolean().default(false),
+      },
+    },
+    async ({ scope, key, value, save, force }) => {
+      if (session.isActive()) return errText("tracking active; stop_tracking first");
+      try {
+        return text(JSON.stringify(await device.setHeadConfig(scope, key, value, { save, force })));
+      } catch (e) { return errText((e as Error).message); }
     },
   );
 

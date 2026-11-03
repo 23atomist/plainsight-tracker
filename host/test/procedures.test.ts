@@ -448,7 +448,7 @@ describe("renderSetHome", () => {
     expect(html).toContain("destructive");
   });
 
-  // Review fix, UI-9 fix round, finding M-4: set_home also refuses
+  // Review fix, UI-9 fix round, finding M-4: the home tool also refuses
   // server-side under a sun lock -- the control must disappear
   // structurally (no data-act), not stay clickable behind a toast.
   it("gates [Set home] structurally under a sun lock -- no data-act, a visible reason instead", () => {

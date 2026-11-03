@@ -215,4 +215,8 @@ export const HeadImuBurstZ = z.object({
 const AxisConfigZ = z.object({
   min: z.number(), max: z.number(), vmax: z.number(), amax: z.number(),
 }).passthrough();
+/** The whole `GET /api/config` body ({pan, tilt, zoom, focus, global, head}), validated loosely. */
+export const HeadConfigResponseZ = z.record(z.string(), z.record(z.string(), z.unknown()));
+export type HeadConfigResponse = z.infer<typeof HeadConfigResponseZ>;
+
 export const HeadAxisConfigResponseZ = z.object({ pan: AxisConfigZ, tilt: AxisConfigZ }).passthrough();

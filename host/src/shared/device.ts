@@ -3,7 +3,7 @@ import type { ZodError } from "zod";
 import { Config } from "./config.js";
 import { DeviceState } from "./types.js";
 import {
-  HeadAxisConfig, HeadAxisConfigResponseZ, HeadAxisName, HeadEvent, HeadEventZ, HeadImuBurstZ, HeadRef,
+  HeadAxisConfig, HeadAxisConfigResponseZ, HeadConfigResponseZ, type HeadConfigResponse, HeadAxisName, HeadEvent, HeadEventZ, HeadImuBurstZ, HeadRef,
   HeadTick, HeadTickZ, HeadTrackCmd, PanReferenceDetailZ,
 } from "./head-types.js";
 import { Vec3, normalize } from "./geo/vec3.js";
@@ -519,6 +519,30 @@ export class Device {
     await this.post("/api/reference");
   }
 
+  /**
+   * `GET /api/config`: the head's whole config (pan/tilt/zoom/focus/global/head), validated loosely.
+   * Not motion: bypasses the FIFO, ordinary 2 s timeout.
+   */
+  async getHeadConfig(): Promise<HeadConfigResponse> {
+    const raw = await this.request("GET", "/api/config");
+    const parsed = HeadConfigResponseZ.safeParse(raw);
+    if (!parsed.success) throw new Error(`head config malformed: ${zodWhy(parsed.error)}`);
+    return parsed.data;
+  }
+
+  /**
+   * `POST /api/config` (`?force=1` when `force`; a guarded key without it is a 403 `DeviceHttpError`).
+   * `save: true` makes the Pico SAVE to flash, which pauses its step core: never while tracking.
+   * Not motion, so not behind the FIFO.
+   */
+  async setHeadConfig(
+    scope: string, key: string, value: number, opts: { save?: boolean; force?: boolean } = {},
+  ): Promise<unknown> {
+    const body: Record<string, unknown> = { scope, key, value };
+    if (opts.save) body.save = true;
+    return this.request("POST", `/api/config${opts.force ? "?force=1" : ""}`, body);
+  }
+
   // Normalized gravity direction in the IMU frame: the mean of the burst's
   // `gravity` vectors (the BNO055's fused gravity estimate, m/s²). Only the
   // direction matters to the gravity-anchoring callers (characterize_imu,
@@ -662,28 +686,6 @@ export class Device {
     const err = this.jogError;
     this.jogError = null;
     if (err) throw err;
-  }
-
-  // --- removed ESP32 features --------------------------------------------------
-
-  /** @deprecated TRANSITIONAL — removed in Task 6 with the list_programs/select_program tools (the head has no programs) */
-  async listPrograms(): Promise<{ current: number; names: string[]; selectable: boolean }> {
-    throw new Error("removed: the head has no programs");
-  }
-
-  /** @deprecated TRANSITIONAL — removed in Task 6 with the list_programs/select_program tools (the head has no programs) */
-  async selectProgram(_index: number, _commit: boolean): Promise<void> {
-    throw new Error("removed: the head has no programs");
-  }
-
-  /** @deprecated TRANSITIONAL — removed in Task 6 with the trigger_camera tool (the head has no camera trigger) */
-  async triggerCamera(_action: "shoot" | "focus", _ms: number): Promise<void> {
-    throw new Error("removed: the head has no camera trigger");
-  }
-
-  /** @deprecated TRANSITIONAL — removed in Task 6 with the set_home tool (use setPos({pan}) / home()) */
-  async setHome(): Promise<void> {
-    throw new Error("removed: use setPos({ pan }) or home()");
   }
 }
 

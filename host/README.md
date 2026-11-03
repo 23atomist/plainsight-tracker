@@ -43,7 +43,15 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 
 ## Tools
 
-`get_status`, `goto_angle`, `jog`, `stop`, `set_home`, `trigger_camera`, `list_programs`, `select_program`.
+| Tool | What it does |
+|---|---|
+| `get_status` | position, motion, E-STOP latch, pan reference, IMU, link state, and per-axis `axes` (`pos/vel/tgt/mode/homed/endstop/driver`) |
+| `goto_angle`, `jog`, `stop` | absolute move, rate jog, halt (`stop` leaves the E-STOP latch alone) |
+| `home` | home the tilt axis; watch `get_status.axes.tilt.homed` |
+| `set_position` | declare the current pose to be a pan/tilt value; the head's `pan_reference` event shifts calibration, taught limits and the sector (nothing is cleared) |
+| `reference_pan` | re-run the head's IMU north reference for pan |
+| `estop`, `clear_estop` | latch / release the head's E-STOP; always allowed, even sun-locked or while tracking |
+| `get_head_config`, `set_head_config` | read / write the head's config; guarded keys need `force`; `save` pauses the Pico step core, so it is refused while tracking |
 
 `goto_angle` is the soft-limit-enforced primitive — out-of-range targets are refused. `jog` takes
 `pan_dps`/`tilt_dps` in °/s (user frame, each capped at `maxJogDps`) and `duration_ms`, replies
@@ -63,7 +71,7 @@ mode the firmware runs a separate blocking loop that doesn't pump the web input 
 rig's own LCD screen first.**
 
 **This is why a dedicated "Track (Web)" mode exists** — program index **8**, the last entry in the
-rig's program menu (`select_program` with `index: 8, commit: true`, or pick it on the LCD). It
+rig's program menu (pick it on the LCD). It
 runs the velocity engine on a screen of its own, so tracking motion just works and stays working.
 Use it for anything driven by layer 3.
 
@@ -219,7 +227,7 @@ reach the glass as 10 Hz steps.
 ### Arbitration
 
 Tracking and manual control cannot fight over the rig: while a tracking session is active,
-`goto_angle`, `jog`, `set_home`, `point_at`, and `point_at_azel` all refuse with `"tracking
+`goto_angle`, `jog`, `home`, `set_position`, `point_at`, and `point_at_azel` all refuse with `"tracking
 active; stop_tracking first"`. `stop` is deliberately **not** guarded — it is the escape hatch and
 always wins, stopping tracking and halting the device in one call.
 
@@ -307,9 +315,9 @@ soft-limit guard, and `point_at`/`point_at_azel` — resolves and uses this same
 (taught-or-config) range; a limit enforced against only the config ceiling in one of those paths
 and the taught value in another would just be this section's bug moved somewhere else.
 
-Because a taught limit is a captured position relative to the software zero, **`set_home` clears
-every taught edge** the same way it already clears layer-2 calibration (`R` was tied to the old
-zero) — re-teach the edges (and re-calibrate) after re-homing.
+Because a taught limit is a captured position relative to the software zero, **`set_position` shifts
+every taught edge** (and layer-2 calibration, whose `R` was tied to the old zero) by the delta in
+the head's `pan_reference` event, so nothing needs re-teaching after a re-reference.
 
 The dashboard's 3D rig view (see Operations Dashboard below) renders the effective envelope
 directly: a thin arc for each axis's permitted sweep, colored green/amber/red as the current pose
@@ -430,19 +438,18 @@ depends on refuses with:
 sun guard active; blocked to protect the camera — clear it with set_sun_guard
 ```
 
-That covers **motion** — `goto_angle`, `jog`, `set_home`, `point_at`, `point_at_azel`,
+That covers **motion** — `goto_angle`, `jog`, `home`, `set_position`, `reference_pan`, `point_at`, `point_at_azel`,
 `start_tracking`, `update_target` — and the **state-change** tools that would otherwise silently
 release the lock by dropping calibration or engaging a rig program: `set_rig_location`,
-`sight_landmark`, `solve_calibration`, `clear_calibration`, and `select_program`. The supervisor
+`sight_landmark`, `solve_calibration`, and `clear_calibration`. The supervisor
 also re-stops any tracking session every tick while locked, so a track started in a race with the
 gate is halted within one tick rather than slewing the rig on the goto path (which the jog latch
 does not cover).
 
 `stop` and `stop_tracking` are deliberately **not** guarded — they're the escape hatches and must
-always work; `get_sun`/`get_tracking_status`/`get_calibration` are read-only. `set_home`, once you
-clear the lock and run it, still clears layer-2 calibration (`R` was tied to the old zero), which
-drops the guard to `disabled`/`uncalibrated` until you re-calibrate — **the rig is unprotected in
-that window**, so re-calibrate before relying on the guard again.
+always work (so do `estop`/`clear_estop`); `get_sun`/`get_tracking_status`/`get_calibration` are
+read-only. `clear_calibration` drops the guard to `disabled`/`uncalibrated` until you re-calibrate —
+**the rig is unprotected in that window**, so re-calibrate before relying on the guard again.
 
 ### Park behavior
 
@@ -462,8 +469,8 @@ tools (above), and plans a path with `planPark` (`src/track/sunguard.ts`):
 A position that starts *inside* the cone (the case the guard exists for — the sun drifted onto the
 boresight) is held to a looser bar on its first leg: it only has to move away without getting
 closer, not clear the full cone immediately, since demanding that would leave the rig frozen on
-the sun. Every waypoint is flown as its own `goto`; if one is rejected (e.g. `select_program`
-racing the guard's move, see below) the supervisor retries the same waypoint next tick, and gives
+the sun. Every waypoint is flown as its own `goto`; if one is rejected (e.g. a 423 from an
+E-STOP latch racing the guard's move, see below) the supervisor retries the same waypoint next tick, and gives
 up — faulting with `park_unreachable` — after 50 consecutive rejections (~5s at the default 10Hz
 tick).
 
@@ -490,16 +497,6 @@ This is the most important part of this section — know what the guard does *no
 
 - **A stopped daemon.** The supervisor is a loop inside the daemon process; if the daemon isn't
   running, nothing is watching the sun. Park the rig down manually before ending a session.
-- **A program engaged *before* a trip.** A client can no longer *start* a program while the guard
-  is locked (`select_program` is gated). But if a rig program was already engaged when the guard
-  trips, the daemon can't reliably interrupt it: the firmware rejects (409) the guard's park move
-  repeatedly until it gives up and faults, while the program keeps driving the rig with no sun
-  awareness. The fix — having the guard call `/api/stop` to break a running program out — **is
-  deferred to the hardware session**, because whether `/api/stop` actually interrupts a *running
-  firmware program* is unverified on this rig (the bench already found `/api/stop` had surprising,
-  mechanism-specific behavior against a streaming jog). Until then: don't leave a rig program
-  engaged while relying on the sun guard. (On a fault the guard does now fire `/api/stop`, but its
-  effect on a running program is exactly the unverified piece.)
 - **The physical nunchuck.** The supervisor reacts to whatever telemetry shows the boresight
   doing — including motion driven by the physical joystick — and will park against it, but it has
   no way to gate the rig's own hardware joystick input at the source.

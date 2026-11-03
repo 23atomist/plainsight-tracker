@@ -36,7 +36,6 @@ function fakeSources(over: { mtx?: Sources["mtx"]; camera?: Sources["camera"] })
     setNorthZero: async () => "unused",
     teachLimit: async () => "unused",
     clearTaughtLimits: async () => "unused",
-    setHome: async () => "unused",
     captureSnapshot: async () => "unused",
     startRecording: async () => "unused",
     stopRecording: async () => "unused",

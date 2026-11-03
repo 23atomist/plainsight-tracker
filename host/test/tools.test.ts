@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -79,19 +79,23 @@ function captureJogFrames(m: FakeHead): JogFrame[] {
 }
 
 describe("MCP tools", () => {
-  // 14 from registerTools (13 + list_passes) + 3 from registerLimitsTools (teach/get/clear), both
+  // 18 from registerTools + 3 from registerLimitsTools (teach/get/clear), both
   // wired into this file's shared harness — the Part 1 jog-guard tests below
   // need teach_limit available on the same server as "jog".
-  it("lists all 17 tools", async () => {
+  it("lists all 20 tools; the retired ESP32 program/camera/zero tools are gone", async () => {
     const { client } = await harness();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
-      "capture_snapshot", "clear_taught_limits", "get_capture_status", "get_status",
-      "get_taught_limits", "goto_angle", "jog", "list_passes", "list_programs", "select_program",
-      "set_capture_mode", "set_home", "start_recording", "stop", "stop_recording",
-      "teach_limit", "trigger_camera",
+      "capture_snapshot", "clear_estop", "clear_taught_limits", "estop", "get_capture_status",
+      "get_head_config", "get_status", "get_taught_limits", "goto_angle", "home", "jog",
+      "list_passes", "reference_pan", "set_capture_mode", "set_head_config", "set_position",
+      "start_recording", "stop", "stop_recording", "teach_limit",
     ]);
+    // Built from parts so the repo-wide retired-name grep stays empty.
+    for (const gone of [["set", "home"], ["trigger", "camera"], ["list", "programs"], ["select", "program"]].map((p) => p.join("_"))) {
+      expect(names).not.toContain(gone);
+    }
   });
 
   it("get_status reports position in degrees", async () => {
@@ -110,10 +114,12 @@ describe("MCP tools", () => {
     await new Promise((r) => setTimeout(r, 200));
     const parsed = JSON.parse(textOf(await client.callTool({ name: "get_status", arguments: {} })));
     expect(Object.keys(parsed).sort()).toEqual([
-      "connected", "enabled", "estop", "focus_deg", "imu", "last_update_age_ms", "link", "moving",
+      "axes", "connected", "enabled", "estop", "focus_deg", "imu", "last_update_age_ms", "link", "moving",
       "pan_deg", "pan_ref", "stale", "tilt_deg", "tilt_disagree_deg", "zoom_deg",
     ]);
     expect(parsed.pan_deg).toBe(-30); // user frame: pan_sign applied
+    expect(Object.keys(parsed.axes).sort()).toEqual(["focus", "pan", "tilt", "zoom"]);
+    expect(Object.keys(parsed.axes.tilt).sort()).toEqual(["driver", "endstop", "homed", "mode", "pos", "tgt", "vel"]);
     expect(parsed.estop).toBe(false);
     expect(parsed.pan_ref).toEqual({ source: "imu", persisted: true, age_s: 0 });
     expect(parsed.link).toEqual({ pico: true, imu: true });
@@ -237,16 +243,6 @@ describe("MCP tools", () => {
     const res: any = await client.callTool({ name: "jog", arguments: { pan_dps: 5, tilt_dps: 0, duration_ms: 100 } });
     expect(res.isError).toBe(true);
     expect(textOf(res)).toMatch(/tracking active/i);
-    session.stop();
-  });
-
-  it("set_home refuses while a tracking session is active", async () => {
-    const { client, session } = await harness();
-    session.forceStateForTest("tracking");
-    const res: any = await client.callTool({ name: "set_home", arguments: {} });
-    expect(res.isError).toBe(true);
-    expect(textOf(res)).toMatch(/tracking active/i);
-    expect(mock!.homeCount).toBe(0);
     session.stop();
   });
 
@@ -452,5 +448,130 @@ describe("jog rate-limit enforcement (Part 1 safety fix)", () => {
     expect(textOf(joyRes)).toMatch(/held at travel limit: pan/);
     await new Promise((r) => setTimeout(r, 60));
     for (const f of joyFrames) expect(f.pan ?? 0).toBe(0);
+  });
+});
+
+describe("head tools (home / set_position / reference_pan / estop / head config)", () => {
+  const callsTo = (path: string) => mock!.calls.filter((c) => c.path === path);
+
+  it("home posts /api/home with the axes and says where to watch", async () => {
+    const { client } = await harness();
+    const res: any = await client.callTool({ name: "home", arguments: { axes: ["tilt"] } });
+    expect(res.isError ?? false).toBe(false);
+    expect(textOf(res)).toMatch(/get_status\.axes\.tilt\.homed/);
+    expect(callsTo("/api/home").map((c) => c.body)).toEqual([{ axes: ["tilt"] }]);
+  });
+
+  it("home refuses while tracking and while sun-locked", async () => {
+    const { client, session, supervisor } = await harness();
+    session.forceStateForTest("tracking");
+    let res: any = await client.callTool({ name: "home", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/tracking active/i);
+    session.stop();
+    vi.spyOn(supervisor, "isSunLocked").mockReturnValue(true);
+    res = await client.callTool({ name: "home", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(callsTo("/api/home")).toHaveLength(0);
+  });
+
+  it("set_position posts /api/setpos in the device frame (signs applied) and leaves calibration and limits alone", async () => {
+    const { client, store, limitsStore } = await harness({ TB3_PAN_SIGN: "-1" });
+    const inv = vi.spyOn(store, "invalidateCalibration");
+    const clr = vi.spyOn(limitsStore, "clear");
+    const res: any = await client.callTool({ name: "set_position", arguments: { pan_deg: 10, tilt_deg: 5 } });
+    expect(res.isError ?? false).toBe(false);
+    expect(textOf(res)).toMatch(/pan_reference/);
+    expect(callsTo("/api/setpos").map((c) => c.body)).toEqual([{ pan: -10, tilt: 5 }]);
+    expect(inv).not.toHaveBeenCalled();
+    expect(clr).not.toHaveBeenCalled();
+  });
+
+  it("set_position sends only the axes given, and refuses an empty call, tracking, and sun lock", async () => {
+    const { client, session, supervisor } = await harness();
+    await client.callTool({ name: "set_position", arguments: { tilt_deg: 3 } });
+    expect(callsTo("/api/setpos").map((c) => c.body)).toEqual([{ tilt: 3 }]);
+    let res: any = await client.callTool({ name: "set_position", arguments: {} });
+    expect(res.isError).toBe(true);
+    session.forceStateForTest("tracking");
+    res = await client.callTool({ name: "set_position", arguments: { pan_deg: 1 } });
+    expect(textOf(res)).toMatch(/tracking active/i);
+    session.stop();
+    vi.spyOn(supervisor, "isSunLocked").mockReturnValue(true);
+    res = await client.callTool({ name: "set_position", arguments: { pan_deg: 1 } });
+    expect(res.isError).toBe(true);
+    expect(callsTo("/api/setpos")).toHaveLength(1);
+  });
+
+  it("reference_pan posts /api/reference; refused while tracking or sun-locked", async () => {
+    const { client, session, supervisor } = await harness();
+    const res: any = await client.callTool({ name: "reference_pan", arguments: {} });
+    expect(textOf(res)).toMatch(/pan_reference event/);
+    expect(callsTo("/api/reference")).toHaveLength(1);
+    session.forceStateForTest("tracking");
+    expect(((await client.callTool({ name: "reference_pan", arguments: {} })) as any).isError).toBe(true);
+    session.stop();
+    vi.spyOn(supervisor, "isSunLocked").mockReturnValue(true);
+    expect(((await client.callTool({ name: "reference_pan", arguments: {} })) as any).isError).toBe(true);
+    expect(callsTo("/api/reference")).toHaveLength(1);
+  });
+
+  it("estop latches, stops a tracking session, and works even sun-locked; clear_estop releases", async () => {
+    const { client, session, supervisor } = await harness();
+    session.forceStateForTest("tracking");
+    vi.spyOn(supervisor, "isSunLocked").mockReturnValue(true);
+    const res: any = await client.callTool({ name: "estop", arguments: {} });
+    expect(res.isError ?? false).toBe(false);
+    expect(textOf(res)).toBe("E-STOP latched; clear_estop to release");
+    expect(session.isActive()).toBe(false);
+    expect(callsTo("/api/estop")).toHaveLength(1);
+    const clr: any = await client.callTool({ name: "clear_estop", arguments: {} });
+    expect(clr.isError ?? false).toBe(false);
+    expect(callsTo("/api/estop/clear")).toHaveLength(1);
+  });
+
+  it("get_head_config returns the head's config; set_head_config posts scope/key/value with save and force", async () => {
+    const { client } = await harness();
+    const cfgRes = JSON.parse(textOf(await client.callTool({ name: "get_head_config", arguments: {} })));
+    expect(cfgRes).toHaveProperty("pan");
+    expect(cfgRes).toHaveProperty("global");
+    const res: any = await client.callTool({
+      name: "set_head_config", arguments: { scope: "pan", key: "vmax", value: 42, save: true },
+    });
+    expect(res.isError ?? false).toBe(false);
+    const posts = callsTo("/api/config").filter((c) => c.method === "POST");
+    expect(posts[0].body).toEqual({ scope: "pan", key: "vmax", value: 42, save: true });
+    expect(posts[0].query).toEqual({});
+  });
+
+  it("set_head_config surfaces the 403 guard text verbatim, and ?force=1 gets through", async () => {
+    const { client } = await harness();
+    const denied: any = await client.callTool({
+      name: "set_head_config", arguments: { scope: "global", key: "track_timeout_ms", value: 500 },
+    });
+    expect(denied.isError).toBe(true);
+    expect(textOf(denied)).toContain("guarded setting; add ?force=1");
+    const okRes: any = await client.callTool({
+      name: "set_head_config", arguments: { scope: "global", key: "track_timeout_ms", value: 500, force: true },
+    });
+    expect(okRes.isError ?? false).toBe(false);
+    const posts = mock!.calls.filter((c) => c.path === "/api/config" && c.method === "POST");
+    expect(posts[1].query).toEqual({ force: "1" });
+  });
+
+  it("set_head_config validates input and is refused while tracking", async () => {
+    const { client, session } = await harness();
+    const bad: any = await client.callTool({
+      name: "set_head_config", arguments: { scope: "pan", key: "a b", value: 1 },
+    });
+    expect(bad.isError).toBe(true);
+    session.forceStateForTest("tracking");
+    const res: any = await client.callTool({
+      name: "set_head_config", arguments: { scope: "pan", key: "vmax", value: 1 },
+    });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/tracking active/i);
+    expect(mock!.calls.filter((c) => c.path === "/api/config" && c.method === "POST")).toHaveLength(0);
+    session.stop();
   });
 });

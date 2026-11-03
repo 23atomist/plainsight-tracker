@@ -31,7 +31,6 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
     setNorthZero: async () => { calls.push("setNorthZero:[]"); return "north zero set"; },
     teachLimit: async (edge: string) => { calls.push(`teachLimit:${JSON.stringify([edge])}`); return `taught ${edge}`; },
     clearTaughtLimits: async () => { calls.push("clearTaughtLimits:[]"); return "taught limits cleared"; },
-    setHome: async () => { calls.push("setHome:[]"); return "home set"; },
     captureSnapshot: async (icao?: string) => { calls.push(`captureSnapshot:${JSON.stringify([icao])}`); return "snapshot written"; },
     startRecording: async () => { calls.push("startRecording:[]"); return "recording started"; },
     stopRecording: async () => { calls.push("stopRecording:[]"); return "recording stopped"; },
@@ -125,13 +124,13 @@ describe("runAction", () => {
   });
 
   // Previously the dashboard had no transport at all for these tools (the
-  // operator asked how to trigger teach_limit/set_home from the UI and the
+  // operator asked how to trigger teach_limit from the UI and the
   // answer was "you can't") -- this pins that every one of them is now a
   // real ControlDeps method AND routed through runAction.
   it("exposes a control for every tool the redesign needs", () => {
     const { d } = deps();
     for (const k of ["characterizeImu", "setNorthZero", "teachLimit", "clearTaughtLimits",
-                     "setHome", "captureSnapshot", "startRecording", "stopRecording", "setCaptureMode"]) {
+                     "captureSnapshot", "startRecording", "stopRecording", "setCaptureMode"]) {
       expect(typeof (d as unknown as Record<string, unknown>)[k]).toBe("function");
     }
   });
@@ -165,13 +164,6 @@ describe("runAction", () => {
     const r = await runAction(d, "limits/teach", {});
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/edge/i);
-  });
-
-  it("routes home/set", async () => {
-    const { d, calls } = deps();
-    const r = await runAction(d, "home/set", {});
-    expect(r.ok).toBe(true);
-    expect(calls).toContain("setHome:[]");
   });
 
   it("routes capture/snapshot (with and without an icao), capture/start-recording, capture/stop-recording", async () => {

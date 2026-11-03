@@ -26,6 +26,8 @@ const DeviceStatusZ = z.object({
   moving: z.boolean(),
   estop: z.boolean(),
   pan_ref: z.object({ source: z.enum(["none", "imu", "host"]) }),
+  // Per-axis {pos, vel, tgt, mode, homed, endstop, driver}; null before the first motion tick.
+  axes: z.record(z.string(), z.unknown()).nullable().optional(),
   tilt_disagree_deg: z.number().nullable(),
   link: z.object({ pico: z.boolean(), imu: z.boolean() }),
   stale: z.boolean(),
@@ -328,7 +330,6 @@ export class McpDashboardClient {
   async setNorthZero(): Promise<string> { return this.call("set_north_zero", {}); }
   async teachLimit(edge: string): Promise<string> { return this.call("teach_limit", { edge }); }
   async clearTaughtLimits(): Promise<string> { return this.call("clear_taught_limits", {}); }
-  async setHome(): Promise<string> { return this.call("set_home", {}); }
   async captureSnapshot(icao?: string): Promise<string> {
     return this.call("capture_snapshot", icao ? { icao } : {});
   }

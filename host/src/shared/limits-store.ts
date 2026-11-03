@@ -97,11 +97,10 @@ export class LimitsStore {
     this.save();
   }
 
-  // set_home re-zeros the step origin (see tools.ts's set_home): every taught
-  // edge was captured against the OLD zero and is now meaningless (possibly
-  // dangerously so — a "tighter" limit under the old origin could sit
-  // anywhere under the new one), so it must be invalidated exactly the way
-  // set_home already invalidates CalibrationStore's orientation.
+  // A re-zero of the step origin leaves every taught edge captured against
+  // the OLD zero, meaningless (possibly dangerously so — a "tighter" limit
+  // under the old origin could sit anywhere under the new one), so it must be
+  // invalidated exactly the way CalibrationStore's orientation is.
   clear(): void {
     this.limits = empty();
     this.save();

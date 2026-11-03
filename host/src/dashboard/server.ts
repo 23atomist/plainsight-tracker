@@ -226,7 +226,6 @@ export function buildControlDeps(s: Sources): ControlDeps {
     setNorthZero: s.client.setNorthZero.bind(s.client),
     teachLimit: s.client.teachLimit.bind(s.client),
     clearTaughtLimits: s.client.clearTaughtLimits.bind(s.client),
-    setHome: s.client.setHome.bind(s.client),
     captureSnapshot: s.client.captureSnapshot.bind(s.client),
     startRecording: s.client.startRecording.bind(s.client),
     stopRecording: s.client.stopRecording.bind(s.client),

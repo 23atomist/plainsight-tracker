@@ -189,7 +189,7 @@ describe("SunSupervisor", () => {
     expect(s.reason).not.toBe("uncalibrated");
   });
 
-  it("set_home invalidates R, dropping the guard to disabled(uncalibrated)", async () => {
+  it("a re-zero invalidates R, dropping the guard to disabled(uncalibrated)", async () => {
     const { store } = await harness();
     expect(store.isCalibrated()).toBe(true);
     store.invalidateCalibration();
