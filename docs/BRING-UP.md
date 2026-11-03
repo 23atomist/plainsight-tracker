@@ -213,13 +213,72 @@ track/jog request logs, boot reference tilt 2°"):
   once per 10 s per name, with a count of the repeats in between. The access
   log for `/api/track` and `/api/jog` is at DEBUG; other routes stay at INFO.
 
-Hardware, still for the owner:
+Hardware:
 
-- **Suspected pan stall at about 7° into the 2 deg/s bench** (anomaly 1). Check
-  for a cable or mount bind near +7° clockwise of the start orientation, and
-  check the low-speed StealthChop / 0.6 A run current. Then re-run the pan
-  bench with the IMU heading as the witness.
-- **The IMU reports 3 to 9 % more tilt than the Pico** (anomaly 3). Either the
-  tilt `gear` (10.7) is wrong or the IMU is not square on its mount. Measure
-  the tilt gear ratio, or check the mount, before `HEAD_IMU_TILT_*` is
-  trusted for the `tiltDisagreeDeg` check.
+- **RESOLVED: suspected pan stall at about 7° into the 2 deg/s bench**
+  (anomaly 1). Session 2 (below) showed it was a compass artefact, not a
+  stall. With the owner watching, pan swept smoothly both ways and returned to
+  its start, and the hardware pan TRACK bench passed. The drivetrain is fine.
+- **Open, for the owner: the IMU reports 3 to 9 % more tilt than the Pico**
+  (anomaly 3). Either the tilt `gear` (10.7) is wrong or the IMU is not square
+  on its mount. Measure the tilt gear ratio, or check the mount, before
+  `HEAD_IMU_TILT_*` is trusted for the `tiltDisagreeDeg` check.
+- **Open, for the owner: `tiltDisagreeDeg` read -1.2 at tilt 2 after the
+  session-2 tilt sweep** (it was about 0 before), while the IMU acc
+  calibration had fallen back to 0. The leading explanation is IMU drift, not
+  lost steps. Re-check it together with the tilt scale item above.
+
+## First light, session 2 (2026-11-03 afternoon, owner present)
+
+### Deploy and boot
+
+- Deployed build 06a1f22 to the Pi at 192.168.4.100
+  (`docker compose up -d --build`).
+- Boot homed tilt and moved it to the 2° reference tilt.
+- The compass reference timed out as expected (mag cal 0), so `ref.pan` is
+  `none`.
+
+### Pan mechanics, with the owner watching
+
+- `goto pan 10`: compass 315.3 -> 323.9, that is 8.6° for 10°
+  (magnetometer uncalibrated).
+- `goto pan 60` then `goto pan 0`: pan swept smoothly both ways and returned
+  to the start.
+- Mid-sweep, the compass heading **froze at 330° for about 6 s**, then ended
+  30° off (315 -> 285). The compass is unreliable, not the mechanics.
+
+**Verdict:** the session-1 "stall" was a compass artefact; the drivetrain is
+fine.
+
+**Cables:** they route through the centre of the head. The owner states that
+several full pan turns are safe, but not unlimited: "10-20 turns" before it
+becomes a problem. The ±180 soft limits stay for now; the cabling leaves
+headroom beyond them.
+
+### TRACK benches on hardware: all PASS
+
+| Bench | Result |
+|---|---|
+| Pan 2°/s, 30 s | max 0.417°, rms 0.145°, p95 0.230° (301 ticks) |
+| Stop test | vel 0 after 1.210 s (limit 2.0) |
+| Tilt 1°/s, 30 s | max 0.248°, rms 0.074°, p95 0.116° |
+
+### Tilt check after the sweep
+
+After the tilt sweep, `tiltDisagreeDeg` read -1.2 at tilt 2 (it was about 0
+before), and the IMU acc calibration was back at 0. IMU drift, not lost steps,
+is the leading explanation. This stays under Follow-ups, together with the
+3 to 9 % tilt scale discrepancy.
+
+### Pan north
+
+The BNO055 mag/acc calibration cannot be done on a mounted sensor, because the
+head cannot be turned through a figure-8. So pan north will come from the
+host's landmark sightings (`set_position` / calibration), not from the compass.
+Once a reference exists, `HEAD_PAN_RESTORE=persisted` is the path that keeps
+it.
+
+### Clock
+
+The Pi's clock is NTP-synchronised and correct (2026-11-03 MST). The earlier
+remark in the session that it was "two days behind" was wrong.
