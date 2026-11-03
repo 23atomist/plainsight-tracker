@@ -1,0 +1,963 @@
+/* COCKPIT: the always-visible monitoring surface -- top bar, and the three
+   columns (aircraft / video+aim / rig+track status). Shared tokens (colours,
+   chip/button idioms) live in style.css, which imports this file. */
+
+/* ---------- bottom bar: left identity/safety cluster ---------- */
+
+/* The old top bar is gone entirely: identity (TB3), the calibration badge,
+   the rig/sun/svc health glance, E-STOP and the Tools toggle live at the
+   bottom-left now; the strip of aircraft cards is the only thing at the top
+   of the screen. E-STOP keeps its position-independent #estop styling
+   (style.css) and stays one click away. */
+#bar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.brand {
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  font-size: 15px;
+}
+/* .badge is a generic pill, deliberately NOT scoped to any one container:
+   it's reused by procedures.js's calibration-status badge inside the drawer
+   (see drawer.css), and a container-scoped `#bar-left .badge` would have
+   specificity (1,1,0) -- higher than
+   .badge-calibrated/.badge-provisional/.badge-uncalibrated's (0,1,0)
+   REGARDLESS of import order, so it would always win and the badge would
+   render all three calibration states in the same muted grey, text being
+   the only differentiator. Keeping `.badge` a bare class means the tone
+   classes (declared later in the cascade, in drawer.css) correctly override
+   just `color`/`border-color` at matching specificity. .health has no such
+   tone classes to lose to, so it shares this rule. */
+.badge,
+.health {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 1.5em;
+  min-height: 1em;
+}
+/* rig/sun/svc glance: each dot+label pair needs its own air or they read as
+   one mashed string in the compact bar cluster. */
+.health .led { margin-right: 3px; }
+#drawer-open {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+#drawer-open:hover { border-color: var(--accent); }
+
+/* ---------- top drawer: horizontal aircraft strip ---------- */
+
+/* Every aircraft in range as cards in ONE horizontally-scrollable row, left
+   to right across the whole screen. The strip is the ONLY thing at the top;
+ the stage below claims everything else. overflow-x: auto is the
+   whole point -- with a busy feed the row scrolls sideways rather than ever
+   pushing the video smaller. */
+#adsb-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  padding: 5px 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  min-height: 0;
+}
+
+#adsb-list {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* A horizontal strip needs deliberate scroll affordance on desktop where
+     shift-wheel is undiscoverable: allow trackpad/touch panning and keep the
+     scrollbar thin but present. */
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+
+/* ---------- stage: fullscreen camera surface ---------- */
+
+/* Everything between the two bars. #camera-frame fills it outright -- no
+   aspect-ratio, no viewport calc: body's fixed-viewport flex column (see
+   style.css) hands the stage exactly what's left over, and object-fit on
+   the surfaces inside keeps the picture undistorted within that box. */
+#stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  padding: 0;
+}
+
+#camera-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 256px is the working ceiling for a status-col instrument box; each one lays
+   itself out as a header plus a body that takes the remainder, so square
+   canvases can size themselves off the body's height rather than overflowing
+   the box. */
+.deck-panel {
+  max-height: 256px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.deck-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+}
+/* Square widgets fill the body's height and derive width from it. */
+.deck-body canvas,
+.deck-body svg {
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+  aspect-ratio: 1 / 1;
+}
+
+/* Two camera surfaces (WebRTC <video>, MJPEG <img>) share this tile; the
+   inactive one carries the `hidden` attribute (app.js's syncCameraMode()).
+   :not([hidden]) so this rule never fights the `hidden` UA default -- an
+   author rule that unconditionally set `display: block` here would win over
+   `[hidden] { display: none }` regardless of specificity (author styles beat
+   UA styles), silently un-hiding the inactive surface. */
+.camera-surface:not([hidden]) { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+/* Boresight crosshair overlay — the rig's aim point, for centering landmarks
+   during calibration and eyeballing tracking accuracy. */
+#crosshair { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.cx-h, .cx-v { position: absolute; background: rgba(77, 163, 255, 0.6); }
+.cx-h { left: 0; right: 0; top: 50%; height: 1px; transform: translateY(-0.5px); }
+.cx-v { top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-0.5px); }
+.cx-c {
+  position: absolute; top: 50%; left: 50%; width: 18px; height: 18px;
+  margin: -9px 0 0 -9px; border: 1px solid rgba(77, 163, 255, 0.9); border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
+/* Camera-off (disabled) state: dim the placeholder tile and label it so the
+   operator knows the capture card isn't being touched, and how to start it. */
+#camera-frame.camera-off .camera-surface { opacity: 0.15; }
+/* :not(.camera-down):not(.camera-error) so a genuine failure state (MJPEG's
+   camera-down, or WebRTC's camera-error) still wins the shared ::after
+   pseudo-element below, if it were ever set at the same time as camera-off
+   (e.g. disabled AND the MJPEG fetch itself is failing). */
+#camera-frame.camera-off:not(.camera-down):not(.camera-error)::after {
+  content: "Camera off — press Start";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 16px;
+}
+
+/* MJPEG (v4l2) stream fallback: the <img> shows the browser's
+   broken-image icon with no recovery when the multipart stream drops.
+   Instead: on load failure, hide the broken-image icon and show an
+   in-cockpit placeholder while app.js retries the stream in the background.
+   This is also the default/degraded-payload mode (pickCameraMode) -- the
+   rig's escape hatch if WebRTC ever needs to be flipped off. */
+#camera-frame.camera-down .camera-surface { opacity: 0; }
+#camera-frame.camera-down::after {
+  content: "Camera unavailable — retrying\2026";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 16px;
+}
+
+/* WebRTC (WHEP) connection failure: a failed RTCPeerConnection is otherwise an
+   indefinitely BLACK <video> with no error -- visually identical to "camera is
+   off" or "still connecting". This must be visible: the operator needs to
+   know whether to look at the camera or the network. syncWhep() (app.js)
+   toggles this class and retries on a bounded schedule. */
+#camera-frame.camera-error .camera-surface { opacity: 0.15; }
+#camera-frame.camera-error::after {
+  content: "Camera stream failed — retrying\2026";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--yellow);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 16px;
+}
+
+/* WebRTC video-health readout (fps/bandwidth/resolution actually decoded --
+   see camera-panel.js/video-stats.js). Same pill shape/weight as .chip/.stat
+   elsewhere. Sits over the video's top-left corner so it never competes with
+   the crosshair at center. */
+#video-stats {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums; /* digits don't jiggle the pill width every tick */
+  background: rgba(22, 27, 34, 0.72);
+  backdrop-filter: blur(4px);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+/* Healthy: receiving and decoding. Unobtrusive -- matches the muted
+   treatment .chip/.stat give every "nothing wrong here" state. */
+#video-stats.video-stats-ok { color: var(--text); }
+/* Not receiving: the transport itself is down. camera-error already covers
+   "this is being actively retried"; this readout just stays quiet rather
+   than duplicating that alarm. */
+#video-stats.video-stats-down { color: var(--muted); }
+/* RECEIVING BUT NOT DECODING: RTP is flowing and the browser is
+   acknowledging it over RTCP, yet framesDecoded is flat -- the exact bug
+   this readout exists to catch (MediaMTX reports the connection healthy, the
+   <video> just never shows a picture). Must never look like "ok" (data IS
+   moving) or "down" (the network is NOT the problem) -- solid red, the same
+   urgency .capture-error/.toggle-degraded already give a "needs a human"
+   state, so it reads as a real fault at a glance instead of a stray number. */
+#video-stats.video-stats-stall {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
+}
+
+/* ---------- bottom bar (virtual stick + mode + sensitivity) ---------- */
+
+/* Always visible. Left cluster (identity/health/E-STOP/Tools) and right
+   cluster (sensitivity column + stick). The stick sits outermost, flush to
+   the screen's bottom-right corner -- it is THE pointing control; everything
+   less urgent lives in the Tools drawer that slides up over the stage. */
+#bottom-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+/* Right cluster: the vertical Fine/Normal/Coarse column with Stop tracking
+   beneath it, then the stick at the far edge. */
+#bar-right {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+}
+#sens-stop {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+}
+/* Vertical sensitivity selector: one option per row instead of the old
+   horizontal segmented control. */
+#nudge-sens.seg-ctl {
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 0;
+}
+#nudge-sens .seg-btn { text-align: left; padding: 4px 10px; }
+/* Sits beneath the sensitivity column, same width -- the one always-visible
+   "stop following this plane" control, so it gets motion-control weight
+   (accent border) rather than disappearing into panel chrome. */
+#stop-tracking {
+  align-self: stretch;
+  white-space: nowrap;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+#stop-tracking:hover:not(:disabled) { border-color: var(--accent); }
+#stop-tracking:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* The analog stick pad (virtual-stick.js renders its internals into
+   #stick-mount: .vstick-ring, .vstick-cross, .vstick-knob). */
+#stick-mount {
+  flex: 0 0 auto;
+  position: relative;
+  touch-action: none;      /* pointer events drive it, not scroll/zoom */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+}
+.vstick {
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 45%, #1c232c 0%, #12181f 70%);
+  border: 1px solid var(--border);
+}
+.vstick-ring {
+  position: absolute; inset: 8%;
+  border-radius: 50%;
+  border: 1px dashed var(--border);
+}
+.vstick-cross { position: absolute; inset: 0; pointer-events: none; }
+.vstick-cross::before, .vstick-cross::after {
+  content: ""; position: absolute; background: rgba(139, 150, 165, 0.35);
+}
+.vstick-cross::before { left: 50%; top: 12%; bottom: 12%; width: 1px; }
+.vstick-cross::after  { top: 50%; left: 12%; right: 12%; height: 1px; }
+.vstick-knob {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 34%; height: 34%;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle at 40% 35%, #3a4a5e, #222b36);
+  border: 1px solid var(--accent);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+  pointer-events: none;
+  /* Animates the spring-back to centre on release ONLY -- see
+     .vstick-dragging below, which turns it off for the drag itself. */
+  transition: transform 60ms linear;
+}
+/* While a pointer is down the knob must track it 1:1, with NO transition.
+   pointermove fires every 8-16ms; a 60ms transition therefore restarts
+   before it can finish on every single move, so the knob permanently trails
+   the finger and only catches up once motion stops. Reported from the roof
+   as "a bump I have to drag it over, then it snaps into place" -- the
+   commanded rate was always correct (it comes from the raw pointer via
+   shapeDeflection), but you cannot fly by feel while chasing the knob. */
+.vstick-dragging .vstick-knob { transition: none; }
+/* Locked (E-STOP / sun-lock): dim and refuse -- app.js calls setDisabled,
+   virtual-stick.js adds this class and force-releases any live drag. */
+.vstick-disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* AIM mode chip, overlaid on the stage's top-right corner: which of two very
+   different things the stick currently does, read right beside the picture
+   it moves. Plain/muted for ordinary JOG; yellow for TRIM so it reads as
+   "this is not a jog" at a glance -- a corrected +2.3° is not a jog, and
+   confusing them wastes a pass. Same pill treatment as #video-stats (its
+   sibling overlay on the top-left). */
+.jog-mode-label {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: rgba(22, 27, 34, 0.72);
+  backdrop-filter: blur(4px);
+  border: 1px solid var(--border);
+}
+.jog-mode-label.jog-mode-label-trim { color: var(--yellow); }
+.jog-mode-label.bad { color: var(--red); border-color: var(--red); }
+
+/* Horizontal, not the original vertical stack (see #aim-block's own doc
+   above for why/how this now gets a full-width row to lay out in). Wraps
+   internally (flex-wrap) onto as many rows as the available width actually
+   needs at a given viewport, rather than reserving one row per control --
+   the fix for "the vertical menu items eat too much space" is precisely
+   that a horizontal, wrapping strip needs far fewer rows than one control
+   per line did. justify-content: center keeps a short last (wrapped) row
+   from reading as ragged-left against the centered jog pad above it. */
+#camera-controls {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 10px;
+  flex: 1 1 100%;
+  min-width: 0;
+}
+#camera-controls button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+#camera-controls button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ---------- radar / telemetry (now bottom-drawer panels; component styles unchanged) ---------- */
+
+/* #rigview's skin was removed with the Rig View panel (2026-08-19). The radar
+   below inherits the space; its canvas grew 320 -> 440 to use it. */
+
+.minimap-wrap {
+  position: relative; /* positioning context for the absolutely-placed tooltip */
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  max-width: 100%;
+}
+/* Sized by .deck-body (height-driven, square); this only carries the skin. */
+#minimap {
+  display: block;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.minimap-tooltip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none; /* never intercepts hover/click meant for the canvas underneath */
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.minimap-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.dot-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.dot-trackable { background: var(--green); }
+.dot-untrackable { background: var(--grey); margin-left: 10px; }
+
+/* Track Sector's compass widget CSS has moved to drawer.css -- the widget
+   itself relocated into the Setup drawer's "Track sector" entry (2026-07-28
+   dashboard redesign, task 10); it's a policy set once a session, not a
+   continuously-watched cockpit surface. */
+
+/* ---------- telemetry (rig / tracking / mode+services) ---------- */
+
+#telemetry {
+  display: flex;
+  flex-direction: column;
+}
+
+/* .navstatus previously relied on plain block stacking (#mode, then #svc
+   flush beneath it) since it only ever held one chip. Now that the
+   Recordings nav link (task 10, recordings-index) sits beside #mode as a
+   second chip, both need to sit on their own row rather than #mode's block
+   default pushing the link onto a line of its own. */
+.navstatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#playback-link { text-decoration: none; cursor: pointer; }
+#playback-link:hover { border-color: var(--accent); color: var(--text); }
+
+/* ---------- adsb list rows ---------- */
+
+/* Horizontal cards in the top strip (see #adsb-list): callsign + distance +
+   signal age on the left, [T]/[S] stacked flush right. Fixed width so a
+   card's shape never depends on its callsign length and the tracked-
+   highlight edge below stays meaningful. */
+.list-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+.adsb-row {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: 210px;
+  padding: 4px 4px 4px 10px;
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.adsb-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+.adsb-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.adsb-meta {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Signal age, coloured green->red by seconds (cockpit.js's signalAgeColor
+   writes an inline hsl colour onto .adsb-seen). */
+.adsb-seen { font-weight: 600; }
+/* The agent's target-policy verdict for this row (AircraftRow.rule --
+   src/dashboard/state.ts) -- the rule name it currently matches, or "—"
+   when no enabled rule admits it. Same muted tone as the rest of
+   .adsb-meta; overflow is accepted (card width is fixed) rather than
+   truncated, since a cut-off rule name is worse than an occasional wrap. */
+.adsb-rule { font-style: italic; }
+
+/* [T]rack over [S]ight: two half-height letter buttons in a full-height
+   column flush to the card's right edge. Letters only -- the card is too
+   small for words; the enabled title still says the verb, and a disabled
+   button's title still carries its reason. */
+.adsb-actions {
+  flex: 0 0 auto;
+  width: 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.adsb-actions .track-btn,
+.adsb-actions .sight-btn {
+  flex: 1 1 50%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* (The old "groups [Track]/[Sight] so they wrap together" .adsb-actions rule
+   is superseded by the stacked-column version inside the card block above.) */
+
+.track-btn,
+.sight-btn {
+  padding: 0 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+/* Track commands rig motion -- the accent-blue outline matches every other
+   motion control (.jog-btn's holding state, etc). */
+.track-btn { border: 1px solid var(--accent); background: transparent; color: var(--accent); }
+.track-btn:hover:not(:disabled) { background: var(--accent); color: #0d1117; }
+/* Sight only records the current pointing (sight_aircraft) -- no motion, so
+   it's styled as a plain secondary action rather than sharing Track's
+   motion-accent color, the same distinction the AIM block draws between JOG
+   (motion) and calibration writes elsewhere in this file. */
+.sight-btn { border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+.sight-btn:hover:not(:disabled) { border-color: var(--accent); }
+.track-btn:disabled,
+.sight-btn:disabled { opacity: 0.35; cursor: not-allowed; border-color: var(--border); color: var(--muted); }
+
+/* The USB joystick diagnostic overlay's CSS has moved to drawer.css -- the
+   panel itself relocated into the Setup drawer's "Joystick" entry (2026-
+   07-28 dashboard redesign, task 10); it's a diagnostics/setup surface, not
+   a permanent cockpit panel. Its own standalone head (a <h2> + close
+   button) was dropped: the drawer's own head/nav/close cover that now. */
+
+
+/* ---------- tracked-aircraft highlight (2026-08-19) ---------- */
+/* The operator could not tell which row the rig was following. Deliberately a
+   SUBTLE pulse on the row's own surface plus a solid left edge: the edge is
+   the thing that reads instantly in peripheral vision, and it stays legible
+   for anyone who has motion reduced. */
+.adsb-row-tracking {
+  border-left: 3px solid var(--accent, #4ea1ff);
+  animation: adsb-track-pulse 1.6s ease-in-out infinite;
+}
+@keyframes adsb-track-pulse {
+  0%, 100% { background: color-mix(in srgb, var(--accent, #4ea1ff) 8%, transparent); }
+  50%      { background: color-mix(in srgb, var(--accent, #4ea1ff) 22%, transparent); }
+}
+/* Flashing is an accessibility hazard for some readers, and it is decoration
+   here -- the left edge already carries the meaning. */
+@media (prefers-reduced-motion: reduce) {
+  .adsb-row-tracking {
+    animation: none;
+    background: color-mix(in srgb, var(--accent, #4ea1ff) 14%, transparent);
+  }
+}
+
+/* ---------- radar range control ---------- */
+.range-ctl { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; vertical-align: middle; }
+.range-ctl input[type="range"] { width: 120px; vertical-align: middle; }
+.range-label { font-size: 11px; color: var(--muted); min-width: 44px; display: inline-block; }
+
+/* ---------- nudge sensitivity (segmented) ---------- */
+.seg-ctl { display: flex; gap: 2px; margin-top: 6px; }
+.seg-btn {
+  flex: 1 1 0;
+  padding: 4px 6px;
+  font-size: 11px;
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.seg-btn.seg-active {
+  background: var(--accent, #4ea1ff);
+  color: #04121f;
+  border-color: var(--accent, #4ea1ff);
+  font-weight: 600;
+}
+
+/* ---------- standing aim trim (RC-transmitter style) ---------- */
+#trim-block {
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+/* A standing trim is a correction silently in effect on every pass; when it
+   is non-zero that must be visible, not something to be deduced. */
+#trim-block.trim-armed { border-color: var(--accent, #4ea1ff); }
+.trim-title { font-size: 10px; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 4px; }
+.trim-row { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.trim-axis { font-size: 10px; color: var(--muted); width: 28px; }
+.trim-btn {
+  width: 24px; height: 22px; line-height: 1;
+  background: var(--panel); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+}
+.trim-btn:active { background: var(--accent, #4ea1ff); color: #04121f; }
+.trim-val { font-variant-numeric: tabular-nums; font-size: 12px; min-width: 52px; text-align: center; }
+.trim-actions { display: flex; gap: 4px; margin-top: 5px; }
+.trim-actions button { flex: 1 1 0; font-size: 10px; padding: 3px 4px; }
+
+/* ========================================================================
+   HUD OVERLAY LAYOUT
+   ------------------------------------------------------------------------
+   The picture IS the interface. The video fills the entire viewport and the
+   controls float ON TOP of it as two translucent bars, rather than the video
+   being whatever rectangle the chrome leaves over. Rationale from the roof:
+   every pixel spent on a bar is a pixel not spent on the thing being framed,
+   and an instrument you must click a tab to see is an instrument you will
+   not look at during a pass.
+
+   --hud-alpha is the single knob for how see-through the bars are (0 = fully
+   transparent, 1 = opaque). The backdrop blur is what keeps text legible at
+   a low alpha over a bright sky -- drop the blur and this needs roughly
+   double the alpha to stay readable.
+   ==================================================================== */
+:root {
+  --hud-alpha: 0.20;
+  --hud-bg: rgba(13, 17, 23, var(--hud-alpha));
+  --hud-blur: blur(16px) saturate(1.3);
+}
+
+/* The stage stops being a flex sibling and becomes the backdrop the whole
+   HUD floats on. object-fit: contain on the surfaces inside is UNCHANGED and
+   load-bearing: it keeps the picture ungeometrically-distorted, which the
+   crosshair and vision-lock's pixel-to-angle model both depend on. */
+#stage {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  display: flex;
+}
+#camera-frame { border-bottom: none; }
+
+/* Top bar: the plane strip, floating. */
+#adsb-strip {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 20;
+  background: var(--hud-bg);
+  -webkit-backdrop-filter: var(--hud-blur);
+  backdrop-filter: var(--hud-blur);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+/* Bottom bar: instruments + controls, floating as one stack. */
+#hud-bottom {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--hud-bg);
+  -webkit-backdrop-filter: var(--hud-blur);
+  backdrop-filter: var(--hud-blur);
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+/* Text over a moving, arbitrarily-bright picture needs its own contrast that
+   does not depend on the panel behind it. */
+#adsb-strip, #hud-bottom { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); }
+#hud-bottom .panel,
+#hud-bottom .navblock,
+#hud-bottom #telemetry,
+#hud-bottom #trim-block,
+#hud-bottom #camera-controls { background: transparent; border-color: rgba(255,255,255,0.08); }
+
+/* The three flying instruments sit side by side, always visible. Radar is
+   fixed-width (a square canvas), the other two share what is left. */
+#bottom-drawer { display: block; }
+#bd-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 8px 10px 0;
+  max-height: 30vh;
+  overflow: hidden;
+}
+#bd-body > .bd-panel { min-width: 0; overflow: hidden; }
+#bd-radar { }
+#bd-telemetry, #bd-controls { min-width: 0; }
+
+/* SETUP is the one thing still behind Tools. It is a procedure you run
+   BEFORE flying, not something you glance at during a pass -- so it gets to
+   overlay the instruments rather than permanently shrink them. */
+#bd-setup {
+  grid-column: 1 / -1;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+#bd-setup[hidden] { display: none; }
+
+/* Bottom bar: identity left, STICK CENTRED, sensitivity right. The stick was
+   flush right and the toast stack (top-right now, see style.css) used to
+   land on it. */
+#bottom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px 10px;
+  background: transparent;
+  border-top: none;
+}
+#bar-left, #bar-right {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+#bar-right { justify-content: flex-end; }
+#bar-center {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---- the deck must be PART of the HUD, not a solid box sitting on it ----
+   #bottom-drawer kept drawer.css's `position: fixed` + `background:
+   var(--panel)` from when it really was a separate slide-up sheet, so it
+   never joined #hud-bottom's stack: it rendered as an opaque slab that hid
+   the video outright. Inside the HUD it is a plain flow child with no
+   surface of its own -- #hud-bottom paints the ONE translucent backdrop and
+   everything within it is see-through. Two ids beat drawer.css's one
+   regardless of import order. */
+#hud-bottom #bottom-drawer {
+  position: static;
+  bottom: auto;
+  max-height: none;
+  z-index: auto;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+#hud-bottom #bd-body {
+  background: transparent;
+  overflow-y: visible;
+  padding: 6px 10px 0;
+}
+
+/* Every container inside the HUD is a layout box only. Controls (buttons,
+   chips, inputs) keep their own fills -- they need to read as pressable --
+   but nothing that is merely a GROUPING may paint over the picture. */
+#hud-bottom .panel,
+#hud-bottom .deck-panel,
+#hud-bottom .navblock,
+#hud-bottom .bd-panel,
+#hud-bottom #minimap-panel,
+#hud-bottom #telemetry,
+#hud-bottom #trim-block,
+#hud-bottom #camera-controls,
+#hud-bottom .minimap-wrap {
+  background: transparent;
+  box-shadow: none;
+}
+/* Hairlines instead of filled edges: enough to group, not enough to block. */
+#hud-bottom .panel,
+#hud-bottom #trim-block,
+#hud-bottom .minimap-wrap { border-color: rgba(255, 255, 255, 0.12); }
+
+/* Compact enough that the PICTURE still dominates. The radar is the tall
+   one, so it is capped hardest; on a short window the whole deck scrolls
+   internally rather than eating the video. */
+#hud-bottom #bd-body { max-height: min(26vh, 230px); }
+#hud-bottom .deck-panel { max-height: min(24vh, 210px); }
+#hud-bottom #minimap-panel canvas { max-height: 150px; }
+
+/* Muted greys were chosen against a DARK PANEL. Over a bright sky at 20%
+   alpha they nearly vanish -- labels like "Connected" / "Moving" and the
+   radar legend went unreadable the moment the panel stopped being opaque.
+   Inside the HUD, muted text is lifted and every glyph carries its own
+   shadow, so legibility comes from the TEXT rather than from a fill behind
+   it. This is what buys the transparency. */
+#hud-bottom {
+  --muted: #c3ced9;
+  color: #f2f6fa;
+}
+#hud-bottom h2,
+#hud-bottom dt,
+#hud-bottom .trim-title,
+#hud-bottom .trim-axis,
+#hud-bottom .minimap-legend,
+#hud-bottom .range-label { color: #d3dde7; }
+#hud-bottom dd,
+#hud-bottom .brand { color: #ffffff; font-weight: 600; }
+#hud-bottom, #hud-bottom * { text-shadow: 0 1px 3px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.65); }
+/* Controls keep a real fill -- a button must still read as pressable, and a
+   shadow inside a filled chip just smears it. */
+#hud-bottom button { text-shadow: none; }
+
+/* Give the picture back more of the screen: the deck is reference, not the
+   subject. */
+#hud-bottom #bd-body { max-height: min(22vh, 190px); }
+#hud-bottom .deck-panel { max-height: min(20vh, 175px); }
+#hud-bottom #minimap-panel canvas { max-height: 120px; }
+#bottom-bar { padding: 4px 12px 8px; }
+
+/* Rig and Tracking side by side rather than stacked. Stacked, the telemetry
+   column needs ~300px of height and Tracking got clipped by the deck cap --
+   but the screen is WIDE and this column was using a third of it. Trading
+   unused width for height is what lets the deck stay short enough to leave
+   the picture dominant. The mode/services row spans underneath both. */
+#hud-bottom #telemetry {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 18px;
+  align-items: start;
+}
+#hud-bottom #telemetry > :last-child { grid-column: 1 / -1; }
+#hud-bottom .navblock {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+/* Telemetry earns the extra width from the two neighbours. */
+#bd-body { grid-template-columns: auto minmax(0, 1.5fr) minmax(0, 1fr); }
+
+/* ---- COMPOSITING COST: no backdrop-filter over live video ----
+   blur() in a backdrop-filter forces the browser to re-blur everything
+   BEHIND the bar on every composited frame. Over a full-viewport 1080p
+   WebRTC stream across two large fixed layers that is per-frame GPU work
+   proportional to the covered area, and it stuttered the video roughly once
+   a second on the roof. Legibility now comes from a GRADIENT SCRIM -- darker
+   at the screen edge where the text sits, fading toward the picture -- which
+   is a plain paint the compositor caches, costing nothing per frame.
+
+   Set --hud-blur-enable to a blur() value to bring it back on a machine with
+   GPU headroom; it is off by default because a stuttering picture is a
+   broken tool and a slightly less pretty bar is not. */
+#adsb-strip,
+#hud-bottom {
+  -webkit-backdrop-filter: var(--hud-blur-enable, none);
+  backdrop-filter: var(--hud-blur-enable, none);
+}
+#adsb-strip {
+  background: linear-gradient(to bottom,
+    rgba(13, 17, 23, 0.72) 0%,
+    rgba(13, 17, 23, 0.34) 100%);
+}
+#hud-bottom {
+  background: linear-gradient(to top,
+    rgba(13, 17, 23, 0.78) 0%,
+    rgba(13, 17, 23, 0.62) 55%,
+    rgba(13, 17, 23, 0.30) 100%);
+}
+
+/* The universal `#hud-bottom *` text-shadow made every element in the deck a
+   repaint candidate. Only things that actually render TEXT need it. */
+#hud-bottom, #hud-bottom * { text-shadow: none; }
+#hud-bottom h2,
+#hud-bottom dt,
+#hud-bottom dd,
+#hud-bottom .brand,
+#hud-bottom .trim-title,
+#hud-bottom .trim-axis,
+#hud-bottom .range-label,
+#hud-bottom .minimap-legend,
+#adsb-strip .adsb-label,
+#adsb-strip .adsb-meta { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95); }
+
+/* ---- a setup procedure owns the bottom of the screen while it is open ----
+   Sharing it with the instrument deck capped #bd-setup at ~46vh, and a
+   procedure body taller than that was CLIPPED with no scroll affordance --
+   the control at the end of Travel limits ("clear taught limits") was sliced
+   in half and read as missing entirely. A procedure is the whole task while
+   it is up; radar and telemetry are not needed mid-teach and come back the
+   moment it closes. */
+#hud-bottom.hud-setup-open #bd-body { display: none; }
+#bd-setup {
+  max-height: 72vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Breathing room so the last control is never flush against the cut. */
+  padding-bottom: 12px;
+}
+
+/* The collapsed-procedure strip is part of the HUD stack, on top of the
+   instruments, with its own edge so it reads as "a procedure is waiting on
+   you" rather than another row of readouts. */
+#hud-bottom #proc-strip:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(78, 161, 255, 0.14);
+}

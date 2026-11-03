@@ -1,0 +1,304 @@
+import { describe, it, expect } from "vitest";
+import { scanAircraft, isTrackable, toPolicyTarget, type ScanParams } from "../src/mcp/adsb-tools.js";
+import { loadConfig } from "../src/shared/config.js";
+import type { AdsbSnapshot, EnrichedAircraft } from "../src/shared/adsb/types.js";
+import { Geodetic } from "../src/shared/geo/wgs84.js";
+import { Mat3 } from "../src/shared/geo/vec3.js";
+import { CalibrationStore } from "../src/shared/calibration.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+function viewOf(e: EnrichedAircraft) {
+  return { tier: e.tier, rule: e.rule, eligible: e.eligible };
+}
+
+const I: Mat3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+const RIG: Geodetic = { lat: 0, lon: 0, height: 0 };
+const NIGHT = Date.UTC(2026, 0, 1, 0, 0, 0);
+const cfg = loadConfig(undefined, {});
+const P: ScanParams = { maxRangeKm: 100, onlyTrackable: true, limit: 20 };
+
+function snap(aircraft: AdsbSnapshot["aircraft"]): AdsbSnapshot {
+  return { aircraft, fetchedAtMs: 1000, ok: true };
+}
+function raw(hex: string, lat: number, altFt = 10000): AdsbSnapshot["aircraft"][number] {
+  return {
+    hex, callsign: null, lat, lon: 0, altBaroFt: null, altGeomFt: altFt,
+    gsKt: 100, trackDeg: 90, baroRateFpm: null, geomRateFpm: 0, category: null,
+    squawk: null, seenPosSec: 0, rssi: null,
+  };
+}
+
+describe("scanAircraft", () => {
+  it("errors when not calibrated", () => {
+    const r = scanAircraft(snap([]), null, null, cfg, NIGHT, P);
+    expect("error" in r).toBe(true);
+  });
+
+  it("sorts by proximity and caps to the limit", () => {
+    const r = scanAircraft(snap([raw("far", 0.5), raw("near", 0.05)]), RIG, I, cfg, NIGHT,
+      { ...P, limit: 1 });
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(1);
+    expect(r.aircraft[0].hex).toBe("near");
+  });
+
+  // Field bug 2026-08-30: the dashboard listed 15 "trackable" aircraft while
+  // the tracking session refused every one of them. Two different reachability
+  // checks -- enrich.ts measured against the cfg CEILING (pan +/-180, tilt
+  // +/-90) while TrackingSession measures against effectiveLimits(cfg, taught),
+  // i.e. the intersection with the operator's TAUGHT travel limits. The UI
+  // therefore advertised targets the rig would never move for.
+  it("honours taught travel limits, not just the cfg ceiling, when only_trackable", () => {
+    // lat 0.05 => ~5.5km, comfortably inside the cfg ceiling on every axis.
+    const near = snap([raw("near", 0.05)]);
+    const wide = scanAircraft(near, RIG, I, cfg, NIGHT, P);
+    if ("error" in wide) throw new Error(wide.error);
+    expect(wide.aircraft).toHaveLength(1);   // reachable under the ceiling alone
+
+    // The operator taught a tilt floor above where this target actually sits.
+    const taught = { panMin: -180, panMax: 180, tiltMin: 80, tiltMax: 90 };
+    const r = scanAircraft(near, RIG, I, cfg, NIGHT, P, undefined, undefined, taught);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(0);
+  });
+
+  it("filters out unreachable aircraft when only_trackable", () => {
+    const c2 = loadConfig(undefined, { TB3_TILT_MIN: "80" });   // only near-zenith reachable
+    // lat 0.5 => ~55km slant range (elevation ~0.7°, well below the 80° tilt
+    // floor, so unreachable) -- must stay inside the default 100km maxRangeKm
+    // so this exercises the trackable filter alone, not the range filter too.
+    const r = scanAircraft(snap([raw("low", 0.5, 3000)]), RIG, I, c2, NIGHT, P);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(0);
+    const r2 = scanAircraft(snap([raw("low", 0.5, 3000)]), RIG, I, c2, NIGHT, { ...P, onlyTrackable: false });
+    if ("error" in r2) throw new Error(r2.error);
+    expect(r2.aircraft).toHaveLength(1);        // still returned when the filter is off
+  });
+
+  it("drops aircraft beyond max range", () => {
+    const r = scanAircraft(snap([raw("near", 0.05)]), RIG, I, cfg, NIGHT, { ...P, maxRangeKm: 1 });
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(0);
+  });
+});
+
+// Pre-calibration widening: a rig location lets the picker populate (real
+// azimuth/elevation/range) even with no solved mount orientation (R), but
+// anything that depends on pan/tilt reachability stays honestly unknown
+// (null), never a fabricated false, and pointing/trackability filtering
+// still hard-requires R. See src/adsb-tools.ts's scanAircraft doc comment.
+describe("scanAircraft with rig set but no solved orientation (R null)", () => {
+  it("only_trackable:false returns real geometry with reachable/est_track_sec null, not false", () => {
+    const r = scanAircraft(snap([raw("near", 0.05)]), RIG, null, cfg, NIGHT, { ...P, onlyTrackable: false });
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(1);
+    const a = r.aircraft[0];
+    expect(a.azimuthDeg).toBeCloseTo(0, 1);        // due north, matches raw()'s lat offset
+    expect(a.rangeM).toBeGreaterThan(0);
+    expect(typeof a.elevationDeg).toBe("number");
+    expect(typeof a.sunSafe).toBe("boolean");       // world-frame geometry, never needs R
+    expect(typeof a.slewOk).toBe("boolean");
+    expect(typeof a.inSector).toBe("boolean");
+    expect(a.reachable).toBeNull();                 // unknown, NOT false
+    expect(a.estTrackSec).toBeNull();                // unknown, NOT a fabricated number
+  });
+
+  it("only_trackable:true still errors not-calibrated (filtering by trackability is meaningless without R)", () => {
+    const r = scanAircraft(snap([raw("near", 0.05)]), RIG, null, cfg, NIGHT, { ...P, onlyTrackable: true });
+    expect("error" in r).toBe(true);
+  });
+
+  it("track_aircraft's own call shape (onlyTrackable:true, limit:1000) still refuses without R", () => {
+    // Mirrors registerAdsbTools' track_aircraft handler exactly, so this pins
+    // that motion-commanding tool stays hard-gated on calibration.
+    const r = scanAircraft(snap([raw("near", 0.05)]), RIG, null, cfg, NIGHT,
+      { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 });
+    expect("error" in r).toBe(true);
+  });
+});
+
+describe("scanAircraft with a PROVISIONAL orientation (set_north_zero seed)", () => {
+  it("track_aircraft's own call shape accepts a provisional orientation — the whole point is tracking before being properly calibrated", () => {
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-adsb-")), "cal.json"));
+    store.load();
+    store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
+    store.setProvisionalOrientation(I, new Date(0).toISOString());
+    // NOT a solved calibration ...
+    expect(store.isCalibrated()).toBe(false);
+    // ... but registerAdsbTools' track_aircraft handler pulls store.getOrientation()
+    // (not isCalibrated()), and that IS available from a provisional seed.
+    const R = store.getOrientation();
+    expect(R).toBeDefined();
+
+    const r = scanAircraft(snap([raw("near", 0.05)]), store.get().rig!, R!, cfg, NIGHT,
+      { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 });
+    expect("error" in r).toBe(false);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(1);
+  });
+
+  it("REGRESSION: without an orientation at all (no characterize_imu/set_north_zero/solve_calibration), track_aircraft still refuses", () => {
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-adsb-")), "cal.json"));
+    store.load();
+    store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
+    // No setProvisionalOrientation/setOrientation call at all.
+    const R = store.getOrientation();
+    expect(R).toBeUndefined();
+    const r = scanAircraft(snap([raw("near", 0.05)]), store.get().rig!, R ?? null, cfg, NIGHT,
+      { maxRangeKm: cfg.adsbMaxRangeKm, onlyTrackable: true, limit: 1000 });
+    expect("error" in r).toBe(true);
+  });
+});
+
+describe("scanAircraft with no rig location at all", () => {
+  it("errors even with only_trackable:false — location is genuinely required for any geometry", () => {
+    const r = scanAircraft(snap([raw("near", 0.05)]), null, null, cfg, NIGHT, { ...P, onlyTrackable: false });
+    expect("error" in r).toBe(true);
+    const r2 = scanAircraft(snap([raw("near", 0.05)]), null, I, cfg, NIGHT, { ...P, onlyTrackable: false });
+    expect("error" in r2).toBe(true);
+  });
+});
+
+describe("isTrackable", () => {
+  it("requires all four hard flags", () => {
+    // Cast to EnrichedAircraft (not `never`): isTrackable only reads these four
+    // flags, but `never` can't be spread (`{ ...base, ... }` below), while a
+    // cast object type can.
+    const base = { reachable: true, sunSafe: true, slewOk: true, inSector: true } as unknown as EnrichedAircraft;
+    expect(isTrackable(base)).toBe(true);
+    expect(isTrackable({ ...base, sunSafe: false })).toBe(false);
+    expect(isTrackable({ ...base, inSector: false })).toBe(false);
+  });
+});
+
+// FIELD 2026-07-30: fix age now reaches the estimator, so an aircraft whose
+// position report is already older than the session's staleness threshold
+// would light up [Track] and immediately fall into "waiting". Don't offer it.
+describe("isTrackable rejects a stale position report", () => {
+  const base = {
+    reachable: true, sunSafe: true, slewOk: true, inSector: true, seenPosSec: 1.0,
+  } as unknown as Parameters<typeof isTrackable>[0];
+
+  it("keeps a fresh report trackable", () => {
+    expect(isTrackable(base, 5)).toBe(true);
+  });
+
+  it("rejects a report older than the threshold", () => {
+    expect(isTrackable({ ...base, seenPosSec: 37.8 }, 5)).toBe(false);
+  });
+
+  it("treats an unknown position age as unusable, not as fresh", () => {
+    expect(isTrackable({ ...base, seenPosSec: null }, 5)).toBe(false);
+  });
+
+  it("without a threshold, behaviour is unchanged (every existing caller)", () => {
+    expect(isTrackable({ ...base, seenPosSec: 999 })).toBe(true);
+    expect(isTrackable({ ...base, seenPosSec: null })).toBe(true);
+  });
+});
+
+describe("scanAircraft — policy", () => {
+  // A ruleset that admits only what is climbing hard, so a plain test aircraft
+  // (no climb data) is ineligible while an explicit climber is not.
+  const CLIMBERS = { version: 1 as const, rules: [
+    { id: "climb", name: "Climbing", enabled: true, canPreempt: false,
+      conditions: [{ field: "climb_fpm" as const, op: "gte" as const, value: 500 }] },
+  ] };
+
+  it("annotates every row with tier/rule/eligible without filtering by default", () => {
+    const r = scanAircraft(snap([raw("a", 0.05)]), RIG, I, cfg, NIGHT, P, undefined, undefined, undefined, CLIMBERS);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(1);          // still present
+    const v = viewOf(r.aircraft[0]);
+    expect(v.eligible).toBe(false);              // but marked ineligible
+    expect(v.tier).toBeNull();
+    expect(v.rule).toBeNull();
+  });
+
+  it("filters to eligible aircraft only when only_eligible is set", () => {
+    const r = scanAircraft(snap([raw("a", 0.05)]), RIG, I, cfg, NIGHT,
+      { ...P, onlyEligible: true }, undefined, undefined, undefined, CLIMBERS);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(0);
+  });
+
+  it("reports tier and rule name for an eligible aircraft", () => {
+    const climbing = { ...raw("b", 0.05), geomRateFpm: 1800 };
+    const r = scanAircraft(snap([climbing]), RIG, I, cfg, NIGHT, P, undefined, undefined, undefined, CLIMBERS);
+    if ("error" in r) throw new Error(r.error);
+    const v = viewOf(r.aircraft[0]);
+    expect(v.eligible).toBe(true);
+    expect(v.tier).toBe(1);
+    expect(v.rule).toBe("Climbing");
+  });
+
+  // The narrowing invariant: policy may only ever REMOVE candidates.
+  it("cannot admit an aircraft the trackability gate rejects", () => {
+    const ADMIT_ALL = { version: 1 as const, rules: [
+      { id: "all", name: "Everything", enabled: true, canPreempt: false, conditions: [] },
+    ] };
+    const c2 = loadConfig(undefined, { TB3_TILT_MIN: "80" });   // only near-zenith reachable
+    const r = scanAircraft(snap([raw("low", 0.5, 3000)]), RIG, I, c2, NIGHT,
+      { ...P, onlyEligible: true }, undefined, undefined, undefined, ADMIT_ALL);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(0);
+  });
+
+  // F3: only_eligible did not IMPLY only_trackable -- with only_trackable
+  // explicitly false, an aircraft that matches every rule could previously
+  // come back "eligible" while unreachable/sun-blocked/out of sector/stale.
+  // No production caller hit this (the agent always passes both flags true;
+  // the dashboard's only_eligible:false scan never sets only_eligible), but
+  // it was the one combination that could break the "policy only ever
+  // removes, never admits" invariant the test above pins. Line 97's !R
+  // error already treats the two flags as coupled; this is the matching fix
+  // for the trackability filter itself.
+  it("only_eligible:true still cannot return an unreachable aircraft, even with only_trackable:false", () => {
+    const ADMIT_ALL = { version: 1 as const, rules: [
+      { id: "all", name: "Everything", enabled: true, canPreempt: false, conditions: [] },
+    ] };
+    const c2 = loadConfig(undefined, { TB3_TILT_MIN: "80" });   // only near-zenith reachable
+    const r = scanAircraft(snap([raw("low", 0.5, 3000)]), RIG, I, c2, NIGHT,
+      { ...P, onlyTrackable: false, onlyEligible: true }, undefined, undefined, undefined, ADMIT_ALL);
+    if ("error" in r) throw new Error(r.error);
+    expect(r.aircraft).toHaveLength(0);
+  });
+});
+
+describe("toPolicyTarget", () => {
+  // Every mapped field gets a distinct, non-round value so a wrong-field or
+  // wrong-unit mapping (e.g. dropping the /1000 on range_km) cannot pass by
+  // coincidence. range_km is the dangerous one: DEFAULT_RULESET's
+  // "big-and-distant" rule reads range_km within 60..100, and a silently
+  // unconverted rangeM would make that rule never match -- on the DEFAULT
+  // ruleset, with a fully green suite otherwise.
+  it("maps every field to the shape the rule evaluator reads, with correct units", () => {
+    const e: EnrichedAircraft = {
+      hex: "abc123", callsign: "TST123", lat: 10, lon: 20,
+      altBaroFt: 999, altGeomFt: 12345,   // auto altSource prefers geom -- see below
+      gsKt: 333, trackDeg: 271,
+      baroRateFpm: 555, geomRateFpm: 1234,   // climb_fpm must prefer geom, matching view()
+      typeCode: "B77W", operator: "TEST AIRWAYS", category: "A5",
+      squawk: "1200", seenPosSec: 3, rssi: -10,
+      azimuthDeg: 45, elevationDeg: 12.7, rangeM: 73_400,
+      reachable: true, sunSafe: true, slewOk: true, inSector: true,
+      requiredSlewDps: 0.5, estTrackSec: 47,
+      tier: null, rule: null, ruleId: null, eligible: false, canPreempt: false,
+    };
+    const t = toPolicyTarget(e, cfg);
+    expect(t.category).toBe("A5");
+    expect(t.type).toBe("B77W");
+    expect(t.operator).toBe("TEST AIRWAYS");
+    expect(t.climb_fpm).toBe(1234);
+    expect(t.track_deg).toBe(271);
+    // 12345 ft (geom, preferred over the 999 ft baro reading) * 0.3048.
+    expect(t.altitude_m).toBeCloseTo(3762.756, 2);
+    // 73_400 m -> 73.4 km: the /1000 that must never go missing.
+    expect(t.range_km).toBeCloseTo(73.4, 6);
+    expect(t.elevation_deg).toBe(12.7);
+    expect(t.ground_speed_kt).toBe(333);
+    expect(t.est_track_sec).toBe(47);
+  });
+});

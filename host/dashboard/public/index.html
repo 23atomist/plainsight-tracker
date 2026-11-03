@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>TB3 Ops Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+  { "imports": { "three": "./vendor/three.module.min.js" } }
+  </script>
+</head>
+<body>
+
+  <!-- No top bar any more: everything that lived there moved into the bottom
+       bar's left cluster (brand, calibration badge, rig/sun/svc health,
+       E-STOP, Tools). E-STOP is position-independent styling (style.css's
+       #estop) and stays one click away at the bottom-left; the plane strip
+       below is now the ONLY thing at the top of the screen. -->
+
+  <!-- Banners collapse to zero height when hidden, so the stage keeps the
+       full viewport until something needs saying. -->
+  <div id="banners">
+    <div id="reconnect-banner" class="banner banner-warn" hidden>Reconnecting to dashboard stream&hellip;</div>
+    <div id="sun-banner" class="banner banner-warn" hidden></div>
+    <!-- #estop-clear sits BEFORE #estop-banner-detail on purpose (review fix,
+         UI-9 fix round 2, finding P-1): the actionable control stays ahead of
+         the flex-growing (non-interactive) detail text -- a geometry fix
+         instead of a z-index tug-of-war between overlapping fixed layers. -->
+    <div id="estop-banner" class="banner banner-critical" hidden>
+      <span id="estop-banner-text">STOPPED &mdash; clear to resume</span>
+      <button id="estop-clear" type="button">Clear / Resume</button>
+      <div id="estop-banner-detail"></div>
+    </div>
+  </div>
+
+  <!-- TOP DRAWER: every aircraft in range as horizontally-scrollable cards,
+       left to right. No header text -- the cards ARE the bar. Each card:
+       callsign + distance + signal age (coloured green->red by seconds) on
+       the left; [T]rack over [S]ight as two half-height letter buttons flush
+       right. Ordered for pickability (sortForPicking), not proximity. -->
+  <section id="adsb-strip">
+    <div id="adsb-list" class="list"></div>
+  </section>
+
+  <!-- STAGE: the camera surface owns everything between the two bars. Two
+       surfaces share this tile; exactly one is ever attached at a time,
+       chosen at runtime by pickCameraMode(state.camera) in app.js. This
+       dual-path IS the operator's escape hatch: if WebRTC misbehaves on the
+       roof, flipping cameraSource to v4l2 in config.json and restarting must
+       produce a working picture, not a dead panel.
+       - camera-video: WebRTC (WHEP) via RTCPeerConnection, for
+         camera.source === "mediamtx". muted is required for autoplay to be
+         allowed at all; there is no audio track regardless.
+       - camera-img: the MJPEG multipart stream, for the v4l2 source (and the
+         default when source is missing/degraded -- see pickCameraMode). -->
+  <main id="stage">
+    <div id="camera-frame">
+      <video id="camera-video" class="camera-surface" autoplay muted playsinline hidden></video>
+      <img id="camera-img" class="camera-surface" alt="camera stream" hidden>
+      <!-- Boresight crosshair: marks the rig's aim point for calibration. -->
+      <div id="crosshair" aria-hidden="true">
+        <span class="cx-h"></span><span class="cx-v"></span><span class="cx-c"></span>
+      </div>
+      <!-- AIM mode chip (JOG / TRIM ±offset / LOCKED — reason): overlaid on
+           the stage so it reads right beside the picture the stick moves,
+           without crowding the bottom bar. Same element/classes the old bar
+           label used; cockpit.js paints it from aimMode() every tick. -->
+      <div id="jog-mode" class="jog-mode-label">JOG</div>
+      <!-- WebRTC video-health readout: fps/bandwidth/resolution actually
+           decoded, updated ~1/s by camera-panel.js. WebRTC-only. -->
+      <div id="video-stats" class="video-stats" hidden></div>
+    </div>
+  </main>
+
+  <!-- BOTTOM DRAWER: slides up over the stage when Tools is toggled. Every
+       feature surface lives here now -- radar, telemetry, trim + camera
+       controls, and the Setup entries (guided calibration / travel limits /
+       set home via #drawer's entry renderers, plus Track sector and the USB
+       joystick diagnostic). Panels are PERMANENT DOM toggled with [hidden]
+       -- never innerHTML-rewritten -- so canvas wiring (#minimap listeners)
+       and element references survive open/close cycles untouched. -->
+  <!-- HUD BOTTOM: one translucent overlay stack floating on the full-bleed
+       video. The instruments you read WHILE FLYING (radar, telemetry, trim,
+       camera) are permanently on screen side by side -- they are not worth a
+       click mid-pass. Only SETUP still hides behind the Tools button, since
+       it is a procedure you run before you fly, not something you glance at
+       during one. -->
+  <div id="hud-bottom">
+    <!-- PROCEDURE STRIP: what a guided procedure collapses to while the
+         operator needs their eyes on the video (drawer.js's
+         collapseToStrip). It lives INSIDE the HUD stack: in normal document
+         flow it sat underneath the now-fixed plane strip and was invisible,
+         which made every collapsed procedure look like a dead button. -->
+    <div id="proc-strip" hidden></div>
+  <aside id="bottom-drawer">
+      <section id="bd-setup" class="bd-panel" data-bd-panel="setup" hidden>
+        <!-- SETUP DRAWER: the Drawer class (drawer.js) drives this unchanged;
+             only its CSS home has moved from an off-canvas right sheet into
+             this tab panel. All six entries have real bodies registered via
+             setEntryRenderer: Calibration/Travel limits/Set home
+             (procedures.js + procedure-actions.js), Track sector (sector.js),
+             Policy (policy.js -- the agent's target-eligibility ruleset)
+             and Joystick (joystick-panel.js). Per-aircraft Sight/Track still
+             lives on the ADS-B strip rows (cockpit.js). -->
+        <aside id="drawer" hidden>
+          <div id="drawer-body"></div>
+        </aside>
+      </section>
+    <div id="bd-body">
+      <section id="bd-radar" class="bd-panel" data-bd-panel="radar">
+        <section id="minimap-panel" class="panel deck-panel minimap-panel">
+          <h2>Radar
+            <!-- Trackability range (set_track_range -> range-store.ts).
+                 Daemon side, so the autonomous agent obeys the same bound. -->
+            <span class="range-ctl">
+              <input id="track-range" type="range" min="5" max="150" step="5" value="25"
+                     title="max range an aircraft may be at to count as trackable">
+              <span id="track-range-label" class="range-label">25 km</span>
+            </span>
+          </h2>
+          <div class="deck-body">
+            <div class="minimap-wrap">
+              <canvas id="minimap" width="440" height="440"></canvas>
+              <div id="minimap-tooltip" class="minimap-tooltip" hidden></div>
+            </div>
+          </div>
+          <div class="minimap-legend">
+            <span class="dot-swatch dot-trackable"></span> trackable
+            <span class="dot-swatch dot-untrackable"></span> blocked
+          </div>
+        </section>
+      </section>
+
+      <section id="bd-telemetry" class="bd-panel" data-bd-panel="telemetry">
+        <!-- TELEMETRY: rig/tracking/service readouts (ids unchanged -- the
+             render path never moved, only its home in the layout did). -->
+        <div id="telemetry">
+          <section id="rig" class="navblock">
+            <h2>Rig</h2>
+            <div class="navsplit">
+              <dl>
+                <dt>Connected</dt><dd id="rig-connected">&mdash;</dd>
+                <dt>Pan / Tilt</dt><dd id="rig-pantilt">&mdash;</dd>
+                <dt>Moving</dt><dd id="rig-moving">&mdash;</dd>
+                <dt>Battery</dt><dd id="rig-battery">&mdash;</dd>
+              </dl>
+              <dl>
+                <dt>Telemetry age</dt><dd id="rig-telemetry-age">&mdash;</dd>
+                <dt>IMU pitch / roll</dt><dd id="rig-imu-pitchroll">&mdash;</dd>
+                <dt>IMU temp / press</dt><dd id="rig-imu-tp">&mdash;</dd>
+              </dl>
+            </div>
+          </section>
+
+          <section id="tracking" class="navblock">
+            <h2>Tracking</h2>
+            <div class="navsplit">
+              <dl>
+                <dt>State</dt><dd id="trk-state">&mdash;</dd>
+                <dt>Target</dt><dd id="trk-target">&mdash;</dd>
+                <dt>Az / El</dt><dd id="trk-azel">&mdash;</dd>
+              </dl>
+              <dl>
+                <dt>Range</dt><dd id="trk-range">&mdash;</dd>
+                <dt>Pointing error</dt><dd id="trk-error">&mdash;</dd>
+                <dt>Limits</dt><dd id="trk-limits">&mdash;</dd>
+                <!-- The drift-calibration measurement in progress
+                     (track/offset.ts): the standing aim-offset the operator
+                     (or the vision corrector) is nudging toward centred. -->
+                <dt>Aim offset</dt><dd id="trk-offset">&mdash;</dd>
+                <!-- Vision-lock correction loop status (get_vision_status):
+                     enabled/read-only + last tick's OUTCOME -- see
+                     cockpit.js/vision-status.js for why the outcome must not
+                     be hidden. -->
+                <dt>Vision</dt><dd id="vision-status">&mdash;</dd>
+              </dl>
+            </div>
+          </section>
+
+          <section class="navblock navstatus">
+            <div id="mode" class="chip" data-mode="idle">MODE: IDLE</div>
+            <!-- Recordings review: a separate page (playback.html/js), not a
+                 cockpit tab -- see playback.js's module doc for why. -->
+            <a id="playback-link" class="chip" href="/playback">Recordings</a>
+            <div id="svc" class="svc-row">
+              <div class="svc-item"><span id="svc-readsb" class="led led-unknown"></span><label>readsb</label></div>
+              <div class="svc-item"><span id="svc-tb3mcp" class="led led-unknown"></span><label>daemon</label></div>
+              <div class="svc-item"><span id="svc-tb3agent" class="led led-unknown"></span><label>agent</label></div>
+              <div class="svc-item"><span id="svc-llama" class="led led-unknown"></span><label>llama</label></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="bd-controls" class="bd-panel" data-bd-panel="controls">
+        <!-- STANDING AIM TRIM (aim-trim-store.ts): an RC-transmitter-style
+             trim, persisted daemon-side, that every new tracking pass starts
+             from. Distinct from the stick's TRIM mode, which moves THIS
+             pass's offset only. -->
+        <div id="trim-block">
+          <div class="trim-title">TRIM <span class="muted">(standing)</span></div>
+          <div class="trim-row">
+            <span class="trim-axis">PAN</span>
+            <button type="button" class="trim-btn" data-trim="pan" data-dir="-1" title="trim pan left">&minus;</button>
+            <span id="trim-pan" class="trim-val">0.00&deg;</span>
+            <button type="button" class="trim-btn" data-trim="pan" data-dir="1" title="trim pan right">+</button>
+          </div>
+          <div class="trim-row">
+            <span class="trim-axis">TILT</span>
+            <button type="button" class="trim-btn" data-trim="tilt" data-dir="-1" title="trim tilt down">&minus;</button>
+            <span id="trim-tilt" class="trim-val">0.00&deg;</span>
+            <button type="button" class="trim-btn" data-trim="tilt" data-dir="1" title="trim tilt up">+</button>
+          </div>
+          <div class="trim-actions">
+            <button id="trim-adopt" type="button" title="save the aim-offset you have dialled in on THIS pass as the standing trim">Save from aim</button>
+            <button id="trim-clear" type="button" title="zero the standing trim">Clear</button>
+          </div>
+        </div>
+
+        <div id="camera-controls">
+          <button id="camera-toggle" type="button" class="toggle-btn">Camera: OFF</button>
+          <button id="auto-toggle" type="button" class="toggle-btn">Auto: &mdash;</button>
+          <button id="sunguard-toggle" type="button" class="toggle-btn">Sun guard: &mdash;</button>
+          <span id="capture-status" class="stat capture-unknown">Capture: &mdash;</span>
+          <!-- capture_snapshot / start_recording / stop_recording: one-press
+               snapshot and a state-driven record toggle. capture-auto
+               (set_capture_mode) flips captureAutoEnabled itself. -->
+          <button id="capture-snap" type="button">Snap</button>
+          <button id="capture-record" type="button" class="toggle-btn">Record: OFF</button>
+          <button id="capture-auto" type="button" class="toggle-btn">Auto capture: &mdash;</button>
+          <!-- Opens the Setup tab's Joystick entry (drawer.js /
+               joystick-panel.js) -- the USB gamepad diagnostic. -->
+          <button id="joystick-toggle" type="button" class="toggle-btn">Joystick: &mdash;</button>
+        </div>
+      </section>
+
+    </div>
+  </aside>
+
+  <!-- BOTTOM BAR: identity + health + E-STOP + Tools on the left; the trim
+       sensitivity column (Fine/Normal/Coarse stacked, Stop tracking beneath)
+       and the analog stick on the right, stick outermost. The stick is THE
+       pointing control (virtual-stick.js renders into #stick-mount;
+       stick-hold.js posts); everything less urgent lives in the bottom
+       drawer above. -->
+  <footer id="bottom-bar">
+    <div id="bar-left">
+      <span class="brand">TB3</span>
+      <span id="cal-badge" class="badge"></span>
+      <span id="health" class="health"></span>
+      <button id="estop" type="button">E-STOP</button>
+      <button id="drawer-open" type="button">Tools &#9652;</button>
+    </div>
+    <!-- The stick is CENTRED, not cornered: the toast stack lives at the
+         right edge and was landing on top of it, and a thumb control you fly
+         by feel should not share an edge with transient notifications. -->
+    <div id="bar-center">
+      <div id="stick-mount"></div>
+    </div>
+    <div id="bar-right">
+      <div id="sens-stop">
+        <div id="nudge-sens" class="seg-ctl" role="group" aria-label="jog / trim sensitivity">
+          <button type="button" class="seg-btn" data-sens="fine">Fine</button>
+          <button type="button" class="seg-btn seg-active" data-sens="normal">Normal</button>
+          <button type="button" class="seg-btn" data-sens="coarse">Coarse</button>
+        </div>
+        <button id="stop-tracking" type="button">Stop tracking</button>
+      </div>
+    </div>
+  </footer>
+  </div><!-- /#hud-bottom -->
+
+  <div id="errorstrip"><span id="errors">no errors</span></div>
+
+  <div id="toast-container" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

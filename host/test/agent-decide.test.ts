@@ -1,0 +1,83 @@
+import { describe, it, expect } from "vitest";
+import { decideAction, failSafeAction, type DecideInput } from "../src/agent/decide.js";
+
+function base(p: Partial<DecideInput>): DecideInput {
+  return {
+    decision: { action: "keep", reason: "" },
+    trackableHexes: new Set(["aaa", "bbb"]),
+    currentHex: null, currentHealthy: false,
+    msSinceLastSwitch: 999999, minDwellMs: 25000,
+    candidateCanPreempt: false, ...p,
+  };
+}
+
+describe("decideAction", () => {
+  it("tracks a valid new hex when idle", () => {
+    expect(decideAction(base({ decision: { action: "track", hex: "aaa", reason: "" } })))
+      .toEqual({ kind: "track", hex: "aaa" });
+  });
+  it("rejects a hallucinated hex → keep", () => {
+    expect(decideAction(base({ decision: { action: "track", hex: "zzz", reason: "" } })))
+      .toEqual({ kind: "keep" });
+  });
+  it("keeps when the pick is the current target", () => {
+    expect(decideAction(base({ currentHex: "aaa", decision: { action: "track", hex: "aaa", reason: "" } })))
+      .toEqual({ kind: "keep" });
+  });
+  it("blocks switching off a healthy current before min-dwell", () => {
+    expect(decideAction(base({
+      currentHex: "aaa", currentHealthy: true, msSinceLastSwitch: 5000,
+      decision: { action: "track", hex: "bbb", reason: "" },
+    }))).toEqual({ kind: "keep" });
+  });
+  // Behaviour change (operator request): the rig now commits to a pass and
+  // elapsed time is no longer a reason to drop a healthy target. Only a tier-1
+  // large-military candidate preempts -- covered in agent-decide-hold.test.ts.
+  it("does NOT switch a healthy target on elapsed dwell alone", () => {
+    expect(decideAction(base({
+      currentHex: "aaa", currentHealthy: true, msSinceLastSwitch: 30000,
+      decision: { action: "track", hex: "bbb", reason: "" },
+    }))).toEqual({ kind: "keep" });
+  });
+  it("allows switching away from an UNHEALTHY current immediately", () => {
+    expect(decideAction(base({
+      currentHex: "aaa", currentHealthy: false, msSinceLastSwitch: 100,
+      decision: { action: "track", hex: "bbb", reason: "" },
+    }))).toEqual({ kind: "track", hex: "bbb" });
+  });
+  it("stops on an explicit stop when bound; keeps when idle", () => {
+    expect(decideAction(base({ currentHex: "aaa", decision: { action: "stop", reason: "" } })))
+      .toEqual({ kind: "stop" });
+    expect(decideAction(base({ currentHex: null, decision: { action: "stop", reason: "" } })))
+      .toEqual({ kind: "keep" });
+  });
+  it("keeps the current pass when the candidate's rule may not preempt", () => {
+    const a = decideAction({
+      decision: { action: "track", hex: "bbb", reason: "" },
+      trackableHexes: new Set(["aaa", "bbb"]),
+      currentHex: "aaa", currentHealthy: true,
+      msSinceLastSwitch: 99_999, minDwellMs: 25_000,
+      candidateCanPreempt: false,
+    });
+    expect(a).toEqual({ kind: "keep" });
+  });
+
+  it("switches mid-pass when the candidate's rule MAY preempt", () => {
+    const a = decideAction({
+      decision: { action: "track", hex: "bbb", reason: "" },
+      trackableHexes: new Set(["aaa", "bbb"]),
+      currentHex: "aaa", currentHealthy: true,
+      msSinceLastSwitch: 99_999, minDwellMs: 25_000,
+      candidateCanPreempt: true,
+    });
+    expect(a).toEqual({ kind: "track", hex: "bbb" });
+  });
+});
+
+describe("failSafeAction", () => {
+  it("keeps when idle or current healthy, stops a lost current", () => {
+    expect(failSafeAction(null, false)).toEqual({ kind: "keep" });
+    expect(failSafeAction("aaa", true)).toEqual({ kind: "keep" });
+    expect(failSafeAction("aaa", false)).toEqual({ kind: "stop" });
+  });
+});

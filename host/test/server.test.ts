@@ -1,0 +1,160 @@
+import { describe, it, expect, afterEach } from "vitest";
+import type { Server } from "node:http";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { MockTb3 } from "./mock-tb3.js";
+import { Device } from "../src/shared/device.js";
+import { loadConfig } from "../src/shared/config.js";
+import { buildApp } from "../src/mcp/server.js";
+import { CalibrationStore } from "../src/shared/calibration.js";
+import { TrackingSession } from "../src/shared/track/session.js";
+import { SunSupervisor } from "../src/shared/track/supervisor.js";
+import { AdsbSource } from "../src/shared/adsb/source.js";
+import { AdsbFollower } from "../src/shared/adsb/follower.js";
+import { SectorStore } from "../src/shared/sector-store.js";
+import { FloorStore } from "../src/shared/floor-store.js";
+import { AimTrimStore } from "../src/shared/aim-trim-store.js";
+import { RangeStore } from "../src/shared/range-store.js";
+import { LimitsStore } from "../src/shared/limits-store.js";
+import { PolicyStore } from "../src/shared/policy-store.js";
+import { CaptureController, type CaptureDeps } from "../src/shared/capture/controller.js";
+import { PassJournal } from "../src/shared/capture/pass-journal.js";
+import { FrameSource } from "../src/shared/vision/frame-source.js";
+import { DetectorClient } from "../src/shared/vision/detector-client.js";
+import { SizeGuardedDetector, VisionRuntime } from "../src/mcp/vision-tools.js";
+import { VisionScaleStore } from "../src/shared/vision-scale-store.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Config } from "../src/shared/config.js";
+
+function fakeCapture(): CaptureController {
+  const deps: CaptureDeps = {
+    setRecord: async () => {},
+    snapshot: async (icao) => `/tmp/${icao}.jpg`,
+    isArmed: async () => true,
+    now: () => Date.now(),
+    nowIso: () => new Date().toISOString(),
+  };
+  return new CaptureController(deps, { debounceMs: 5000, autoEnabled: true });
+}
+
+// buildApp's vision args: never started (no real camera/detector in this
+// test), so latest() always returns null and the guarded detector never
+// gets a live server to call.
+function fakeFrames(): FrameSource {
+  return { latest: () => null, start() {}, stop() {} };
+}
+function fakeDetector(): SizeGuardedDetector {
+  return new SizeGuardedDetector(new DetectorClient("http://127.0.0.1:1/detect", 100), {
+    expectedSizePx: () => ({ widthPx: 0, heightPx: 0 }),
+  });
+}
+function fakeVisionRuntime(cfg: Config): VisionRuntime {
+  return new VisionRuntime(cfg);
+}
+function fakeVisionScaleStore(): VisionScaleStore {
+  const s = new VisionScaleStore(join(mkdtempSync(join(tmpdir(), "tb3srv-vscale-")), "vision-scale.json"));
+  s.load();
+  return s;
+}
+function fakeJournal(): PassJournal {
+  return new PassJournal(join(mkdtempSync(join(tmpdir(), "tb3srv-passes-")), "passes.jsonl"));
+}
+
+const DEV_PORT = 8794;
+const MCP_PORT = 8795;
+let mock: MockTb3 | null = null;
+let dev: Device | null = null;
+let httpServer: Server | null = null;
+
+afterEach(async () => {
+  await new Promise<void>((r) => (httpServer ? httpServer.close(() => r()) : r())); httpServer = null;
+  dev?.close(); dev = null;
+  if (mock) { await mock.stop(); mock = null; }
+});
+
+describe("server", () => {
+  it("serves MCP over streamable HTTP and returns tool results", async () => {
+    mock = new MockTb3(); await mock.start(DEV_PORT);
+    mock.setPosition(45 * 444.444, 0);
+    const cfg = loadConfig(undefined, { TB3_DEVICE_HOST: `127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT) });
+    dev = new Device(cfg); dev.start();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "calibration.json"));
+    const session = new TrackingSession(dev, cfg, store);
+    const supervisor = new SunSupervisor(dev, cfg, store, session);
+    const follower = new AdsbFollower(session, cfg.adsbAltSource, cfg.adsbLostSec * 1000);
+    const source = new AdsbSource(cfg); // not started; adsbEnabled defaults false
+    const sectorStore = new SectorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "sector.json"));
+    sectorStore.load();
+    const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
+    limitsStore.load();
+    const floorStore = new FloorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "floor.json"));
+    floorStore.load();
+    const aimTrimStore = new AimTrimStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "trim.json"), cfg.maxAimOffsetDeg);
+    aimTrimStore.load();
+    const rangeStore = new RangeStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "range.json"), cfg.trackMaxRangeKm);
+    rangeStore.load();
+    const policyStore = new PolicyStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "policy.json"));
+    policyStore.load();
+    const app = buildApp(
+      dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
+      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(), fakeJournal(),
+      aimTrimStore, rangeStore, floorStore, policyStore,
+    );
+    await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
+
+    const client = new Client({ name: "http-test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${MCP_PORT}/mcp`));
+    await client.connect(transport);
+
+    const { tools } = await client.listTools();
+    expect(tools.length).toBe(56); // 8 base + 10 geo (+sight_aircraft, +remove_sighting, +clear_sightings) + 2 imu (+set_north_zero) + 11 tracking (+nudge/get/clear_aim_offset, +set/get/clear_aim_trim, +park_idle) + 2 sun + 5 adsb (scan/track/get_tracked + get/set_policy) + 2 sector + 2 range (get/set_track_range) + 5 capture + 1 list_passes + 3 limits (teach/get/clear) + 3 vision (get_vision_status/set_vision_enabled/calibrate_vision_scale) + 2 floor (get/set_min_track_elevation)
+
+    const res: any = await client.callTool({ name: "get_status", arguments: {} });
+    expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);
+
+    await transport.close();
+  });
+
+  it("rejects requests without a token when a token is configured", async () => {
+    mock = new MockTb3(); await mock.start(DEV_PORT);
+    const cfg = loadConfig(undefined, {
+      TB3_DEVICE_HOST: `127.0.0.1:${DEV_PORT}`, TB3_MCP_PORT: String(MCP_PORT), TB3_MCP_TOKEN: "sekret",
+    });
+    dev = new Device(cfg); dev.start();
+    await new Promise((r) => setTimeout(r, 200));
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "calibration.json"));
+    const session = new TrackingSession(dev, cfg, store);
+    const supervisor = new SunSupervisor(dev, cfg, store, session);
+    const follower = new AdsbFollower(session, cfg.adsbAltSource, cfg.adsbLostSec * 1000);
+    const source = new AdsbSource(cfg); // not started; adsbEnabled defaults false
+    const sectorStore = new SectorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "sector.json"));
+    sectorStore.load();
+    const limitsStore = new LimitsStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "limits.json"));
+    limitsStore.load();
+    const floorStore = new FloorStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "floor.json"));
+    floorStore.load();
+    const aimTrimStore = new AimTrimStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "trim.json"), cfg.maxAimOffsetDeg);
+    aimTrimStore.load();
+    const rangeStore = new RangeStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "range.json"), cfg.trackMaxRangeKm);
+    rangeStore.load();
+    const policyStore = new PolicyStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "policy.json"));
+    policyStore.load();
+    const app = buildApp(
+      dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
+      fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(), fakeJournal(),
+      aimTrimStore, rangeStore, floorStore, policyStore,
+    );
+    await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
+
+    const r = await fetch(`http://127.0.0.1:${MCP_PORT}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept": "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+    });
+    expect(r.status).toBe(401);
+  });
+});

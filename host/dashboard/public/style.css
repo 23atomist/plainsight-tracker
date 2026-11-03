@@ -1,0 +1,303 @@
+/* SHARED TOKENS: colours, typography, and the generic chip/button/panel
+   idioms reused across both the cockpit (cockpit.css) and the Setup drawer
+   (drawer.css). Cockpit- and drawer-specific layout rules live in those two
+   files, which this stylesheet @imports so the page still needs only one
+   <link>. */
+
+@import "cockpit.css";
+@import "drawer.css";
+
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel-2: #1c232c;
+  --border: #2a323d;
+  --text: #e6edf3;
+  --muted: #8b96a5;
+  --accent: #4da3ff;
+  --green: #3fb950;
+  --grey: #6e7681;
+  --red: #f85149;
+  --yellow: #d29922;
+}
+
+* { box-sizing: border-box; }
+
+/* The app is a fixed-viewport cockpit: top bar, plane strip, video stage,
+   bottom bar, error strip stack vertically and NOTHING scrolls at page
+   level -- the plane strip scrolls horizontally and the bottom drawer
+   scrolls internally. The stage claims every pixel the chrome doesn't use,
+   which is what makes the video effectively fullscreen between the bars. */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 0;
+}
+dl dt { color: var(--muted); }
+dl dd { margin: 0; text-align: right; }
+
+.muted { color: var(--muted); }
+.ok { color: var(--green); }
+.bad { color: var(--red); }
+/* Neither "good" nor "bad" -- a provisional calibration, or a non-zero
+   drift-calibration offset: correct to have, but not the finished state. */
+.warn { color: var(--yellow); }
+
+/* ---------- generic panel / block-list utilities ---------- */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+/* A labelled stats block (Rig / Tracking / Calibration / ...). Stacked
+   (border-bottom, not border-right) so it reads correctly whether it lands
+   in a vertical column (telemetry) or standalone (calibration, pre-drawer). */
+.navblock {
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.navblock:last-child { padding-bottom: 0; margin-bottom: 0; border-bottom: none; }
+
+/* Each stats block splits into two dl columns (rig 4|3, tracking 3|3). */
+.navsplit {
+  display: flex;
+  gap: 18px;
+  font-size: 12px;
+}
+.navsplit dl { align-content: start; }
+
+/* ---------- status chip family ---------- */
+
+.chip {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  font-size: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.chip[data-mode="idle"] { color: var(--muted); border-color: var(--border); }
+.chip[data-mode="manual"] { color: #0d1117; background: var(--yellow); border-color: var(--yellow); }
+.chip[data-mode="autonomous"] { color: #0d1117; background: var(--green); border-color: var(--green); }
+
+.svc-row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.svc-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.led {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--grey);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.08);
+}
+.led-active { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.led-inactive { background: var(--grey); }
+.led-failed { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.led-unknown { background: #3a4048; opacity: 0.6; }
+
+/* Capture status chip -- same pill shape/weight as .chip, reused here so a
+   second "state indicator" idiom doesn't appear on the page. REC/ERROR read
+   as urgent (solid red); a skip reads as a warning (solid amber); ready/off/
+   unknown stay muted so only a genuine problem or an active recording draws
+   the eye. */
+.stat {
+  display: block;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  font-size: 12px;
+  text-align: center;
+  white-space: nowrap;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.stat.capture-rec,
+.stat.capture-error {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
+}
+.stat.capture-skip {
+  color: #0d1117;
+  background: var(--yellow);
+  border-color: var(--yellow);
+}
+.stat.capture-ready,
+.stat.capture-off,
+.stat.capture-unknown {
+  color: var(--muted);
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+
+/* Generic on/off toggle button (camera/auto/sun-guard/joystick toggles). */
+.toggle-btn.toggle-on { background: var(--green); color: #0d1117; border-color: var(--green); font-weight: 700; }
+/* Ingest gave up (restart budget exhausted) -- distinct from the "STARTING..."
+   shown while a normal backed-off retry is still in flight. Red, matching the
+   capture chip's own error treatment, so a genuine give-up reads as urgent. */
+.toggle-btn.toggle-degraded { background: var(--red); color: #fff; border-color: var(--red); font-weight: 700; }
+
+/* ---------- E-STOP ---------- */
+
+#estop {
+  background: var(--red);
+  color: #fff;
+  border: 2px solid #ffb4b0;
+  font-weight: 900;
+  font-size: 16px;
+  letter-spacing: 0.05em;
+  padding: 12px 26px;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 0 0 2px rgba(248,81,73,0.35);
+}
+#estop:hover { background: #ff6a62; }
+#estop:active { transform: translateY(1px); }
+
+/* ---------- banners ---------- */
+
+/* #banners vs #drawer (review fix, UI-9 fix round 2, finding P-1 -- corrects
+   fix round 1's own attempt): round 1 gave #banners z-index:90 (above
+   #drawer's fixed-position 80, drawer.css) to stop the open drawer from
+   covering #estop-clear -- and it did -- but that just moved the SAME
+   occlusion one layer up: an elevated #banners then covered the drawer's
+   OWN nav tabs (e.g. "Travel limits") wherever they overlapped the same
+   top-of-page band on the right ~360px. Two overlapping fixed-position
+   layers will always occlude each other SOMEWHERE; swapping which one wins
+   z-index just moves which control dies. The actual fix for THAT bug is
+   geometric, in index.html: #estop-clear now sits BEFORE
+   #estop-banner-detail (which carries flex:1) inside #estop-banner, so the
+   actionable button no longer gets pushed out to the banner's far right --
+   the exact spot the drawer occupies -- regardless of viewport width. That
+   geometry fix is untouched by the rule below and still does its job.
+
+   #banners vs #topbar (review fix, finding I-2 -- a SEPARATE bug from P-1
+   above, about vertical scroll, not horizontal/drawer overlap): #banners
+   used to be plain normal-flow with no positioning at all. #topbar is
+   `position: sticky; top: 0; z-index: 100` (this file's own #topbar rule),
+   so once #estop-banner showing makes the document tall enough to scroll
+   (true at every one of this dashboard's supported viewport heights),
+   scrolling to the bottom moves #banners' box UP past #topbar's sticky
+   position -- and since #topbar's z-index beats an unpositioned #banners'
+   implicit stacking, #topbar then renders OVER whatever of #banners tried
+   to occupy that same screen band, #estop-clear included. #topbar itself
+   stays reachable regardless (sticky, always at top:0) -- it's the
+   RECOVERY control (Clear/Resume) and the latched INDICATION (the STOPPED
+   banner) that go missing. Fixed by making #banners sticky too, pinned
+   directly beneath the page top (sticky, see #banners above), the same
+   #drawer already anchors to) so it can never scroll out from under it.
+   z-index 79 -- below #drawer's 80 -- keeps this belt-and-braces with P-1's
+   fix above: an open drawer still wins wherever it would overlap #banners,
+   so this cannot reopen the occlusion P-1 already closed. */
+#banners {
+  display: flex;
+  flex-direction: column;
+  /* No top bar exists any more, so the banners pin to the very top of the
+     viewport; z-index keeps them above the Tools drawer (80) should they
+     ever overlap it. */
+  position: sticky;
+  top: 0;
+  z-index: 79;
+}
+.banner {
+  padding: 8px 16px;
+  font-weight: 600;
+  font-size: 13px;
+}
+.banner-warn { background: #3a2c0e; color: var(--yellow); border-bottom: 1px solid #5a4614; }
+.banner-critical {
+  background: #3a0e0e;
+  color: #ffb4b0;
+  border-bottom: 1px solid #6e1a1a;
+}
+/* #estop-banner is always present in the DOM; visibility is driven purely by
+   the "show" class (not the [hidden] attribute) so this author-stylesheet
+   rule can't be beaten by a stray `display` declaration elsewhere. */
+#estop-banner { display: none; }
+#estop-banner.show {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+#estop-banner-detail { font-weight: 400; color: #ffcac7; font-size: 12px; flex: 1; }
+#estop-clear {
+  background: #ffb4b0;
+  color: #3a0e0e;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* ---------- toasts ---------- */
+
+/* TOP-right, not bottom-right: the bottom of the screen is now solid
+   controls (instruments + the centred stick) and the toast stack was landing
+   on top of them. Offset below the plane strip so it never covers a card.
+   Transient text over the top corner of the picture is the cheap trade. */
+#toast-container {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1000;
+}
+.toast {
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  max-width: 320px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+  opacity: 1;
+  transition: opacity 0.4s ease;
+}
+.toast-ok { background: #12321a; color: #b8f0c5; border: 1px solid #235a30; }
+.toast-err { background: #3a1414; color: #ffc7c2; border: 1px solid #6e1a1a; }
+.toast-out { opacity: 0; }

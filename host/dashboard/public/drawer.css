@@ -1,0 +1,778 @@
+/* DRAWER + STRIPS: the Setup drawer scaffold, the procedure/error strips, and
+   the guided-procedure content that lives in this domain. Calibration,
+   Travel limits, and Set home (procedures.js) are rendered inside
+   #drawer-body via drawer.js's setEntryRenderer seam; their own styling
+   lives in the sections below. #drawer-open is wired (drawer.js + app.js);
+   the remaining entries (Track sector, Joystick) are still placeholders
+   until the tasks that own each procedure fill them in. Shared tokens live
+   in style.css, which imports this file. */
+
+/* ---------- procedure strip ---------- */
+
+/* What an aiming step (calibration's sight-1/sight-2) collapses the drawer
+   to -- see drawer.js's collapseToStrip/updateStrip. `:not([hidden])` (not a
+   bare `display` on the id selector) so this layout never fights the native
+   `[hidden]{display:none}` rule the plain `hidden` attribute relies on for
+   show/hide (see style.css's #estop-banner comment on the same hazard). */
+#proc-strip {
+  flex: 0 0 auto;
+}
+#proc-strip:not([hidden]) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+#proc-strip .strip-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+#proc-strip .strip-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+#proc-strip button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+#proc-strip button.primary { background: var(--accent); color: #05131f; border-color: var(--accent); font-weight: 700; }
+#proc-strip button.link { background: none; border-color: transparent; color: var(--muted); text-decoration: underline; }
+
+/* ---------- setup drawer (inside the bottom drawer's Setup tab) ---------- */
+
+/* The Drawer class (drawer.js) is container-agnostic -- it only toggles
+   `hidden`, rewrites #drawer-body's children, and manages strip mode. Its
+   home moved from a fixed off-canvas right sheet into the bottom drawer's
+   Setup tab panel, so #drawer is now plain in-flow content: fill the panel,
+   scroll internally. (The old fixed/right/top geometry, z-index banding, and
+   --topbar-h offset were all properties of being an overlay; none of that
+   applies to a tab panel.) E-STOP coverage is structural now rather than a
+   stacking-order property: #topbar sits above the whole drawer column in
+   normal flow, and nothing in here is position:fixed any more. */
+#drawer {
+  background: var(--panel);
+  overflow-y: auto;
+  padding: 4px 2px;
+}
+#drawer-body { min-height: 100%; }
+
+/* ---------- bottom drawer shell + tabs ---------- */
+
+/* Slides up over the stage from behind the bottom bar. An overlay (not
+   in-flow) on purpose: opening it must never resize the video underneath --
+   "fullscreen video with only a top and bottom bar" is the layout contract,
+   and a drawer that pushed the stage around would break it every time an
+   operator opened Radar mid-pass. z-index below #topbar's 100 keeps E-STOP
+   king even if a future rule ever lets them overlap. */
+#bottom-drawer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--bottombar-h, 132px) - 1px); /* tuck under the bar's border */
+  max-height: min(60vh, 540px);
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
+}
+#bottom-drawer[hidden] { display: none; }
+
+/* The tab strip (#bd-nav/.bd-tab/#bd-close) is gone: radar, telemetry and
+   trim+camera are permanently on screen side by side now (see cockpit.css's
+   HUD OVERLAY LAYOUT), and Setup is the only panel that still toggles. */
+
+#bd-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px;
+}
+.bd-panel[hidden] { display: none; }
+
+/* Panels lay their content out in a wrapping row by default so wide
+   viewports use the full width (radar + its legend side by side, telemetry
+   blocks side by side) without each panel needing bespoke grid rules. */
+.bd-panel { display: block; }
+#bd-telemetry #telemetry { gap: 12px; }
+
+/* Rendered by drawer.js's renderBody() (open()/expand()) -- a head (title +
+   close), a nav across every entry (Calibration, Travel limits, Set home,
+   Track sector, Policy, Joystick), and a content area for whichever entry is
+   currently active. All six entries now have real bodies: Calibration/
+   Travel limits/Set home from procedures.js (via procedure-actions.js's
+   setEntryRenderer registrations), Track sector from sector.js, Policy from
+   policy.js (Task 7 of the dynamic-agent-policy plan), and Joystick from
+   joystick-panel.js. */
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.drawer-head h2 { margin: 0; }
+.drawer-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.drawer-close:hover { color: var(--text); }
+
+.drawer-nav {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.drawer-nav-item {
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+.drawer-nav-item:hover { border-color: var(--border); background: var(--panel-2); }
+.drawer-nav-item.drawer-nav-active {
+  background: var(--panel-2);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.drawer-content h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.drawer-placeholder { font-size: 12px; line-height: 1.5; }
+
+/* ---------- calibration (guided procedure) ---------- */
+
+/* procedures.js's renderCalibration -- rendered inside .drawer-content via
+   drawer.js's setEntryRenderer seam, so no panel chrome of its own is needed
+   here (.drawer-content already provides it).
+
+   .badge-calibrated/.badge-provisional/.badge-uncalibrated colour whichever
+   element carries `.badge` (the generic pill -- base rules in cockpit.css,
+   deliberately NOT scoped to #topbar, see its own comment on why) -- both
+   this drawer's status line and the topbar's #cal-badge. ui-mode.js's
+   calibrationBadge() is the single source for which class applies in both
+   places. PROVISIONAL must never read like CALIBRATED: a provisional
+   (set_north_zero) orientation is a seed good enough to start tracking
+   from, not a finished solve, and an operator who can't tell the two apart
+   at a glance could trust an uncalibrated rig. */
+.cal-status-line { margin-bottom: 12px; }
+.badge-calibrated { color: var(--green); border-color: var(--green); }
+.badge-provisional { color: var(--yellow); border-color: var(--yellow); }
+.badge-uncalibrated { color: var(--muted); }
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* One row per step-gate.js step: a number, the label, a detail line
+   (rig lat/lon, IMU rms, a sighting's callsign), the done/next mark, and
+   an action cell (.step-actions) holding exactly one primary control --
+   [redo]/[reset] / a visible blocked reason / [run|start] -- plus, for an
+   available sighting step, a secondary landmark-alternative link. */
+.step {
+  display: grid;
+  grid-template-columns: 18px 1fr auto auto;
+  grid-template-areas:
+    "num label mark action"
+    "num detail detail action";
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.step .num { grid-area: num; color: var(--muted); font-weight: 700; align-self: start; }
+.step .label { grid-area: label; font-weight: 600; }
+.step .detail { grid-area: detail; font-size: 11px; color: var(--muted); }
+.step .detail:empty { display: none; }
+.step .mark { grid-area: mark; font-weight: 700; text-align: center; min-width: 1em; }
+
+/* Holds the row's whole action cell -- stacked and right-aligned, so a
+   sighting step's secondary [use a landmark instead] link doesn't fight
+   [start] for the same line. */
+.step .step-actions {
+  grid-area: action;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+/* A blocked step's reason is VISIBLE TEXT, never a title tooltip -- a reason
+   nobody can see is the exact defect this whole redesign exists to fix. */
+.step .blocked-reason {
+  font-size: 11px;
+  color: var(--yellow);
+  text-align: right;
+  max-width: 170px;
+}
+.step button.primary,
+.step button.link {
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.step button.primary { background: var(--accent); color: #05131f; border-color: var(--accent); font-weight: 700; }
+.step button.primary:hover { filter: brightness(1.08); }
+.step button.link { background: none; border-color: transparent; color: var(--muted); text-decoration: underline; }
+.step button.link:hover { color: var(--text); }
+/* Secondary link (sight_landmark alternative) -- smaller than the primary
+   [start] it sits below so it reads as the fallback option, not a second
+   equally-weighted choice. */
+.step button.landmark-alt { font-size: 11px; padding: 2px 4px; }
+
+.step.done { border-color: var(--green); }
+.step.done .mark { color: var(--green); }
+.step.blocked { opacity: 0.7; }
+.step.next { border-color: var(--accent); }
+.step.next .mark { color: var(--accent); }
+
+/* Marks where north-zero's provisional orientation unlocks tracking -- the
+   operator needs to know sighting 1/2 only become reachable from here, not
+   merely that they happen to be later rows in the same flat list. */
+.steps-divider {
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 0 6px;
+  border-bottom: 1px dashed var(--border);
+  margin-bottom: 2px;
+}
+
+/* ---------- travel limits (guided procedure) ---------- */
+
+/* procedures.js's renderTravelLimits -- four independent edges (unlike
+   calibration's steps, these have no ordering between them: teach_limit has
+   no daemon-side prerequisite, see limits-tools.ts's own module comment), so
+   this is a plain row list rather than step-gate.js's done/blocked/next
+   states. Button chrome is scoped to `.limits-row`/`.limits-actions`
+   (mirroring `.step button.*`/`#proc-strip button.*` above) rather than a
+   bare `button.link`/`button.primary`, since neither of those two classes
+   has a project-wide base rule outside those two existing scopes. */
+.limits-intro { margin: 0 0 10px; font-size: 12px; line-height: 1.5; }
+.limits-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.limits-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.limits-label { text-transform: capitalize; }
+/* .limits-value-taught (a real capture) vs .limits-value-default (still the
+   config ceiling, never taught) -- distinctly styled so an untaught edge
+   reads as visibly untaught rather than a number indistinguishable from a
+   real teach_limit capture (review fix, UI-9 fix round, finding I-2). */
+.limits-value { font-variant-numeric: tabular-nums; }
+.limits-value-taught { color: var(--green); }
+.limits-value-default { color: var(--muted); }
+.limits-row button.link,
+.limits-actions button.link {
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 12px;
+}
+.limits-row button.link:hover,
+.limits-actions button.link:hover { color: var(--text); }
+.limits-actions { display: flex; justify-content: flex-end; }
+/* A row's [Teach] control replaced by a visible reason (E-STOP/sun-lock,
+   see procedures.js's teachGateReason) -- same rule as `.step
+   .blocked-reason` above (visible text, never a title tooltip), scoped
+   separately because `.limits-row` isn't a `.step`. */
+.limits-row .blocked-reason {
+  font-size: 11px;
+  color: var(--yellow);
+  text-align: right;
+  max-width: 170px;
+}
+
+/* ---------- set home (guided procedure) ---------- */
+
+/* procedures.js's renderSetHome -- the one control in this drawer that
+   silently invalidates two other procedures' work (see destructiveConfirm,
+   procedures.js). The warning is always-visible text, same rule
+   .blocked-reason above follows -- a consequence nobody can see is exactly
+   what made this button indistinguishable from any other one. */
+.sethome-warning {
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--yellow);
+  background: rgba(210, 153, 34, 0.12);
+  color: var(--yellow);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.sethome-actions { display: flex; }
+.sethome-actions button.primary {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+.sethome-actions button.primary:hover { filter: brightness(1.1); }
+/* [Set home] replaced by a visible reason under a sun lock (review fix,
+   UI-9 fix round, finding M-4) -- same treatment as travel-limits' own
+   rows above. */
+.sethome-actions .blocked-reason {
+  font-size: 12px;
+  color: var(--yellow);
+}
+
+/* Shared visual marker for Set home's own button and travel-limits'
+   [clear taught limits] link -- both destroy something the operator can't
+   get back without real cost. Red instead of the drawer's usual accent
+   blue/muted-link tones, so a destructive control reads as dangerous at a
+   glance rather than looking like every other button until a confirmation
+   dialog (which it also always gets -- see destructiveConfirm) happens to
+   appear. Selectors are as specific as (or more specific than) the base
+   `.limits-*/.sethome-actions` button rules above, so this always wins the
+   cascade regardless of source order. */
+.limits-actions button.link.destructive { border-color: var(--red); color: var(--red); }
+.sethome-actions button.primary.destructive { background: var(--red); color: #fff; }
+
+/* ---------- track sector (relocated compass widget) ---------- */
+
+/* Moved here verbatim from cockpit.css (2026-07-28 dashboard redesign, task
+   10) along with the widget itself -- it's a policy set once a session, not
+   a continuously-watched cockpit surface. Rendered via sector.js's
+   renderSectorEntry() into .drawer-content; no panel chrome of its own is
+   needed (.drawer-content already provides it). */
+#sector-compass-wrap {
+  display: flex;
+  justify-content: center;
+  min-height: 0;
+  max-width: 100%;
+}
+#sector-compass { touch-action: none; } /* pointer-events drive dragging, not the browser's scroll/zoom gestures */
+#sector-ring {
+  fill: var(--panel-2);
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+.compass-crosshair { stroke: var(--border); stroke-width: 1; }
+.compass-label {
+  fill: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.sector-wedge {
+  fill: rgba(77, 163, 255, 0.28);
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+/* Disabled (unchecked): dim the wedge to show it isn't currently enforced,
+   without hiding the arc the operator has staged. */
+#sector-compass.sector-disabled .sector-wedge {
+  fill: rgba(139, 150, 165, 0.18);
+  stroke: var(--muted);
+}
+.sector-handle {
+  fill: var(--accent);
+  stroke: #0d1117;
+  stroke-width: 2;
+  cursor: grab;
+}
+.sector-handle:active { cursor: grabbing; }
+.sector-handle-end { fill: var(--green); }
+/* E-STOP-latched: greyed and functionally inert (sector.js's pointerdown
+   delegate also early-returns while estopLatched -- SVG <circle> has no
+   native disabled state, so pointer-events:none here is the visual half of
+   that gate). */
+.sector-handle-disabled {
+  fill: var(--grey);
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.sector-body { gap: 12px; align-items: center; } /* display:flex inherited from cockpit.css's .deck-body -- markup keeps both classes */
+.sector-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+#sector-enable-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+#sector-enable-label:has(#sector-enable:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- policy (agent target-policy rule editor) ---------- */
+
+/* Rendered by policy.js's renderPolicyEntry() into .drawer-content -- no
+   panel chrome of its own is needed (.drawer-content already provides it),
+   same convention as track sector/joystick above. Task-7-brief.md named
+   this file cockpit.css; it actually lives here, alongside every other
+   Setup-drawer entry's styling (sector/joystick above) -- cockpit.css is the
+   ALWAYS-VISIBLE cockpit's stylesheet (radar/telemetry/trim/adsb strip),
+   not the Setup drawer's, and this rule editor is a Setup-drawer entry like
+   the other five. Reuses this file's existing drawer tokens throughout
+   (var(--panel-2)/var(--border)/var(--muted)/var(--accent)/var(--red)),
+   never a bespoke colour. */
+.policy-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.policy-intro { margin: 0; font-size: 12px; line-height: 1.5; }
+.policy-empty { margin: 0; font-size: 12px; }
+
+.policy-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* One rule per row: tier, enabled checkbox, name, live match count,
+   ▲▼/edit/delete actions -- a plain grid so every row's controls line up
+   regardless of name length. */
+.policy-row {
+  display: grid;
+  grid-template-columns: 24px auto 1fr auto auto;
+  align-items: center;
+  column-gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.policy-row-expanded { border-color: var(--accent); }
+.policy-tier {
+  color: var(--muted);
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.policy-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Live per-rule match count (policy.js's paintPolicyCounts) -- refreshed
+   every SSE tick independent of everything else in the row, so watching an
+   aircraft cross a threshold move a count needs no operator action at all.
+   See policy.js's own module doc for why this is a separate paint from the
+   row's structural rebuild. */
+.policy-count {
+  min-width: 1.5em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--accent);
+}
+.policy-row-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+.policy-btn {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+.policy-btn:hover { border-color: var(--accent); }
+.policy-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.policy-btn.policy-delete:hover { border-color: var(--red); color: var(--red); }
+
+/* The expanded per-rule editor: name, the "can interrupt a pass" checkbox
+   (canPreempt -- opt-in, see policy.js's newRule doc), and the condition
+   list. Indented under its row via the border/background pairing
+   .step/.limits-row already establish for a nested block in this file. */
+.policy-editor {
+  margin: -2px 0 4px;
+  padding: 10px 10px 12px;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.policy-name-label,
+.policy-preempt-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+.policy-name-label input[type="text"] {
+  flex: 1;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.policy-conditions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* One condition row: kind selector, its field-specific controls (numeric
+   field/op/value[/value2], set field/values, or a bare predicate), and a
+   remove button. Wraps rather than clips -- a wide condition (within/
+   not_within's two values) must stay fully visible, not truncated. */
+.policy-condition {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.policy-condition select,
+.policy-condition input[type="number"],
+.policy-condition input[type="text"] {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 5px;
+  font-size: 12px;
+}
+.policy-condition input[type="number"] { width: 5.5em; }
+.policy-condition input[type="text"].cond-values { flex: 1; min-width: 8em; }
+.cond-op-label { color: var(--muted); }
+.cond-remove {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.cond-remove:hover { color: var(--red); }
+
+/* A rule that fails validateRule() -- shown beside the offending row's own
+   editor, never merely in the toolbar, so which rule is broken is never a
+   guess. */
+.policy-row-error {
+  margin-top: -4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--yellow);
+  background: rgba(210, 153, 34, 0.12);
+  color: var(--yellow);
+  font-size: 11px;
+}
+
+.policy-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.policy-error-msg { color: var(--yellow); font-size: 11px; flex: 1; }
+.policy-save {
+  margin-left: auto;
+  background: var(--accent);
+  color: #05131f;
+  border-color: var(--accent);
+  font-weight: 700;
+}
+.policy-save:disabled { background: var(--panel-2); color: var(--muted); border-color: var(--border); }
+
+/* ---------- joystick (relocated diagnostic panel) ---------- */
+
+/* Moved here verbatim from cockpit.css along with the panel itself -- a
+   diagnostics/setup surface, not a permanent cockpit panel. Rendered via
+   joystick-panel.js's renderJoystickEntry() into .drawer-content; its own
+   standalone head (a <h2> + close button) was dropped since the drawer's
+   own head/nav/close cover that now. */
+#joystick-conn { margin-bottom: 8px; }
+.joystick-mapping {
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  font-size: 11px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.joystick-mapping dd { color: var(--text); }
+.joystick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+/* Recolored to the same warn/yellow accent TRIM uses elsewhere (cockpit.css's
+   #jog.jog-mode-trim/.jog-mode-label-trim) so "FINE" reads consistently. */
+.joystick-fine {
+  background: var(--yellow);
+  color: #0d1117;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+}
+.joystick-deadzone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+.joystick-deadzone input[type="range"] { flex: 1; }
+#joystick-deadzone-value { color: var(--text); min-width: 2.5em; text-align: right; }
+/* Same row layout as .joystick-deadzone above (a parallel, not shared, class
+   -- see cockpit.css's own precedent of small, deliberate duplication over a
+   shared name that would read oddly on two semantically different sliders). */
+.joystick-sensitivity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+.joystick-sensitivity input[type="range"] { flex: 1; }
+#joystick-sensitivity-value { color: var(--text); min-width: 2.5em; text-align: right; }
+/* The actionable "resulting max rate" readout (joystick-panel.js's
+   formatMaxRateText) -- deliberately its own muted, smaller-weight span
+   rather than folded into #joystick-sensitivity-value, so the raw fraction
+   and the deg/s figure it implies are both visible without either crowding
+   the slider row. */
+#joystick-sensitivity-rate { color: var(--muted); font-size: 10px; white-space: nowrap; }
+.joystick-live { display: flex; flex-direction: column; gap: 8px; }
+.joystick-live-label {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.joystick-axes { display: flex; flex-direction: column; gap: 3px; }
+.joystick-axis-row { display: flex; align-items: center; gap: 6px; }
+.joystick-axis-label { width: 3.5em; color: var(--muted); flex-shrink: 0; }
+.joystick-axis-track {
+  flex: 1;
+  height: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  position: relative;
+}
+/* Centre tick at 0 and a fill bar growing from centre in either direction --
+   the exact readout that makes "which way is positive on THIS axis" a quick
+   glance instead of a guess. */
+.joystick-axis-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.joystick-axis-fill {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  background: var(--accent);
+  border-radius: 3px;
+}
+.joystick-axis-value { width: 3.5em; text-align: right; color: var(--text); flex-shrink: 0; }
+.joystick-buttons { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.joystick-button-chip {
+  text-align: center;
+  padding: 3px 0;
+  border-radius: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10px;
+}
+.joystick-button-chip.pressed {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0d1117;
+  font-weight: 700;
+}
+
+/* ---------- error strip ---------- */
+
+#errorstrip {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
