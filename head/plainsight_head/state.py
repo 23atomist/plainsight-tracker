@@ -104,11 +104,19 @@ class HeadState:
             "cal": {"sys": sys_, "gyr": gyr, "acc": acc, "mag": mag}, "tempC": s.temp_c,
         }
 
+    def publish_event(self, name: str, axis: str | None = None,
+                      detail: dict | str | None = None) -> None:
+        """Deliver an event to the tick subscribers (does not advance `seq`)."""
+        self._deliver({"type": "event", "t": int(self._time() * 1000),
+                       "name": name, "axis": axis, "detail": detail})
+
     def _publish(self) -> None:
         self.seq += 1
-        tick = self.tick()
+        self._deliver(self.tick())
+
+    def _deliver(self, msg: dict[str, Any]) -> None:
         for cb in list(self._subs):
             try:
-                cb(tick)
+                cb(msg)
             except Exception:
-                log.exception("tick subscriber failed")
+                log.exception("%s subscriber failed", msg["type"])

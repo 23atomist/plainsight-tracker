@@ -8,6 +8,7 @@ import time
 from collections import deque
 
 from plainsight_head.config import HeadConfig
+from plainsight_head.deadman import JogDeadman
 from plainsight_head.imu import ImuReader
 from plainsight_head.persist import JsonStore
 from plainsight_head.pico import PicoLink
@@ -47,6 +48,7 @@ class FakeSerial:
         self.sent: list[str] = []
         self.reply_override: dict[str, str] = {}
         self.cfg: dict[str, dict[str, float]] = {ax: {"maxv": 100.0, "acc": 50.0} for ax in AXES}
+        self.cfg["global"] = {"track_timeout_ms": 1000.0}
         self._cond = threading.Condition()
         self._out = bytearray()
         self._in = bytearray()
@@ -158,6 +160,9 @@ class FakeSerial:
             self._reply("V plainsight-ptz 0.1.0", "ok")
         elif verb == "STATUS":
             self._reply(self._status_line()[1:], "ok")
+        elif verb == "CFG" and len(args) == 3:
+            self.cfg.setdefault(args[0], {})[args[1]] = float(args[2])
+            self._reply("ok")
         elif verb == "CFG":
             self._reply(*[f"C {ax} {k} {v:g}" for ax, kv in self.cfg.items() for k, v in kv.items()], "ok")
         elif verb == "DRV":
@@ -287,8 +292,12 @@ class HeadCtx:
 
     A background task streams status lines like the Pico's `STREAM`, so code that
     waits for a fresh status after a command sees one; `streaming(False)` pauses it.
-    Each status goes to `state.on_pico_status`, then `ref.on_status`.
+    Each status goes to `state.on_pico_status`, then `ref.on_status`. Pico `*E`
+    events and PanReference events are also published on `state` (as main wires
+    them), and the attributes cover api.HeadContext so `make_app(ctx)` accepts it.
     """
+
+    pico_version = "plainsight-ptz 0.1.0"
 
     def __init__(self, env: dict, tmp_path) -> None:
         self.cfg = HeadConfig.from_env(env)
@@ -300,12 +309,17 @@ class HeadCtx:
         self.events: list[tuple[str, dict]] = []
         self.pico_events: list = []
         self.link = PicoLink("/dev/fake", 115200, on_status=self._on_status,
-                             on_event=self.pico_events.append, on_link=self.state.set_pico_link,
+                             on_event=self._on_pico_event, on_link=self.state.set_pico_link,
                              serial_factory=lambda p, b: self.fake)
         self.imu = ImuReader(lambda: self.imu_fake, rate_hz=200, on_link=self.state.set_imu_link)
         self._ref_kw: dict = {"heading_window_s": 0.1}
         self.ref = self._make_ref()
+        self.deadman = self._make_deadman()
         self._streamer: asyncio.Task | None = None
+
+    @property
+    def pico(self) -> PicoLink:
+        return self.link
 
     def now(self) -> float:
         return time.time()
@@ -314,11 +328,24 @@ class HeadCtx:
         self.state.on_pico_status(st)
         self.ref.on_status(st)
 
+    def _on_pico_event(self, ev) -> None:
+        self.pico_events.append(ev)
+        self.state.publish_event(ev.name, ev.axis, ev.detail)
+
+    def _on_ref_event(self, name: str, detail: dict) -> None:
+        self.events.append((name, detail))
+        self.state.publish_event(name, None, detail)
+
+    def _make_deadman(self) -> JogDeadman:
+        from plainsight_head.api import pico_stop_axes  # deferred like _make_ref
+
+        return JogDeadman(self.cfg.jog_deadman_ms, pico_stop_axes(self.link))
+
     def _make_ref(self):
         from plainsight_head.reference import PanReference  # deferred: keeps other test modules importable
 
         return PanReference(self.cfg, self.link, self.imu, self.state, self.store,
-                            time_fn=self.now, on_event=lambda n, d: self.events.append((n, d)),
+                            time_fn=self.now, on_event=self._on_ref_event,
                             **self._ref_kw)
 
     def cfg_override(self, **kw) -> None:
@@ -358,6 +385,7 @@ class HeadCtx:
                 raise AssertionError("fake IMU never came up")
             await asyncio.sleep(0.005)
         await self.streaming(True)
+        await self.deadman.start()
 
     async def _stream(self) -> None:
         while True:
@@ -365,6 +393,7 @@ class HeadCtx:
             self.fake.emit_status()
 
     async def close(self) -> None:
+        await self.deadman.close()
         await self.streaming(False)
         await self.imu.close()
         await self.link.close()
