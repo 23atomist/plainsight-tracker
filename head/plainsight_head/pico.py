@@ -302,7 +302,7 @@ class PicoLink:
             await asyncio.to_thread(ser.write, (line + "\n").encode())
         except OSError as exc:
             self._reader_died, self._reader_error = True, f"write failed: {exc}"
-            raise PicoError(f"write failed: {exc}") from exc
+            raise PicoLinkDown(f"write failed: {exc}") from exc
         data: list[str] = []
         deadline = self._loop.time() + timeout_s
         while True:

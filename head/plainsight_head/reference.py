@@ -68,6 +68,7 @@ class PanReference:
         self._last_written: float | None = None
         self._last_write_t: float | None = None  # the `t` stored in the file as last written
         self._setpos_status: PicoStatus | None = None  # state.pico when the last SETPOS returned
+        self._setpos_count = 0  # successful SETPOS pan; lets a queued restore see it was overtaken
         self._pan_homed: bool | None = None
 
     @property
@@ -118,7 +119,18 @@ class PanReference:
         Call it once `state.pico` holds a status read after the reconnect. If the Pico kept pan
         homed (a USB glitch, not a reboot) nothing changes. If pan came back unhomed, restore
         the persisted position when the file is fresh; otherwise pan stays unreferenced.
+
+        It may wait behind an IMU north run for the reference lock, so the decision is made
+        inside the lock: if any SETPOS pan landed while it waited, that newer reference wins.
         """
+        setpos_count = self._setpos_count
+        async with self._lock:
+            if self._setpos_count != setpos_count:
+                log.info("pan reference: set while the reconnect restore waited; keeping it")
+                return ReferenceResult(self._state.ref.source, None, "referenced meanwhile")
+            return await self._restore_after_reconnect_locked()
+
+    async def _restore_after_reconnect_locked(self) -> ReferenceResult:
         pico = self._state.pico
         if pico is None:
             return ReferenceResult("none", None, "no pico status")
@@ -135,23 +147,27 @@ class PanReference:
                         "pan left unreferenced", REF_FILE)
             return ReferenceResult("none", None, "no fresh persisted reference")
         log.info("pan reference: Pico reconnected with pan unhomed; restoring the persisted position")
-        return await self._restore_saved(saved)
+        return await self._apply_saved(saved)
 
     async def _restore_saved(self, saved: dict) -> ReferenceResult:
-        pos, source = saved["pos"], saved["source"]
         async with self._lock:
-            try:
-                previous = await self._setpos(pos)
-            except PicoError as exc:
-                reason = f"pico: {exc.reason}"
-                log.warning("pan reference: restoring persisted pan %.3f failed: %s", pos, exc.reason)
-                self._failed(reason)
-                return ReferenceResult("none", None, reason)
-            self._last_written, self._last_write_t = pos, saved["t"]
-            self._state.set_ref(PanRef(source, True, self._time()))
-            log.info("pan reference: restored persisted pan %.3f (source %s)", pos, source)
-            self._changed(source, pos, previous)
-            return ReferenceResult(source, pos, None)
+            return await self._apply_saved(saved)
+
+    async def _apply_saved(self, saved: dict) -> ReferenceResult:
+        """SETPOS pan to the persisted position; the caller holds the reference lock."""
+        pos, source = saved["pos"], saved["source"]
+        try:
+            previous = await self._setpos(pos)
+        except PicoError as exc:
+            reason = f"pico: {exc.reason}"
+            log.warning("pan reference: restoring persisted pan %.3f failed: %s", pos, exc.reason)
+            self._failed(reason)
+            return ReferenceResult("none", None, reason)
+        self._last_written, self._last_write_t = pos, saved["t"]
+        self._state.set_ref(PanRef(source, True, self._time()))
+        log.info("pan reference: restored persisted pan %.3f (source %s)", pos, source)
+        self._changed(source, pos, previous)
+        return ReferenceResult(source, pos, None)
 
     # --- events (spec 6.8) ------------------------------------------------
     def _changed(self, source: str, pan: float, previous: float | None) -> None:
@@ -264,6 +280,7 @@ class PanReference:
         previous = pico.axes["pan"].pos if pico is not None and pico.axes["pan"].homed else None
         await self._pico.command("SETPOS " + fmt_axes({"pan": pan}))
         self._setpos_status = self._state.pico
+        self._setpos_count += 1
         return previous
 
     # --- host ---------------------------------------------------------------

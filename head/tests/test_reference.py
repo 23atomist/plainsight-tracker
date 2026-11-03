@@ -337,3 +337,19 @@ async def test_imu_north_aborts_if_the_head_moves_during_the_heading_window(ctx_
     assert r == ReferenceResult("none", None, "head moved during reference")
     assert c.events[-1] == ("pan_reference_failed", {"reason": "head moved during reference", "source": "host"})
     assert [s for s in c.fake.sent if s.startswith("SETPOS")] == ["SETPOS pan 5.00000"]
+
+
+async def test_reconnect_restore_queued_behind_imu_north_keeps_the_newer_reference(ctx_imu_ready):
+    c = ctx_imu_ready
+    c.store.write(REF, {"pos": 33.0, "source": "host", "t": c.now() - 60})  # pan unhomed, file fresh
+    c.imu_fake.heading = 42.0
+    c.ref_override(heading_window_s=0.3)
+    imu = asyncio.create_task(c.ref.reference_from_imu(1.0))
+    await asyncio.sleep(0.05)
+    assert c.ref.busy  # IMU north holds the lock
+    restore = asyncio.create_task(c.ref.restore_after_reconnect())
+    assert (await imu).source == "imu"
+    r = await restore
+    assert r.reason == "referenced meanwhile" and r.source == "imu"
+    assert [s for s in c.fake.sent if s.startswith("SETPOS")] == ["SETPOS pan 42.00000"]
+    assert c.state.ref.source == "imu"

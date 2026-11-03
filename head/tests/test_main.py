@@ -481,3 +481,50 @@ async def test_boot_skips_home_tilt_while_estop_latched(tmp_path, caplog, monkey
         await until(lambda: booted(caplog), "boot complete")
         assert "HOME tilt" not in rig.fake.sent and rig.fake.sent == INIT
         assert any("E-STOP is latched; skipping HOME tilt" in r.getMessage() for r in caplog.records)
+
+
+# --- re-review: the reconnect restore must not block the link supervisor ------------------
+
+async def test_supervisor_keeps_watching_while_a_reconnect_restore_waits_for_the_reference(tmp_path, caplog):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0"})
+    rig.seed("pan-reference.json", {"pos": 12.5, "source": "host", "t": time.time()})
+    rig.fake.model["tilt"]["homed"] = True
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        rig.imu_fake.cal = (0, 0, 0, 0)  # IMU north holds the reference lock waiting for cal
+        assert (await post_json(rig, "/api/reference", {"timeoutS": 15}))[0] == 202
+        await until(lambda: any(s.startswith("MOVE tilt") for s in rig.fake.sent), "MOVE tilt")
+        await asyncio.sleep(0.5)  # MOVE answered, tilt settled: now waiting for IMU calibration
+        mark = len(rig.fake.sent)
+        rig.fake.fail_next_reads(1)
+        rig.fake.reboot()  # pan comes back unhomed: a restore is due, and queues on the lock
+        await until(lambda: "STREAM 100" in rig.fake.sent[mark:], "re-init after reconnect")
+        assert not any(s.startswith("SETPOS") for s in rig.fake.sent[mark:])  # still waiting
+        t0 = time.monotonic()
+        rig.pico_present = False
+        rig.fake.fail_next_reads(10**6)  # a second drop, for good
+
+        async def down() -> bool:
+            return (await rig.get("/healthz"))["pico"] is False
+        await until(down, "the second drop to be noticed", timeout=2 * 2.0)  # 2 x stale_s
+        assert time.monotonic() - t0 < 2 * 2.0
+        rig.fake.fail_next_reads(0)
+    assert_no_leaked_tasks()
+
+
+async def test_stop_orphans_warns_once_until_the_link_streams_again(tmp_path, caplog, heads):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "none"})
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        head = heads[0]
+        head.state.set_estop(True)
+
+        def count() -> int:
+            return sum("re-sending ESTOP" in r.getMessage() and r.levelno == logging.WARNING
+                       for r in caplog.records)
+        for _ in range(3):  # a Pico that answers but never streams re-inits every few seconds
+            await head._stop_orphans()
+        assert count() == 1 and rig.fake.sent.count("ESTOP") == 3
+        await until(lambda: head._orphan_logged is None, "a streamed status")  # streaming again
+        await head._stop_orphans()
+        assert count() == 2

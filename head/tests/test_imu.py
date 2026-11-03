@@ -296,3 +296,18 @@ async def test_imu_failing_reads_for_3s_log_at_most_two_warnings(caplog):
     warnings = _imu_warnings(caplog)
     assert 1 <= len(warnings) <= 2, [w.getMessage() for w in warnings]
     assert any("IMU back after" in rec.getMessage() for rec in caplog.records)
+
+
+async def test_sample_time_is_taken_when_the_read_runs_not_when_it_queued():
+    clk = FakeClock(100.0)
+    r = ImuReader(lambda: FakeBNO055(), rate_hz=200, time_fn=clk.now)
+    await r.start()
+    await until_open(r)
+    await r._bus.acquire()  # another sensor call holds the bus
+    burst = asyncio.create_task(r.burst(1))
+    await asyncio.sleep(0.02)
+    clk.advance(5.0)
+    r._bus.release()
+    (sample,) = await burst
+    assert sample.t == 105.0
+    await r.close()

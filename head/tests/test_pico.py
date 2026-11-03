@@ -310,3 +310,18 @@ async def test_supervisor_survives_an_unexpected_exception_in_a_step(caplog, mon
     assert link.connected and len(calls) == 2
     assert any("supervisor step failed" in r.getMessage() and r.exc_info for r in caplog.records)
     await link.close()
+
+
+async def test_write_failure_is_a_lost_link():
+    from plainsight_head.pico import PicoLinkDown
+
+    fake = FakeSerial(); link, _ = await make_link(fake, reconnect_s=5.0)
+
+    def broken_write(data):
+        raise OSError("EIO")
+
+    fake.write = broken_write
+    with pytest.raises(PicoLinkDown) as e:
+        await link.command("VER")
+    assert e.value.reason == "write failed: EIO"
+    await link.close()

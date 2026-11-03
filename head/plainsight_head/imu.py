@@ -274,7 +274,11 @@ class ImuReader:
         dev = self._dev
         if dev is None:
             return []
-        return [await self._io(dev.read_sample, self._time()) for _ in range(min(n, _BURST_MAX))]
+        return [await self._io(self._sample, dev) for _ in range(min(n, _BURST_MAX))]
+
+    def _sample(self, dev: Any) -> ImuSample:
+        """Runs in the worker with the bus held, so `t` is when the read happened, not queued."""
+        return dev.read_sample(self._time())
 
     async def _open(self) -> bool:
         try:
@@ -319,7 +323,7 @@ class ImuReader:
                     await asyncio.sleep(self._reopen_s)
                     continue
             try:
-                sample = await self._io(self._dev.read_sample, self._time())
+                sample = await self._io(self._sample, self._dev)
             except Exception as e:
                 if not isinstance(e, OSError) and not self._outage.down:
                     log.exception("unexpected IMU read error")  # once per outage, not per read
