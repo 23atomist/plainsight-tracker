@@ -83,6 +83,25 @@ First boot log (the `pico CFG` lines are abridged):
 - All four axes report `endstop: true`. Pan, zoom and focus have no switch
   (pulled-up inputs), so only tilt's flag means anything.
 
+### Pico settings
+
+- [x] The gear ratios match the printed head (`the-pan-v4` `config.scad`):
+  pan ring 76T / pinion 12T = `gear 6.3333`, tilt sector 120T / 12T =
+  `gear 10`. Set in session 2 with `save: true`, replacing 6.44 / 10.7:
+
+```bash
+curl -s -XPOST http://192.168.4.100:8780/api/config -H 'Content-Type: application/json' \
+  -d '{"scope": "pan", "key": "gear", "value": 6.3333, "save": true}'
+curl -s -XPOST http://192.168.4.100:8780/api/config -H 'Content-Type: application/json' \
+  -d '{"scope": "tilt", "key": "gear", "value": 10, "save": true}'
+curl -s -XPOST http://192.168.4.100:8780/api/home -H 'Content-Type: application/json' \
+  -d '{"axes": ["tilt"]}'   # a gear change clears homed; re-home (about 20 s)
+```
+
+  These two values now live in Pico flash. **If the board is ever reset with
+  `DEFAULTS` (or reflashed with default settings), re-apply both and re-home
+  tilt.** Check them in the boot log's `pico CFG pan` / `pico CFG tilt` lines.
+
 ## 3. Telemetry and direction
 
 - [x] Telemetry: `/ws` sends 10 ticks/s (the `seq` step is 10 per second).
@@ -219,14 +238,20 @@ Hardware:
   (anomaly 1). Session 2 (below) showed it was a compass artefact, not a
   stall. With the owner watching, pan swept smoothly both ways and returned to
   its start, and the hardware pan TRACK bench passed. The drivetrain is fine.
-- **Open, for the owner: the IMU reports 3 to 9 % more tilt than the Pico**
-  (anomaly 3). Either the tilt `gear` (10.7) is wrong or the IMU is not square
-  on its mount. Measure the tilt gear ratio, or check the mount, before
-  `HEAD_IMU_TILT_*` is trusted for the `tiltDisagreeDeg` check.
+- **RESOLVED (gear ratio): the IMU reported 3 to 9 % more tilt than the Pico**
+  (anomaly 3). The Pico had `tilt gear 10.7`, but the CAD gives 120T / 12T =
+  10.0, so tilt over-rotated by about 7 %. Pan was also off: 6.44 against
+  76T / 12T = 6.3333. Both are fixed in Pico flash (see
+  [Pico settings](#pico-settings) and session 2 below). The IMU still reads a
+  few % low (28.6° for 30°). That is the sensor (acc calibration 0, roll only
+  approximately the tilt axis), not the gears. Possible refinements:
+  - re-fit `HEAD_IMU_PITCH_OFFSET_DEG` to -2.06 (the roll read at tilt 0);
+  - the tilt cross-check has no scale term, so a scale error is not modelled.
 - **Open, for the owner: `tiltDisagreeDeg` read -1.2 at tilt 2 after the
   session-2 tilt sweep** (it was about 0 before), while the IMU acc
   calibration had fallen back to 0. The leading explanation is IMU drift, not
-  lost steps. Re-check it together with the tilt scale item above.
+  lost steps. After the gear fix it read 0.36 / -1.02 / 0.30 at tilt
+  0 / 30 / 2. Keep watching it once the IMU has some accelerometer calibration.
 
 ## First light, session 2 (2026-11-03 afternoon, owner present)
 
@@ -282,3 +307,30 @@ it.
 
 The Pi's clock is NTP-synchronised and correct (2026-11-03 MST). The earlier
 remark in the session that it was "two days behind" was wrong.
+
+### Gear ratios corrected from the CAD
+
+The head's design files (`hardware/`,
+`config.scad` and its README) give the printed gearing:
+
+| Axis | Teeth | Ratio | Pico had |
+|---|---|---|---|
+| pan | ring 76T / pinion 12T | 6.3333 | 6.44 |
+| tilt | sector 120T / pinion 12T | 10.0 | 10.7 |
+
+With 10.7, tilt over-rotated by about 7 %. That explains the "IMU reads 3 to
+9 % more tilt" item. Both ratios were fixed live with `POST /api/config` and
+`save: true` (`pan gear 6.3333`, `tilt gear 10`), followed by `HOME tilt` to
+resync. Homing took about 20 s.
+
+Verification against the IMU after the fix:
+
+| Tilt (Pico) | IMU roll | `tiltDisagreeDeg` |
+|---|---|---|
+| 0 | -2.06 | 0.36 |
+| 30 | -30.69 | -1.02 |
+| 2 | -4.00 | 0.30 |
+
+The IMU saw 28.6° for a 30° move (-4.6 %). Its accelerometer calibration is 0,
+and its roll axis is only approximately the tilt axis. So a few % of scale error
+is the sensor, not the gears; the tooth counts from the CAD are authoritative.
