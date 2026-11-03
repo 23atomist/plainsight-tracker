@@ -100,6 +100,12 @@ class FakeSerial:
             self._fail_reads = n
             self._cond.notify_all()
 
+    def reboot(self) -> None:
+        """Simulate a Pico power cycle: every axis back to the power-on model (unhomed, at 0)."""
+        with self._cond:
+            self.model = {**{ax: _axis_model() for ax in AXES}, "enabled": True}
+            self._home_left.clear()
+
     def emit_status(self) -> None:
         """Push one *S line for the model; advances any homing in progress."""
         with self._cond:

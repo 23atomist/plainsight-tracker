@@ -1,0 +1,260 @@
+"""The composition root end to end: real run() over FakeSerial, FakeBNO055 and a real HTTP server."""
+import asyncio
+import contextlib
+import json
+import logging
+import socket
+import time
+
+import aiohttp
+import pytest
+
+from plainsight_head.config import HeadConfig
+from plainsight_head.main import run
+from plainsight_head.persist import JsonStore
+from tests.fakes import FakeBNO055, FakeSerial
+
+INIT = ["VER", "CFG", "CFG global track_timeout_ms 1000", "STREAM 100"]
+MOTION_VERBS = ("HOME", "MOVE", "MOVER", "TRACK", "JOG", "SETPOS")
+WAIT_S = 3.5  # IMU north averages heading for 2 s
+STREAM_S = 0.02
+OFFSETS = list(range(100, 122))
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+async def until(cond, what: str, timeout: float = WAIT_S) -> None:
+    deadline = time.monotonic() + timeout
+    while not await _call(cond):
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {what}")
+        await asyncio.sleep(0.01)
+
+
+async def _call(cond):
+    out = cond()
+    return await out if asyncio.iscoroutine(out) else out
+
+
+class Rig:
+    """run() as a task, a fake Pico stream, and an HTTP session against the real server."""
+
+    def __init__(self, tmp_path, env: dict | None = None, *, pico_present: bool = True) -> None:
+        self.port = free_port()
+        self.data = tmp_path / "data"
+        self.cfg = HeadConfig.from_env({"HEAD_PORT": str(self.port), "HEAD_DATA_DIR": str(self.data),
+                                        **(env or {})})
+        self.store = JsonStore(str(self.data))
+        self.fake = FakeSerial()
+        self.imu_fake = FakeBNO055(heading=90.0, cal=(3, 3, 3, 3))
+        self.pico_present = pico_present
+        self.hold = lambda: False  # True pauses the fake Pico's status stream
+        self.stop = asyncio.Event()
+        self.task: asyncio.Task | None = None
+        self.http: aiohttp.ClientSession | None = None
+        self._streamer: asyncio.Task | None = None
+
+    def serial_factory(self, port: str, baud: int) -> FakeSerial:
+        if not self.pico_present:
+            raise FileNotFoundError(port)
+        return self.fake
+
+    def seed(self, name: str, obj: dict) -> None:
+        self.data.mkdir(parents=True, exist_ok=True)
+        (self.data / name).write_text(json.dumps(obj))
+
+    def read(self, name: str) -> dict:
+        return json.loads((self.data / name).read_text())
+
+    async def __aenter__(self) -> "Rig":
+        self.task = asyncio.create_task(run(
+            self.cfg, serial_factory=self.serial_factory, imu_open=lambda: self.imu_fake,
+            store=self.store, stop_event=self.stop, bind="127.0.0.1"), name="head-run")
+        self._streamer = asyncio.create_task(self._stream(), name="test-pico-stream")
+        self.http = aiohttp.ClientSession(f"http://127.0.0.1:{self.port}")
+        await until(self._server_up, "HTTP server up")
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self.shutdown()
+
+    async def shutdown(self) -> None:
+        self.stop.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(self.task), 5.0)
+        finally:
+            self._streamer.cancel()
+            await asyncio.gather(self._streamer, return_exceptions=True)
+            await self.http.close()
+
+    async def _stream(self) -> None:
+        while True:
+            await asyncio.sleep(STREAM_S)
+            if not self.hold():
+                self.fake.emit_status()
+
+    async def _server_up(self) -> bool:
+        try:
+            async with self.http.get("/healthz") as r:
+                return r.status == 200
+        except aiohttp.ClientConnectionError:
+            return False
+
+    async def get(self, path: str) -> dict:
+        async with self.http.get(path) as r:
+            assert r.status == 200, await r.text()
+            return await r.json()
+
+
+def booted(caplog) -> bool:
+    return any(r.name == "plainsight_head.main" and r.getMessage() == "boot complete"
+               for r in caplog.records)
+
+
+def assert_no_leaked_tasks() -> None:
+    left = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    assert left == [], left
+
+
+async def next_event(sock, name: str, timeout: float = WAIT_S) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        msg = await sock.receive_json(timeout=max(deadline - time.monotonic(), 0.01))
+        if msg["type"] == "event" and msg["name"] == name:
+            return msg
+
+
+@pytest.fixture(autouse=True)
+def _info_logs(caplog):
+    caplog.set_level(logging.INFO, logger="plainsight_head")
+
+
+async def test_boot_sequence_order(tmp_path, caplog):
+    rig = Rig(tmp_path)  # tilt not homed, home_ticks=2, IMU at heading 90 and fully calibrated
+    released = asyncio.Event()
+    rig.hold = lambda: "HOME tilt" in rig.fake.sent and not released.is_set()
+    async with rig:
+        await until(lambda: "HOME tilt" in rig.fake.sent, "HOME tilt")
+        # homing cannot finish while the stream is held, so this is the server answering mid-boot
+        health = await rig.get("/healthz")
+        assert health["pico"] is True and health["imu"] is True
+        assert not rig.fake.model["tilt"]["homed"]
+        released.set()
+        await until(lambda: booted(caplog), "boot complete")
+        assert rig.fake.sent[:5] == [*INIT, "HOME tilt"]
+        assert rig.fake.sent.index("SETPOS pan 90.00000") > 4
+        assert rig.fake.model["tilt"]["homed"]
+        state = await rig.get("/api/state")
+        assert state["ref"]["pan"] == "imu" and state["ref"]["persisted"] is True
+        assert state["imu"]["ok"] is True and state["imu"]["heading"] == 90.0
+        assert (await rig.get("/api/version"))["pico"] == "plainsight-ptz 0.1.0"
+        assert rig.read("pan-reference.json")["source"] == "imu"
+        assert rig.read("bno055-offsets.json") == {"offsets": list(range(22))}
+    assert_no_leaked_tasks()
+
+
+async def test_no_auto_home_and_pan_restore_none_sends_no_motion(tmp_path, caplog):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0", "HEAD_PAN_RESTORE": "none"})
+    rig.seed("bno055-offsets.json", {"offsets": OFFSETS})
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        await asyncio.sleep(0.2)  # give any stray motion command time to show up
+        assert rig.fake.sent == INIT
+        assert not any(line.split()[0] in MOTION_VERBS for line in rig.fake.sent)
+        assert rig.imu_fake.offsets_writes[0] == bytes(OFFSETS)
+        assert (await rig.get("/api/state"))["ref"]["pan"] == "none"
+    assert rig.fake.sent == [*INIT, "STOP"]
+    assert_no_leaked_tasks()
+
+
+async def test_imu_only_ticks_while_pico_down(tmp_path, caplog):
+    rig = Rig(tmp_path, pico_present=False)
+    async with rig:
+        health = await rig.get("/healthz")
+        assert health["pico"] is False
+        await until(async_imu_up(rig), "IMU link up")
+        sock = await rig.http.ws_connect("/ws")
+        try:
+            first = await sock.receive_json(timeout=WAIT_S)  # the on-connect tick
+            assert first["type"] == "tick"
+            arrivals, ticks = [], []
+            deadline = time.monotonic() + 1.3
+            while time.monotonic() < deadline:
+                with contextlib.suppress(asyncio.TimeoutError):
+                    msg = await sock.receive_json(timeout=max(deadline - time.monotonic(), 0.01))
+                    if msg["type"] == "tick":
+                        arrivals.append(time.monotonic())
+                        ticks.append(msg)
+        finally:
+            await sock.close()
+        assert 2 <= len(ticks) <= 3, ticks
+        gaps = [b - a for a, b in zip(arrivals, arrivals[1:])]
+        assert all(0.35 < g < 0.7 for g in gaps), gaps
+        for tick in ticks:
+            assert "axes" not in tick and "enabled" not in tick
+            assert tick["link"] == {"pico": False, "imu": True}
+            assert tick["imu"]["ok"] is True and tick["imu"]["heading"] == 90.0
+        assert [t["seq"] for t in ticks] == list(range(ticks[0]["seq"], ticks[0]["seq"] + len(ticks)))
+    assert rig.fake.sent == []
+    assert_no_leaked_tasks()
+
+
+def async_imu_up(rig):
+    async def check() -> bool:
+        return (await rig.get("/healthz"))["imu"] is True
+    return check
+
+
+async def test_reconnect_reinits_without_homing_and_drops_ref_if_pico_rebooted(tmp_path, caplog):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0"})
+    rig.seed("pan-reference.json", {"pos": 12.5, "source": "host", "t": time.time()})
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        assert rig.fake.sent == [*INIT, "SETPOS pan 12.50000"]
+
+        async def pan_homed() -> bool:
+            st = await rig.get("/api/state")
+            return st["ref"]["pan"] == "host" and st["axes"]["pan"]["homed"]
+        await until(pan_homed, "pan referenced and homed")
+        sock = await rig.http.ws_connect("/ws")
+        try:
+            mark = len(rig.fake.sent)
+            rig.fake.fail_next_reads(1)  # the link drops ...
+            rig.fake.reboot()            # ... because the Pico power-cycled
+            await until(lambda: "STREAM 100" in rig.fake.sent[mark:], "re-init after reconnect")
+            event = await next_event(sock, "pan_reference")
+        finally:
+            await sock.close()
+        assert event["detail"]["source"] == "none"
+        state = await rig.get("/api/state")
+        assert state["ref"]["pan"] == "none" and state["link"]["pico"] is True
+        await asyncio.sleep(0.2)  # nothing else follows the re-init: no homing, no referencing
+        assert rig.fake.sent[mark:] == INIT
+    assert_no_leaked_tasks()
+
+
+async def test_shutdown_stops_and_persists(tmp_path, caplog):
+    rig = Rig(tmp_path, {"HEAD_AUTO_HOME": "0"})
+    rig.seed("pan-reference.json", {"pos": 10.0, "source": "host", "t": time.time()})
+    async with rig:
+        await until(lambda: booted(caplog), "boot complete")
+        rig.fake.model["pan"]["pos"] = 33.0  # pan moved since the file was last written
+
+        async def pan_at_33() -> bool:
+            return (await rig.get("/api/state"))["axes"]["pan"]["pos"] == 33.0
+        await until(pan_at_33, "pan at 33")
+        assert rig.read("pan-reference.json")["pos"] == 10.0
+        await rig.shutdown()
+        assert rig.task.done() and rig.task.exception() is None
+        assert rig.fake.sent[-1] == "STOP"
+        saved = rig.read("pan-reference.json")
+        assert saved["pos"] == 33.0 and saved["source"] == "host"
+        assert rig.imu_fake.closed and not rig.fake.is_open
+        async with aiohttp.ClientSession() as s:
+            with pytest.raises(aiohttp.ClientConnectionError):
+                await s.get(f"http://127.0.0.1:{rig.port}/healthz")
+    assert_no_leaked_tasks()
