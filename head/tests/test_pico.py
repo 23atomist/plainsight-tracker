@@ -325,3 +325,20 @@ async def test_write_failure_is_a_lost_link():
         await link.command("VER")
     assert e.value.reason == "write failed: EIO"
     await link.close()
+
+
+
+async def test_non_finite_status_lines_are_skipped_and_the_next_good_one_arrives():
+    fake = FakeSerial(); link, seen = await make_link(fake)
+    good = fake._status_line()
+    fake.emit_raw((good.replace("pos=0.000,", "pos=nan,", 1) + "\n").encode())
+    fake.emit_raw((good.replace("vel=0.000,", "vel=inf,", 1) + "\n").encode())
+    fake.emit_status()
+    for _ in range(100):
+        if seen["status"]:
+            break
+        await asyncio.sleep(0.005)
+    await asyncio.sleep(0.05)
+    assert len(seen["status"]) == 1 and seen["status"][0].axes["pan"].pos == 0.0
+    assert link.connected
+    await link.close()

@@ -196,7 +196,7 @@ empty. The schema lists the names the plainsight-ptz firmware sends.
 ```
 
 ```json event
-{"type": "event", "t": 1762150001200, "name": "config", "axis": null, "detail": {"scope": "pan", "key": "max_vel", "value": 90}}
+{"type": "event", "t": 1762150001200, "name": "config", "axis": null, "detail": {"scope": "pan", "key": "vmax", "value": 90}}
 ```
 
 ```json event
@@ -395,7 +395,7 @@ Pico line: `CFG`. Returns the Pico settings as `{scope: {key: number}}`, plus
 the head's own settings under `head`:
 
 ```json
-{"pan": {"max_vel": 90.0}, "tilt": {"max_vel": 60.0}, "head": {"port": 8780}}
+{"pan": {"vmax": 90.0, "amax": 180.0, "min": -270.0, "max": 270.0}, "tilt": {"vmax": 60.0, "amax": 120.0, "min": 0.0, "max": 90.0}, "head": {"port": 8780}}
 ```
 
 (Abbreviated. The Pico scopes and the head keys are the full sets.)
@@ -407,7 +407,7 @@ Body schema: [config-set.json](head-api/schemas/config-set.json). Returns
 **200** and publishes a `config` event.
 
 ```json config-set
-{"scope": "pan", "key": "max_vel", "value": 90, "save": true}
+{"scope": "pan", "key": "vmax", "value": 90, "save": true}
 ```
 
 `scope` and `key` must match `[A-Za-z0-9_]+`. `value` must be a finite

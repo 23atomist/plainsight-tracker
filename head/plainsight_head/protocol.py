@@ -47,9 +47,12 @@ def _floats(key: str, text: str) -> list[float]:
     if len(parts) != len(AXES):
         raise ProtocolError(f"{key}: expected {len(AXES)} fields, got {len(parts)}")
     try:
-        return [float(p) for p in parts]
+        values = [float(p) for p in parts]
     except ValueError as exc:
         raise ProtocolError(f"{key}: bad number in {text!r}") from exc
+    if not all(math.isfinite(v) for v in values):  # NaN/inf would serialise as invalid JSON
+        raise ProtocolError(f"{key}: non-finite number in {text!r}")
+    return values
 
 
 def _flags(key: str, text: str) -> list[str]:
@@ -97,9 +100,12 @@ def parse_cfg_lines(lines: list[str]) -> dict[str, dict[str, float]]:
         if len(parts) != 4 or parts[0] != "C":
             raise ProtocolError(f"bad config line: {line!r}")
         try:
-            out.setdefault(parts[1], {})[parts[2]] = float(parts[3])
+            value = float(parts[3])
         except ValueError as exc:
             raise ProtocolError(f"bad config value: {line!r}") from exc
+        if not math.isfinite(value):
+            raise ProtocolError(f"non-finite config value: {line!r}")
+        out.setdefault(parts[1], {})[parts[2]] = value
     return out
 
 

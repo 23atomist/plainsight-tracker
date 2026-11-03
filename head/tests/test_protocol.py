@@ -37,3 +37,16 @@ def test_classify_line():
     assert classify_line("*S pos=1")[0] == "status"
     assert classify_line("*E homed tilt") == ("event", "homed tilt")
     assert classify_line("ok") == ("reply", "ok")
+
+
+@pytest.mark.parametrize("field,value", [("pos", "nan"), ("vel", "inf"), ("tgt", "-inf"), ("pos", "NaN")])
+def test_parse_status_rejects_non_finite_numbers(field, value):
+    bad = STATUS.split(f"{field}=")[0] + f"{field}={value},0,0,0 " + STATUS.split(f"{field}=")[1].split(" ", 1)[1]
+    with pytest.raises(ProtocolError, match="non-finite"):
+        parse_status(bad)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_parse_cfg_rejects_non_finite_values(value):
+    with pytest.raises(ProtocolError, match="non-finite"):
+        parse_cfg_lines([f"C pan vmax {value}"])
