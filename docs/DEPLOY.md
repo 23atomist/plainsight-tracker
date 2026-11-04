@@ -136,8 +136,25 @@ cache.
 ### Dashboard and MCP auth
 
 First light runs with auth off (`TB3_DASHBOARD_AUTH=false`, no
-`TB3_MCP_TOKEN`) on the trusted LAN. To turn it on, set a long random token and
-enable the gate, then recreate the services:
+`TB3_MCP_TOKEN`) on the trusted LAN. What that exposes, to anyone who can reach
+the LAN:
+
+- **Dashboard, `:8788`** (binds every interface): move the head (jog, goto,
+  point, track), clear an E-STOP, arm the autonomous agent, and every other
+  dashboard control.
+- **MCP server, `:8770`** (listens on every interface, host networking): every
+  MCP tool, the same as above plus writing the head's config
+  (`set_head_config`, including guarded keys with `force`).
+- **Head API, `:8780` on the head (192.168.4.100)**: moves the head, clears its
+  E-STOP and writes its config directly. It has no auth at all.
+
+Turning on the dashboard and MCP token (below) closes `:8788` and `:8770`. It
+does **not** protect the head API: anything that can reach the head's address
+can still drive it. Keep the head on a segment only the host and trusted
+machines can reach.
+
+To turn auth on, set a long random token and enable the gate, then recreate the
+services:
 
 ```bash
 # in .env on the host

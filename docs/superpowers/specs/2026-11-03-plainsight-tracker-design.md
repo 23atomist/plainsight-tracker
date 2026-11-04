@@ -464,8 +464,9 @@ exposure control, as before.
 Bind mounts, one root: `${PLAINSIGHT_DATA:-/srv/plainsight}` with
 `config/`, `state/`, `recordings/`, `snapshots/`, `adsb/`. Bind mounts rather than
 named volumes so the operator can read recordings and edit config with
-normal tools. `.env.example` lists `PLAINSIGHT_DATA`, `COMPOSE_PROFILES`, `HEAD_HOST`
-(default `192.168.4.100`), `CAMERA_DEVICE` (by-id path), the `FEEDER_*` and
+normal tools. `.env.example` lists `PLAINSIGHT_DATA`, `COMPOSE_PROFILES`, `TB3_HEAD_URL`
+(default `http://192.168.4.100:8780`), `CAMERA_DEVICE` (by-id path), `VIDEO_GID`/`RENDER_GID`
+(the host's `video`/`render` group ids, e.g. `44`/`992`), the `FEEDER_*` and
 `ADSB_SDR_*` keys from 6.12, `TB3_ADSB_URL`,
 `TB3_LLM_URL`, `TB3_LLM_MODEL`, `TB3_LLM_API_KEY`, `TB3_DASHBOARD_AUTH`,
 `TB3_MCP_TOKEN`.
@@ -486,15 +487,21 @@ stale solution points every exclusion cone at the wrong sky. Rules:
 
 1. **Known delta (setpos, reference, boot restore from file):** the head
    reports old and new pan for the same physical position. The host shifts
-   its calibration solution, taught limits, sector and trims by that delta
-   and keeps them. The sun guard stays calibrated. This is what the old
+   its calibration solution and taught pan limits by that delta and keeps
+   them. The sector (true-north bearings), floor (elevation) and trims
+   (relative corrections) need no shift. A reference with no old frame
+   (`previous: null`) cannot be shifted: it flags the calibration frame, and
+   any taught pan limits, unverified, which gates automated motion like rule 2
+   until the operator re-solves / re-teaches or confirms. The sun guard stays calibrated. This is what the old
    `feat/reboot-rezero` branch did for the ESP32's lost step origin; it is
    reimplemented here against the head's `pan_reference` event, not ported.
 2. **Unknown origin (`ref.pan = none`):** the host refuses all automated
    motion (tracking, agent target selection, sun park, idle park) and the
    dashboard shows "pan unreferenced". Manual jog and goto stay available
-   so the operator can re-reference. The policy layer gets one new
-   predicate, `pan_referenced`, and the agent's gates include it.
+   so the operator can re-reference. This is a rig-state gate, not a policy
+   predicate (policy is per aircraft): the session, the supervisor, the
+   tracking tools and the agent all check it, and `get_tracking_status`
+   carries `pan_referenced` for the agent's stand-down.
 3. The owner's answer to the open item in section 9 may change rule 1 to
    "invalidate instead of shift".
 
@@ -574,9 +581,11 @@ ADALM-Pluto (PlutoSDR). The ultrafeeder image's readsb is built without Pluto
 support, so the compose gains a sidecar service `readsb-pluto`: readsb built
 from source with libiio/libad9361 (`PLUTOSDR=yes`), `--device-type plutosdr`,
 the Pluto passed through as a USB device (`/dev/bus/usb` + the usb cgroup
-rule), publishing Beast on `30005` on the host network. Ultrafeeder runs with
-no SDR of its own (`READSB_DEVICE_TYPE` unset) and takes
-`READSB_NET_CONNECTOR=127.0.0.1,30005,beast_in`; tar1090, the aggregator
+rule), publishing Beast on `127.0.0.1:31005` on the host network (not 30005:
+ultrafeeder, also on the host network, binds 30001-30005 itself, so the
+sidecar disables its other listeners and moves Beast-out to 31005). Ultrafeeder
+runs with no SDR of its own (`READSB_DEVICE_TYPE` unset) and takes
+`READSB_NET_CONNECTOR=127.0.0.1,31005,beast_in`; tar1090, the aggregator
 feeds and MLAT are unchanged. `ADSB_SDR_SERIAL`/`ADSB_SDR_PPM` no longer
 apply; `PLUTO_URI` (default `usb:`) and `PLUTO_GAIN` are the new `.env` keys.
 Expect somewhat less range than an RTL-SDR with a 1090 filter; an LNA+filter

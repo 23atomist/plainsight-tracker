@@ -1,11 +1,13 @@
-# tb3-mcp
+# plainsight-tracker host stack
 
-Always-on MCP daemon that lets any LLM control the eMotimo TB3 over the network.
+Always-on MCP daemon (plus the LLM agent and the operations dashboard) that lets any LLM drive
+the plainsight pan/tilt head over the network, through the head's HTTP/WS API
+(`docs/HEAD-API.md`).
 
 ## Run
 
 ```bash
-cd tb3-mcp
+cd host
 npm install
 cp config.example.json config.json   # edit headUrl + limits for your rig
 npm run build
@@ -25,13 +27,13 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 | stateDir | `/data/state` | directory for every persisted store file, including `agent.json` (the agent's armed flag) |
 | mcpPort | `8770` | MCP HTTP/SSE listen port |
 | mcpToken | (unset) | if set, clients must send `Authorization: Bearer <token>` |
-| panMin/panMax | `-180/180` | pan soft limits (degrees) |
-| tiltMin/tiltMax | `-90/90` | tilt soft limits (degrees) |
+| panMin/panMax | `-180/180` | pan soft limits (degrees). The host clamps these (and tilt's) to the head's own Pico limits from `GET /api/config`, and warns on every config fetch when they are wider |
+| tiltMin/tiltMax | `0/90` | tilt soft limits (degrees) |
 | maxSpeedDps | `22` | upper bound (°/s) on a goto's optional `speed_dps` argument. The head ignores a goto's speed and moves each axis at the Pico's own `vmax` (`GET /api/config`); the goto arrival timeout is sized from that `vmax`/`amax`, and from this value (with `trackFallbackAmaxDps2`) only until the head's config has been read |
 | maxJogDps | `19` | the manual-jog ceiling (°/s, per axis): `jog` clamps each axis to it, and tracking caps its TRACK feed-forward to it until the head's own `vmax` (`GET /api/config`) has been read (env `TB3_MAX_JOG_DPS`) |
 | panSign/tiltSign | `1` | per-axis sign flip (`1` or `-1`) |
-| calibrationFile | `~/.tb3-mcp/calibration.json` | where the calibration profile is persisted (env `TB3_CALIBRATION_FILE`) |
-| limitsFile | `~/.tb3-mcp/limits.json` | where operator-taught travel limits are persisted — see "Operator-taught travel limits" below (env `TB3_LIMITS_FILE`) |
+| calibrationFile | `<stateDir>/calibration.json` | where the calibration profile is persisted (env `TB3_CALIBRATION_FILE`) |
+| limitsFile | `<stateDir>/limits.json` | where operator-taught travel limits are persisted — see "Operator-taught travel limits" below (env `TB3_LIMITS_FILE`) |
 | trackTickHz | `10` | target-tracking control loop rate (env `TB3_TRACK_TICK_HZ`) |
 | trackLeadMs | `150` | how far ahead the tracker aims the servo, to cover command + rig latency (env `TB3_TRACK_LEAD_MS`) |
 | trackMaxTargetAgeMs | `12000` | coast budget: how long the servo keeps driving on the estimator's prediction after the newest accepted fix, before it stops and waits (env `TB3_TRACK_MAX_TARGET_AGE_MS`) |
@@ -40,7 +42,9 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 | trackReacquireDeg | `10` | pointing error above which tracking stops sending TRACK and re-acquires with a goto (env `TB3_TRACK_REACQUIRE_DEG`) |
 | trackFallbackAmaxDps2 | `10` | the acceleration (°/s²) the soft-limit guard assumes for its stopping time until the head's per-axis `amax` (`GET /api/config`) has been read; lower is the safe direction (env `TB3_TRACK_FALLBACK_AMAX_DPS2`) |
 
-**Soft limits refuse out-of-range moves** — there are no endstops. Set them to your rig's real reachable range.
+**Soft limits refuse out-of-range moves.** Pan has no endstop (tilt homes against one), so for pan
+the limits are all there is between a command and the cable. Set them to your rig's real reachable
+range; the host never plans past the Pico's own limits either.
 
 ## Tools
 
@@ -49,9 +53,9 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 | `get_status` | position, motion, E-STOP latch, pan reference, IMU, link state, and per-axis `axes` (`pos/vel/tgt/mode/homed/endstop/driver`) |
 | `goto_angle`, `jog`, `stop` | absolute move, rate jog, halt (`stop` leaves the E-STOP latch alone) |
 | `home` | home the tilt axis; watch `get_status.axes.tilt.homed` |
-| `set_position` | declare the current pose to be a pan/tilt value; the head's `pan_reference` event shifts calibration, taught limits and the sector (nothing is cleared) |
+| `set_position` | declare the current pose to be a pan/tilt value. A pan value re-references pan; the reply states the outcome of the head's `pan_reference` event: calibration and taught pan limits shifted by the delta, or (no known offset, e.g. after a Pico reboot) flagged unverified. The azimuth sector is never shifted (its edges are true-north bearings) |
 | `reference_pan` | re-run the head's IMU north reference for pan |
-| `estop`, `clear_estop` | latch / release the head's E-STOP; always allowed, even sun-locked or while tracking. `estop` also disarms the agent; `clear_estop` does not re-arm it |
+| `estop`, `clear_estop` | latch / release the head's E-STOP; always allowed, even sun-locked or while tracking. An E-STOP is terminal for automation: a latch from any source (this tool, the dashboard, the head API) disarms the agent and ends tracking, every motion-starting tool refuses with `estop_latched` while it is set, and `clear_estop` restarts nothing and does not re-arm the agent |
 | `get_agent_armed`, `set_agent_armed` | read / set the autonomous agent's armed flag (`{armed: boolean}`, persisted in `<stateDir>/agent.json`, default disarmed). The agent process always runs and does nothing while disarmed |
 | `get_head_config`, `set_head_config` | read / write the head's config; guarded keys need `force`; `save` pauses the Pico step core, so it is refused while tracking |
 
@@ -59,53 +63,19 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 `pan_dps`/`tilt_dps` in °/s (user frame, each capped at `maxJogDps`) and `duration_ms`, replies
 `jogged for Nms (pan X°/s tilt Y°/s)` with the rates actually sent (2 decimals), and predicts where those rates
 would take each axis over the command's own duration plus the head's stopping time, zeroing an axis before it would cross the
-effective pan/tilt limit — see "Rate-jog limit enforcement" below. (There are no endstops, so this prediction is the only thing standing between a held-down
-jog and the mechanical stop.)
-
-### Web motion is mode-gated on the rig — use "Track (Web)"
-
-The rig only wires the web joystick into actual motor output on screens whose input loop runs
-`NunChuckQuerywithEC()` and `updateMotorVelocities2()` with the step ISR armed. On any other
-screen the same input drives menu navigation instead, so **`goto_angle`, `jog`, and tracking will
-report success but the rig will not move — no error, no hint, just silence.** In Dragonframe slave
-mode the firmware runs a separate blocking loop that doesn't pump the web input path at all, so
-`jog`, `goto_angle`, and even `stop` are all dead. **If a command stops moving the rig, check the
-rig's own LCD screen first.**
-
-**This is why a dedicated "Track (Web)" mode exists** — program index **8**, the last entry in the
-rig's program menu (pick it on the LCD). It
-runs the velocity engine on a screen of its own, so tracking motion just works and stays working.
-Use it for anything driven by layer 3.
-
-> ✅ **Hardware-verified 2026-07-16** (camera removed). Selected purely over HTTP
-> (`POST /api/program {"type":8,"select":true}`); LCD showed `Track (Web)` + the STA IP; jog moved
-> the rig at 2.05 °/s at deflection 50 against a cubic-model prediction of 2.02; **a `goto`
-> followed by a jog still moved** (the step ISR is correctly re-asserted — this was the mode's
-> main design risk); and C+Z exited to the menu without bouncing back in. Two behaviours to know:
-> `/api/stop` does **not** halt a jog (see below), and the exit is deferred while a `goto` is
-> in flight, so send it once the rig is idle. Tracking a real moving target end-to-end has still
-> not been done.
-
-The gating detail is still worth knowing for diagnosing "the rig silently doesn't move" on the
-other screens. The point-setting screens do pump the web input path: **"Move to Start Pt"** /
-**"Move to End Pt."** (`Move_to_Startpoint()` / `Move_to_Endpoint()`, `src/_TB3_LCD_Buttons.ino`),
-**"Move to Point"** (`Move_to_Point_X()`, `src/_TB3_LCD_Buttons.ino:452-506` — reached from
-3-point moves, the panorama corner point, and the portrait-pano subject point), and **"Set Angle
-o'View"** (`Set_angle_of_view()`, `src/TB3_PANO.ino:69-113`). They are not, however, a substitute
-for Track (Web): a stray C press advances the program and silently kills tracking. (Note these
-screens do not each call `DFSetup()` themselves — "Move to End Pt." only calls `startISR1()` and
-inherits the rest of the motion setup from the "Move to Start Pt" screen that always precedes it.)
+effective pan/tilt limit — see "Rate-jog limit enforcement" below. (Pan has no endstop, so this prediction is the only thing standing between a held-down
+jog and the cable.)
 
 ## Geo-pointing (layer 2)
 
-Azimuth/elevation pointing requires a **calibration** that solves the mount's orientation from two sightings of known landmarks. Once calibrated, use `point_at` (geographic target) or `point_at_azel` (absolute azimuth/elevation).
+Azimuth/elevation pointing requires a **calibration** that solves the mount's orientation from sightings of known landmarks or live aircraft. Once calibrated, use `point_at` (geographic target) or `point_at_azel` (absolute azimuth/elevation).
 
 ### Calibration Workflow
 
 1. **`set_rig_location`** — Set the rig's fixed WGS84 location (lat/lon/height). Clears any prior sightings and solution.
 2. **Aim and sight** — Using the camera feed and `jog` to fine-tune, aim at a well-known landmark (e.g., a distant building or mountain), then call **`sight_landmark`** with its lat/lon/height and optional label. Capture the *current* pan/tilt as a sighting.
-3. **Repeat** — Aim at a second landmark well-separated in azimuth (ideally >15° apart) and call `sight_landmark` again. Two sightings are required.
-4. **`solve_calibration`** — Solves the mount's 3D orientation (heading and level) from the two sightings using TRIAD. Reports landmark separation (warn if <15°), heading, and base tilt. The solution is persisted to disk.
+3. **Repeat** — Sightings accumulate (`sight_landmark`, or `sight_aircraft` for a live ADS-B aircraft); more of them, spread in both azimuth and tilt, make a better solve.
+4. **`solve_calibration`** — With the IMU characterized (`characterize_imu`), re-anchors on a fresh gravity read and fits the orientation from **all** sightings (one is enough for heading; tilt spread unlocks the camera offset), reporting the fit stage, per-parameter confidence, residual RMS and base tilt. Without an IMU characterization it falls back to a TRIAD solve from the two oldest sightings (refused below 5° separation, warned below 15°). The solution is persisted.
 5. **`point_at`** or **`point_at_azel`** — Once calibrated, point at any geographic target or absolute azimuth/elevation. Blocks until arrival.
 
 ### Tools
@@ -113,8 +83,10 @@ Azimuth/elevation pointing requires a **calibration** that solves the mount's or
 | Tool | Purpose |
 |---|---|
 | `set_rig_location` | Set the rig's WGS84 position (lat, lon, height_m); clears sightings. |
-| `sight_landmark` | Record the *current* pan/tilt as a sighting of a landmark (aim first via live feed + jog). Returns sighting slot (1/2 or 2/2). Warns if rig was moving. |
-| `solve_calibration` | TRIAD-solve the mount orientation from two sightings. Reports heading (°), base tilt (°), and landmark separation (°). Persists solution. |
+| `sight_landmark`, `sight_aircraft` | Record the *current* pan/tilt as a sighting of a landmark, or of a live ADS-B aircraft (its position extrapolated to the moment it was centred). Warns if the rig was moving. |
+| `remove_sighting`, `clear_sightings` | Drop one sighting (by id) or all of them. |
+| `solve_calibration` | Fit the mount orientation from all sightings (gravity-anchored), or TRIAD from two without an IMU characterization. Persists the solution. After a pan reference of unknown offset it solves from the sightings taken since, verifying the pan frame. |
+| `confirm_pan_frame` | Declare the current pan reference to be the calibration's frame (the head was not moved), clearing the calibration-unverified block. |
 | `point_at` | Point at a geographic target (lat, lon, height_m). Requires calibration. Returns azimuth, elevation, range, and final pan/tilt. |
 | `point_at_azel` | Point at absolute azimuth/elevation. Requires calibration. Returns final pan/tilt. |
 | `get_calibration` | Report the full calibration profile: rig location, sightings, solved orientation, timestamp. |
@@ -236,7 +208,7 @@ always wins, stopping tracking and halting the device in one call.
 ### Safety
 
 Tracking is the only thing here that commands sustained motion with **no human in the loop**, and
-the rig has **no endstops**, so several independent layers back it up:
+pan has **no endstop** (tilt's only homes it), so several independent layers back it up:
 
 - **Soft-limit prediction**: the tracking session checks the *predicted* position ahead of the
   rig and stops that axis before it would cross a limit. The lookahead is **computed, not
@@ -307,7 +279,8 @@ narrow that ceiling per edge, independently, without touching `config.json`:
   edge. A captured position outside the configured ceiling is **clamped** to it (reported via
   `clamped: true`) — a taught limit can only ever be *tighter* than config, never wider.
 - **`get_taught_limits`** — reports what has been taught (`null` per edge if never taught), the
-  config ceiling, the resulting `effective` range (whichever is tighter, per edge), and
+  config ceiling, the head's own Pico limits (`pico_limits`, user frame), the resulting `effective`
+  range (the tightest of the three, per edge), and
   `pan_limits_verified` / `unverified_edges` (see below).
 - **`confirm_taught_limits`** — declares that the taught pan edges still mark the same physical
   poses after a pan reference of unknown offset (the head was not moved). Idempotent; returns
@@ -315,7 +288,7 @@ narrow that ceiling per edge, independently, without touching `config.json`:
 - **`clear_taught_limits`** — erases every taught edge, reverting the effective range to the
   config ceiling.
 
-Taught limits persist to `limitsFile` (default `~/.tb3-mcp/limits.json`, see Configuration above)
+Taught limits persist to `limitsFile` (default `<stateDir>/limits.json`, see Configuration above)
 and survive a daemon restart. **Every** enforcement path — `jog`, `goto_angle`, tracking's
 soft-limit guard, and `point_at`/`point_at_azel` — resolves and uses this same effective
 (taught-or-config) range; a limit enforced against only the config ceiling in one of those paths
@@ -528,7 +501,7 @@ This is the most important part of this section — know what the guard does *no
 
 ## Operations Dashboard
 
-A web-based control and monitoring interface for the TB3 rig, accessible from any LAN browser. The dashboard aggregates real-time status, telemetry, and camera video from the daemon, provides manual motion controls, and includes a direct **E-STOP** button that halts all motion and disables autonomous tracking.
+A web-based control and monitoring interface for the head, accessible from any LAN browser. The dashboard aggregates real-time status, telemetry, and camera video from the daemon, provides manual motion controls, and includes a direct **E-STOP** button that halts all motion and disables autonomous tracking.
 
 ### Run the Dashboard
 
