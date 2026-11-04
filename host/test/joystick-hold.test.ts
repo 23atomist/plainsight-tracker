@@ -84,9 +84,9 @@ describe("JoystickHold", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(jog.calls.length).toBe(1);
-      // PAN_SIGN inverts raw +1 (right) to a negative panDps -- see the
-      // module doc's note on matching the existing button convention.
-      expect(jog.calls[0].panDps).toBeCloseTo(-MAX_DPS, 5);
+      // Raw +1 (stick RIGHT) commands a POSITIVE pan rate: pan is
+      // clockwise-positive seen from above, so the view pans right.
+      expect(jog.calls[0].panDps).toBeCloseTo(MAX_DPS, 5);
       expect(jog.calls[0].tiltDps).toBeCloseTo(0, 9); // -0 is a valid "zero" here (TILT_SIGN * 0)
     });
 
@@ -105,11 +105,11 @@ describe("JoystickHold", () => {
       flags.maxJogDps = 40;
       hold.start();
       await vi.advanceTimersByTimeAsync(0);
-      expect(jog.calls[0].panDps).toBeCloseTo(-40, 5);
+      expect(jog.calls[0].panDps).toBeCloseTo(40, 5);
 
       flags.maxJogDps = 5;
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
-      expect(jog.calls[jog.calls.length - 1].panDps).toBeCloseTo(-5, 5);
+      expect(jog.calls[jog.calls.length - 1].panDps).toBeCloseTo(5, 5);
     });
 
     it("fine mode (right trigger held) halves the commanded rate", async () => {
@@ -118,7 +118,7 @@ describe("JoystickHold", () => {
       gamepad.state.pressed = [FINE_BUTTON_INDEX];
       hold.start();
       await vi.advanceTimersByTimeAsync(0);
-      expect(jog.calls[0].panDps).toBeCloseTo(-MAX_DPS * 0.5, 5);
+      expect(jog.calls[0].panDps).toBeCloseTo(MAX_DPS * 0.5, 5);
     });
   });
 
@@ -128,7 +128,7 @@ describe("JoystickHold", () => {
       gamepad.state.axes = [1, 0, 0, 0];
       hold.start();
       await vi.advanceTimersByTimeAsync(0);
-      expect(jog.calls[0].panDps).toBeCloseTo(-MAX_DPS, 5);
+      expect(jog.calls[0].panDps).toBeCloseTo(MAX_DPS, 5);
     });
 
     it("a lower sensitivity passed at construction scales the commanded rate down at the same deflection", async () => {
@@ -143,7 +143,7 @@ describe("JoystickHold", () => {
       gamepad.state.axes = [1, 0, 0, 0];
       hold.start();
       await vi.advanceTimersByTimeAsync(0);
-      expect(jog.calls[0].panDps).toBeCloseTo(-MAX_DPS * 0.3, 5);
+      expect(jog.calls[0].panDps).toBeCloseTo(MAX_DPS * 0.3, 5);
     });
 
     // "Take effect immediately, without a restart" -- a live, mutable
@@ -154,11 +154,11 @@ describe("JoystickHold", () => {
       gamepad.state.axes = [1, 0, 0, 0];
       hold.start();
       await vi.advanceTimersByTimeAsync(0);
-      expect(jog.calls[0].panDps).toBeCloseTo(-MAX_DPS, 5);
+      expect(jog.calls[0].panDps).toBeCloseTo(MAX_DPS, 5);
 
       hold.sensitivity = 0.5;
       await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
-      expect(jog.calls[jog.calls.length - 1].panDps).toBeCloseTo(-MAX_DPS * 0.5, 5);
+      expect(jog.calls[jog.calls.length - 1].panDps).toBeCloseTo(MAX_DPS * 0.5, 5);
     });
   });
 

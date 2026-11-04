@@ -171,16 +171,23 @@ export class StickHold {
     let ok = false;
     try {
       if (mode === "jog") {
-        // Screen-left/up are NEGATIVE axes; the rig's convention (see
-        // cockpit.js's DIRECTIONS heritage) is positive pan = LEFT and
-        // positive tilt = UP, hence the negations.
+        // Screen-left/up are NEGATIVE axes. Pan is clockwise-positive seen
+        // from above (docs/HEAD-API.md frame contract; measured on the head
+        // 2026-11-04: +jog -> Pico pan +3.8, IMU heading +2.4), so screen-left
+        // must command a NEGATIVE pan rate for the view to pan left: fx passes
+        // through unchanged. Tilt is elevation, positive UP, and screen-up is
+        // -y, hence the one remaining negation. The old ESP32 rig's "left =
+        // +pan" heritage (cockpit.js's DIRECTIONS note) is gone: it reversed
+        // left/right on this head.
         // Deflection is the throttle, but the SELECTOR sets the ceiling that
         // full deflection reaches (see JOG_SENSITIVITY).
         const ceilingDps = this.maxJogDps * JOG_SENSITIVITY[this.sensitivity].fraction;
-        ok = await this.postJog(-fx * ceilingDps, -fy * ceilingDps, this._jogIntervalMs);
+        ok = await this.postJog(fx * ceilingDps, -fy * ceilingDps, this._jogIntervalMs);
       } else {
+        // Same signs as the jog branch: the aim offset lives in the same
+        // clockwise-positive pan frame, so a push right trims the aim right.
         const degPerSec = TRIM_SENSITIVITY[this.sensitivity].degPerSec * Math.max(Math.abs(fx), Math.abs(fy));
-        ok = await this.postTrim(-fx * degPerSec * (TRIM_INTERVAL_MS / 1000), -fy * degPerSec * (TRIM_INTERVAL_MS / 1000));
+        ok = await this.postTrim(fx * degPerSec * (TRIM_INTERVAL_MS / 1000), -fy * degPerSec * (TRIM_INTERVAL_MS / 1000));
       }
     } catch {
       ok = false;

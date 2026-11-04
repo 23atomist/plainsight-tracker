@@ -116,13 +116,13 @@ export const FINE_BUTTON_INDEX = 7;        // right trigger ("RT"/"R2")
 export const ESTOP_BUTTON_INDICES = [8, 9]; // Back/Select + Start, TOGETHER
 
 // Standard Gamepad API convention: pushing the stick LEFT reports a
-// NEGATIVE x, pushing it UP reports a NEGATIVE y. The existing direction-
-// button cluster's convention is the opposite sign for both (see app.js's
-// JOG_SOURCES: jog-left => panMul: +1, jog-up => tiltMul: +1 -- "left/right
-// were reversed vs. the camera view" per that file's own comment). These
-// constants make the joystick agree with the buttons it is a drop-in
-// alternative for, rather than silently inverting them.
-const PAN_SIGN = -1;
+// NEGATIVE x, pushing it UP reports a NEGATIVE y. The head's frame is pan
+// clockwise-positive seen from above and tilt positive up (docs/HEAD-API.md),
+// so stick-right (+x) is already a positive pan rate and only tilt needs its
+// sign flipped. These match stick-hold.js's virtual stick exactly: the pad is
+// a drop-in alternative for it. (The old ESP32 rig's PAN_SIGN = -1 carried a
+// "left = +pan" heritage that reversed left/right on this head.)
+const PAN_SIGN = 1;
 const TILT_SIGN = -1;
 
 function defaultGetGamepads() {

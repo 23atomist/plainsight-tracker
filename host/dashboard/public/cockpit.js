@@ -210,10 +210,11 @@ export function aircraftRowActions(row, state) {
   return { canTrack, trackReason, canSight, sightReason };
 }
 
-// panMul/tiltMul per direction -- inherited semantics from the retired four-
-// button pad (left/right are swapped vs. the camera view). The arrow keys now
-// drive the STICK vector through these same conventions (see app.js's
-// KEY_TO_AXIS), so one sign table still governs every directional input.
+// Screen-frame unit vectors per direction: left is -x, up is -y, exactly the
+// virtual stick's convention (virtual-stick.js). stick-hold.js turns them
+// into head rates (pan clockwise-positive, tilt up-positive). The arrow keys
+// drive the STICK vector through this same table (see app.js's KEY_TO_AXIS),
+// so one sign table governs every directional input.
 export const DIRECTIONS = {
   "jog-up": { fx: 0, fy: -1 },
   "jog-down": { fx: 0, fy: 1 },

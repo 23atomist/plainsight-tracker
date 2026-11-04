@@ -46,10 +46,11 @@ describe("StickHold jog mode", () => {
 
     // First post is immediate.
     await vi.runOnlyPendingTimersAsync();
-    // Screen-left (-x) is POSITIVE pan per the rig's convention (left = +).
+    // Pan is clockwise-positive seen from above (HEAD-API frame contract), so
+    // screen-left (-x) must command a NEGATIVE rate: the view pans left.
     // Full deflection reaches the CEILING the sensitivity selector sets, not
     // maxJogDps outright -- default "normal" is JOG_SENSITIVITY.normal.
-    expect(jogPosts[0].panDps).toBeCloseTo(19 * JOG_SENSITIVITY.normal.fraction, 9);
+    expect(jogPosts[0].panDps).toBeCloseTo(-19 * JOG_SENSITIVITY.normal.fraction, 9);
     expect(jogPosts[0].tiltDps).toBeCloseTo(0, 9);
     expect(jogPosts[0].durationMs).toBe(holdIntervalMs(500));
 
@@ -64,7 +65,7 @@ describe("StickHold jog mode", () => {
     const { hold, jogPosts } = makeHold();
     hold.setVector("jog", -0.5, 0);
     await vi.runOnlyPendingTimersAsync();
-    expect(jogPosts[0].panDps).toBeCloseTo(0.5 * 19 * JOG_SENSITIVITY.normal.fraction, 9);
+    expect(jogPosts[0].panDps).toBeCloseTo(-0.5 * 19 * JOG_SENSITIVITY.normal.fraction, 9);
     hold.release();
   });
 
@@ -77,9 +78,9 @@ describe("StickHold jog mode", () => {
     for (const level of ["fine", "normal", "coarse"] as const) {
       const { hold, jogPosts } = makeHold();
       hold.setSensitivity(level);
-      hold.setVector("jog", -1, 0);            // full deflection
+      hold.setVector("jog", -1, 0);            // full deflection LEFT
       await vi.runOnlyPendingTimersAsync();
-      expect(jogPosts[0].panDps).toBeCloseTo(19 * JOG_SENSITIVITY[level].fraction, 9);
+      expect(jogPosts[0].panDps).toBeCloseTo(-19 * JOG_SENSITIVITY[level].fraction, 9);
       hold.release();
     }
   });
@@ -88,7 +89,7 @@ describe("StickHold jog mode", () => {
     const rate = async (level: "fine" | "normal" | "coarse") => {
       const { hold, jogPosts } = makeHold();
       hold.setSensitivity(level);
-      hold.setVector("jog", -1, 0);
+      hold.setVector("jog", 1, 0);             // full push RIGHT: positive pan
       await vi.runOnlyPendingTimersAsync();
       hold.release();
       return jogPosts[0].panDps;
@@ -160,9 +161,10 @@ describe("StickHold trim mode", () => {
     hold.setVector("trim", 0.5, 0);
     await vi.runOnlyPendingTimersAsync();
     // coarse = 4 deg/s at full deflection; a half push scales the RATE to
-    // 2 deg/s -> 0.4 deg/s of offset per... no: 2 deg/s * 0.2s = 0.4 total,
-    // applied along the pushed axis with its sign: -0.5 * 2 * 0.2 = -0.2.
-    expect(trimPosts[0].dPan).toBeCloseTo(-0.2, 9);
+    // 2 deg/s, so 2 deg/s * 0.2 s = 0.4 total, applied along the pushed axis
+    // with its sign: a half push RIGHT trims the aim clockwise, +0.5 * 2 * 0.2
+    // = +0.2 (pan is clockwise-positive, same as the jog branch).
+    expect(trimPosts[0].dPan).toBeCloseTo(0.2, 9);
     hold.release();
   });
 
