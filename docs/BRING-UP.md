@@ -98,7 +98,16 @@ curl -s -XPOST http://192.168.4.100:8780/api/home -H 'Content-Type: application/
   -d '{"axes": ["tilt"]}'   # a gear change clears homed; re-home (about 20 s)
 ```
 
-  These two values now live in Pico flash. **If the board is ever reset with
+- [x] Tilt zero and pan travel (2026-11-03 PM, after placing and levelling the
+  rig), saved to flash:
+  - `tilt home_pos -2` and `tilt min -2`: the endstop reads -2, so **tilt 0 is
+    level**. This replaces the earlier "tilt 0 = endstop, roughly level".
+  - `pan min -270`, `pan max 270`: the cabling runs through the centre, which
+    allows about a full turn each way. ±270 was chosen; the rest is margin.
+  - Then `HOME tilt` (about 25 s) and `goto tilt 0`, which puts tilt at level.
+
+  These values (both gears, tilt `home_pos`/`min`, pan `min`/`max`) now live
+  in Pico flash. **If the board is ever reset with
   `DEFAULTS` (or reflashed with default settings), re-apply both and re-home
   tilt.** Check them in the boot log's `pico CFG pan` / `pico CFG tilt` lines.
 
@@ -164,6 +173,11 @@ Returning tilt to exactly 0 drives onto the switch. The Pico emits
 `endstop_hit` (tilt) and stops at 0.0105. Command 0.5, not 0. The boot
 pan-reference routine also moves tilt to `HEAD_REF_TILT_DEG` (default 0.0), so
 every boot where tilt is above 0 ends on the switch with an `endstop_hit`.
+
+> **Superseded (2026-11-03 PM).** Tilt 0 is no longer "the endstop, roughly
+> level". With `tilt home_pos -2` and `tilt min -2`, the endstop reads -2 and
+> tilt 0 is level. See [Pico settings](#pico-settings) and "Placed and
+> levelled" below.
 
 ## 4. Bench TRACK
 
@@ -334,3 +348,36 @@ Verification against the IMU after the fix:
 The IMU saw 28.6° for a 30° move (-4.6 %). Its accelerometer calibration is 0,
 and its roll axis is only approximately the tilt axis. So a few % of scale error
 is the sensor, not the gears; the tooth counts from the CAD are authoritative.
+
+### Placed and levelled; north registered (2026-11-03 PM)
+
+**Placement.** The owner moved and levelled the rig, then set the camera dead
+level and pointing at true north, with the Pico at pan 0 / tilt 2 (the
+post-home reference tilt).
+
+**Pico CFG**, saved to flash:
+
+- `tilt home_pos -2` and `tilt min -2`: tilt 0 is level and the endstop reads
+  -2. The old "tilt 0 = endstop ≈ level" wording in this checklist is
+  superseded.
+- `pan min -270` and `pan max 270`: the cabling routed through the centre
+  allows about a full turn each way. ±270 was chosen; the rest is margin.
+- Then `HOME tilt` (about 25 s) and `goto tilt 0`, which put tilt at level.
+
+**North registered.** `POST /api/setpos {"pan": 0}` gave `ref.pan = host`,
+persisted. On the next restart the head minted frame `f092f491c67c9900` for
+the pre-frame-id file. This is the expected one-time migration.
+
+**Redeploy.** 69926a7 was redeployed (`docker compose up -d --build`) with
+these `.env` settings:
+
+- `HEAD_IMU_PITCH_OFFSET_DEG=-1.88`
+- `HEAD_IMU_HEADING_OFFSET_DEG=83.3`: the IMU heading read 83.3 while the
+  camera pointed north. The magnetometer is uncalibrated, so this value is
+  coarse.
+
+The restart kept the Pico homed and restored the pan reference from the file
+without motion. `tiltDisagreeDeg` read -0.19 at level.
+
+**Pending:** the owner's visual confirmation that the lens is level and on
+north at pan 0 / tilt 0.
