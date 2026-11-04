@@ -6,7 +6,7 @@ const sign = z.union([z.literal(1), z.literal(-1)]);
 const ConfigSchema = z
   .object({
     // The head controller (pan/tilt + tracking servo) is reached over HTTP.
-    headUrl: z.string().regex(/^https?:\/\//, "must start with http:// or https://").default("http://192.168.4.96:8780"),
+    headUrl: z.string().regex(/^https?:\/\//, "must start with http:// or https://").default("http://192.168.4.100:8780"),
     // Directory for every persisted store file (calibration, sector, floor, ...).
     stateDir: z.string().min(1).default("/data/state"),
     mcpPort: z.number().int().positive().max(65535).default(8770),
@@ -256,8 +256,11 @@ export function loadConfig(
       : {};
 
   const overrides: Record<string, unknown> = { ...fromFile };
+  // A blank env value (`KEY=` copied from .env.example) means "unset", the
+  // same rule num()/bool() apply -- otherwise "" fails min(1) and the
+  // service exits at startup.
   const set = (key: string, value: unknown) => {
-    if (value !== undefined) overrides[key] = value;
+    if (value !== undefined && value !== "") overrides[key] = value;
   };
 
   set("headUrl", env.TB3_HEAD_URL);

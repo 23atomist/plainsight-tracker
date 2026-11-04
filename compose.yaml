@@ -158,6 +158,10 @@ services:
       - UUID=${MULTIFEEDER_UUID}
       - MLAT_USER=${FEEDER_NAME}
       - UPDATE_TAR1090=true
+      # Host networking: there is no 8088:80 port mapping as on .11, so nginx
+      # must listen on 8088 itself (the image default is 80). adsbUrl and the
+      # dashboard's services.adsb probe both expect :8088.
+      - TAR1090_NGINX_PORT=8088
       - TAR1090_MESSAGERATEINTITLE=true
       - TAR1090_PAGETITLE=${FEEDER_NAME}
       - TAR1090_PLANECOUNTINTITLE=true

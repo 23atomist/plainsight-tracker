@@ -1,5 +1,8 @@
 # Head bring-up
 
+Steps 5 to 8 (the application host) are under [Host bring-up](#host-bring-up)
+at the end. Install instructions for both machines are in [DEPLOY.md](DEPLOY.md).
+
 Spec section 8, steps 1 to 4, for the `head/` service on the Orange Pi Zero 2W
 (`plainsight`, `atomist@192.168.4.100`). Each step lists the exact commands and
 the result measured at first light on 2026-11-03 (head 0.1.0, Pico firmware
@@ -334,3 +337,134 @@ Verification against the IMU after the fix:
 The IMU saw 28.6° for a 30° move (-4.6 %). Its accelerometer calibration is 0,
 and its roll axis is only approximately the tilt axis. So a few % of scale error
 is the sensor, not the gears; the tooth counts from the CAD are authoritative.
+
+# Host bring-up
+
+Spec section 8, steps 5 to 8, for the root `compose.yaml` on the application
+host (`ohshit`, `atomist@192.168.4.92`, Debian 13, Celeron G6900, 2 cores,
+15 GiB, Docker 29.9.2, Compose v5.7.0). Done 2026-11-03 evening (after sunset)
+from branch `feat/host-stack`. The procedure is [DEPLOY.md](DEPLOY.md); this
+section records what was measured.
+
+**Status: step 5 passed. Steps 6 to 8 are the owner's (calibration, Pico
+`vmax`/`amax`, arming the agent).** Before step 5 the head was referenced,
+level, pointing north (pan 0, tilt 0), E-STOP clear.
+
+## 5. Host stack up
+
+Hardware on .92 (all three enumerate on the USB 2.0 root hub, bus 001):
+
+| Device | Path / id |
+|---|---|
+| USB camera, MJPG | `/dev/v4l/by-id/usb-16MP_Camera_Mamufacture_16MP_USB_Camera_2022050701-video-index0` |
+| ADALM-Pluto | `0456:b673`, libiio `usb:` |
+| u-blox 7 GPS | `/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00` |
+| Intel iGPU | `/dev/dri/renderD128`, video gid 44, render gid 992 |
+
+- [x] Copy the tree with `tar` over ssh (the host has no `rsync` and no sudo
+      to install it), data tree at `/home/atomist/plainsight-data` (no sudo, so
+      not `/srv/plainsight`), `.env` from `.env.example` plus the Ollama key
+      piped from 1Password, `config.json` from `host/config.example.json`.
+- [x] `docker compose up -d --build`: **1 min 17 s** wall for the first build
+      and start (readsb `make` about 35 s). Every service started first time,
+      0 restarts.
+
+Three defects found and fixed on the way (all in this branch):
+
+1. **tar1090 listened on :80, not :8088.** On .11 ultrafeeder was bridged with
+   `8088:80`; under `network_mode: host` its nginx binds 80 and `adsbUrl`
+   gets connection refused. Fixed with `TAR1090_NGINX_PORT=8088` in the `adsb`
+   service.
+2. **A blank `KEY=` in `.env` would crash the Node services.** `num()`/`bool()`
+   treated `""` as unset but string keys did not, so the shipped
+   `TB3_MCP_TOKEN=` reached `mcpToken: z.string().min(1)`. `loadConfig` now
+   treats a blank value as unset for every key (test added).
+3. **The camera device inside the container.** `cameraV4l2Device` defaults to
+   `/dev/video0`, which compose does not map; `config.example.json` now names
+   the by-id path that `CAMERA_DEVICE` maps. Also `adsbEnabled: true` there,
+   since the stack ships the local ultrafeeder.
+
+Also: MediaMTX 1.19.3 enables MoQ by default (an unauthenticated listener on
+`:8892`, all interfaces, and an `auto.key permission denied` warning as uid
+1000). `moq: no` added to `host/mediamtx/mediamtx.yml`.
+
+### Measured
+
+| Check | Result |
+|---|---|
+| `docker compose ps` | mcp (healthy), agent, dashboard, mediamtx, readsb-pluto, adsb/`ultrafeeder` (healthy), gpsd up; detector absent |
+| `curl -s localhost:8770/healthz` | `{"ok":true}` |
+| `curl -s localhost:8088/data/aircraft.json` | 9 aircraft (7 with position) 15 s after start; 11 (8 with position) after 4 min |
+| ADS-B rate | 3392 messages in the last minute (about 56/s), all via Beast from `readsb-pluto` on 127.0.0.1:31005; max range 23.1 km |
+| `readsb-pluto` log | `readsb 3.16.21`, `plutosdr: Context has 5 device(s)`, Beast on 31005. One harmless line: `Unable to create Avahi DNS-SD client` |
+| ultrafeeder | feeds connected (adsb.fi, adsb.lol, planespotters, ...), MLAT handshakes complete |
+| gpsd (`?WATCH` on 127.0.0.1:2947) | gpsd 3.22, u-blox driver, TPV `mode 3`, `status 2`, hdop 0.90 |
+| `curl -s localhost:8788/api/state` | `rig.connected true`, `panRef "host"`, `estop false`, `link {pico:true, imu:true}`, telemetry age 34 to 55 ms |
+| `services` | `{mcp: up, agentArmed: false, mediamtx: up, adsb: up, head: up}` |
+| `calibration` | `calibrated: false`, no rig location, no sightings (expected; see below) |
+| dashboard start line | `listening on http://0.0.0.0:8788 -> daemon :8770, head http://192.168.4.100:8780, camera mediamtx (vaapi)`; no encoder error |
+| `docker compose exec dashboard vainfo` | Intel iHD 23.1.1; H264 Main/High/ConstrainedBaseline `VAEntrypointEncSlice` and `EncSliceLP` |
+| Camera (Start camera over HTTP, 15 s) | MediaMTX path `tb3` ready, one H264 track, 0 frames in error; about 30 fps at 1280x720 read back over RTSP; ffmpeg about 9 % CPU. Mean luma 21.9 (night), hence only 25 kbit/s. Camera stopped again afterwards |
+| agent | connected to the MCP server, Ollama Cloud `gpt-oss:120b`, deciding every 5 s, disarmed |
+| SSE `GET /api/stream` from the workstation, 3 s | one state frame per second, `rig.connected true`, telemetry age about 40 ms |
+
+### Controls over HTTP (from the workstation, through the dashboard)
+
+| Action | Result |
+|---|---|
+| `POST /api/control/jog {"pan_dps":2,"tilt_dps":0,"duration_ms":300}` | 200 `jogged`; head pan 0 -> **0.657°**, then stopped |
+| `POST /api/control/estop` | 200, `head E-STOP latched`, `pico_confirmed: true`, agent disarmed, tracking stopped; head `/api/state` `estop: true` |
+| jog while latched | refused: `jog: estop latched; POST /api/estop/clear` |
+| `POST /api/control/clear_estop` | 200 `E-STOP cleared`; head `estop: false` |
+
+The head was left at pan 0.657°, tilt 0, E-STOP clear. It was not jogged back.
+
+### Expected, not a fault
+
+- **No calibration.** The dashboard shows the pan as referenced (the head
+  reports `ref.pan = host`) but there is no calibration frame. Tracking stays
+  gated until the operator sets the rig location and sights landmarks (step 6).
+- **The dashboard logs `scanTrackable failed` / `scanAircraft failed: not
+  calibrated` once a second each** until the rig location is set. Noisy but
+  correct. Until then `adsb.rawCount` in `/api/state` is also `null` (see
+  follow-ups).
+
+### Left for the owner (needs a browser)
+
+- [ ] Open `http://192.168.4.92:8788`: telemetry moving, the joystick jogs,
+      E-STOP latches and clears.
+- [ ] Press **Start camera**: video within a few seconds. WebRTC needs UDP
+      8189 from the browser to .92; if the tile stays black, check that first.
+- [ ] Open `http://192.168.4.92:8088`: tar1090 with aircraft and the
+      HeyWhatsThat range rings.
+
+## 6. Calibration (owner)
+
+- [ ] `set_rig_location` from the dashboard. The GPS fix and
+      `FEEDER_LAT` agree to about 40 m in latitude.
+- [ ] Sight landmarks, solve, trims, as in the dashboard procedures.
+
+## 7. Pico `vmax`/`amax` (owner)
+
+- [ ] Raise from 5/10 via the head's `POST /api/config` until steps are lost,
+      back off 30 %, `save`.
+
+## 8. ADS-B tracking, then the agent (owner)
+
+- [ ] Manual track of one aircraft from the dashboard.
+- [ ] Arm the agent.
+
+## Host follow-ups
+
+- **USB placement.** The camera, Pluto and GPS share the USB 2.0 root hub.
+  Fine at 720p MJPG so far; if frames drop or readsb loses samples, move the
+  camera to a USB 3.0 port.
+- **ADS-B range 23 km** with the Pluto and no LNA or filter. An LNA + 1090 MHz
+  filter is the remedy (the Pluto has no bias-tee).
+- **`adsb.rawCount` is lost when both daemon scans fail.** `getAdsb` returns
+  an error before calibration, so the raw count from `peekAdsb` is dropped
+  although the comment says it should survive. Cosmetic; it goes away once the
+  rig location is set.
+- **DHCP reservations** for .92 and .100 (see DEPLOY.md).
+- **Auth is off** (`TB3_DASHBOARD_AUTH=false`, no `TB3_MCP_TOKEN`). How to turn
+  it on is in DEPLOY.md.

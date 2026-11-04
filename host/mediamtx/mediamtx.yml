@@ -17,6 +17,9 @@ webrtcLocalUDPAddress: :8189
 hls: no
 rtmp: no
 srt: no
+# 1.19 enables MoQ by default: an unauthenticated :8892 listener on every
+# interface, and it tries to write auto.key into a dir uid 1000 cannot write.
+moq: no
 
 pathDefaults:
   # Recording is OFF here on purpose. The MCP daemon opens and closes this

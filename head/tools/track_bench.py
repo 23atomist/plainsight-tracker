@@ -1,6 +1,6 @@
 """Bench tool: drive POST /api/track with a known profile and measure following error.
 
-    python tools/track_bench.py --head http://192.168.4.96:8780 --axis pan \
+    python tools/track_bench.py --head http://192.168.4.100:8780 --axis pan \
         --rate 2 --seconds 60 [--sine AMPLITUDE PERIOD] [--stop-test]
 
 Exit code 1 if max following error > 0.5 deg or (with --stop-test) stop time > 2 s.
@@ -66,7 +66,7 @@ def make_profile(rate: float, sine: tuple[float, float] | None):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    p.add_argument("--head", required=True, help="head base URL, e.g. http://192.168.4.96:8780")
+    p.add_argument("--head", required=True, help="head base URL, e.g. http://192.168.4.100:8780")
     p.add_argument("--axis", choices=["pan", "tilt"], default="pan")
     p.add_argument("--rate", type=float, default=2.0, help="constant rate, deg/s")
     p.add_argument("--seconds", type=float, default=60.0)

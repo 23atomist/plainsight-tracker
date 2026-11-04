@@ -1,5 +1,5 @@
 {
-  "headUrl": "http://192.168.4.96:8780",
+  "headUrl": "http://192.168.4.100:8780",
   "stateDir": "/data/state",
   "mcpPort": 8770,
   "panMin": -180,
@@ -13,7 +13,7 @@
   "sunGuardEnabled": false,
   "sunConeDeg": 25,
   "parkTiltDeg": 60,
-  "adsbEnabled": false,
+  "adsbEnabled": true,
   "adsbUrl": "http://127.0.0.1:8088/data/aircraft.json",
   "adsbPollHz": 1,
   "adsbMaxRangeKm": 100,
@@ -30,6 +30,7 @@
   "cameraFps": 10,
   "cameraFallbackMs": 1500,
   "cameraDevicePort": "",
+  "cameraV4l2Device": "/dev/v4l/by-id/usb-16MP_Camera_Mamufacture_16MP_USB_Camera_2022050701-video-index0",
   "cameraEncoder": "vaapi",
   "cameraMediamtxSize": "1280x720",
   "cameraFfmpegBin": "/usr/bin/ffmpeg",

@@ -4,7 +4,7 @@ import { loadConfig, parseConfig } from "../src/shared/config.js";
 describe("loadConfig", () => {
   it("returns defaults when no file and no env", () => {
     const c = loadConfig(undefined, {});
-    expect(c.headUrl).toBe("http://192.168.4.96:8780");
+    expect(c.headUrl).toBe("http://192.168.4.100:8780");
     expect(c.mcpPort).toBe(8770);
     expect(c.panMin).toBe(-180);
     expect(c.panMax).toBe(180);
@@ -46,6 +46,13 @@ describe("loadConfig", () => {
   it("falls back to the default port when TB3_MCP_PORT is an empty string", () => {
     const c = loadConfig(undefined, { TB3_MCP_PORT: "" });
     expect(c.mcpPort).toBe(8770);
+  });
+
+  it("treats blank string env values as unset (.env.example ships TB3_MCP_TOKEN= and TB3_LLM_API_KEY= blank)", () => {
+    const c = loadConfig(undefined, { TB3_MCP_TOKEN: "", TB3_LLM_API_KEY: "", TB3_HEAD_URL: "" });
+    expect(c.mcpToken).toBeUndefined();
+    expect(c.llmApiKey).toBeUndefined();
+    expect(c.headUrl).toBe("http://192.168.4.100:8780");
   });
 
   it("rejects a port above 65535", () => {
@@ -321,7 +328,7 @@ describe("capture config", () => {
 
     it("does not read env overrides for retired keys", () => {
       const c = loadConfig(undefined, { TB3_DEVICE_HOST: "x", TB3_TRACK_KP: "9", TB3_AUX_SIGN: "-1" });
-      expect(c.headUrl).toBe("http://192.168.4.96:8780");
+      expect(c.headUrl).toBe("http://192.168.4.100:8780");
     });
 
     it("nvenc stays selectable; vaapi is the default", () => {
@@ -332,7 +339,7 @@ describe("capture config", () => {
     it("new defaults", () => {
       const c = parseConfig({});
       expect(c).toMatchObject({
-        headUrl: "http://192.168.4.96:8780", stateDir: "/data/state", parkTiltDeg: 60, tiltMin: 0,
+        headUrl: "http://192.168.4.100:8780", stateDir: "/data/state", parkTiltDeg: 60, tiltMin: 0,
         cameraFfmpegBin: "/usr/bin/ffmpeg", captureFfmpegBin: "/usr/bin/ffmpeg",
         adsbUrl: "http://127.0.0.1:8088/data/aircraft.json", llmModel: "gpt-oss:120b",
         captureSnapshotDir: "/data/snapshots", passJournalFile: "/data/state/passes.jsonl",
@@ -347,11 +354,23 @@ describe("capture config", () => {
     });
 
     it("headUrl must be http(s)", () => {
-      expect(() => parseConfig({ headUrl: "192.168.4.96" })).toThrow(/headUrl/);
+      expect(() => parseConfig({ headUrl: "192.168.4.100" })).toThrow(/headUrl/);
     });
 
     it("keeps tiltMin < tiltMax", () => {
       expect(() => parseConfig({ tiltMin: 50, tiltMax: 40 })).toThrow(/tiltMin/);
     });
+  });
+});
+
+describe("config.example.json", () => {
+  it("parses, points at the head on .100 and names the camera by-id", async () => {
+    const { readFileSync } = await import("node:fs");
+    const raw = JSON.parse(readFileSync(new URL("../config.example.json", import.meta.url), "utf8"));
+    const c = parseConfig(raw);
+    expect(c.headUrl).toBe("http://192.168.4.100:8780");
+    // compose maps ${CAMERA_DEVICE} into the dashboard at the same path; the
+    // /dev/video0 default does not exist inside the container.
+    expect(c.cameraV4l2Device).toMatch(/^\/dev\/v4l\/by-id\//);
   });
 });

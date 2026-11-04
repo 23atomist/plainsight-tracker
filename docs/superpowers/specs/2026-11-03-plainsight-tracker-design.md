@@ -82,7 +82,7 @@ is redrawn.
                           |
   +-----------------------+-----------------------------+
   |                                                     |
-  plainsight head (Orange Pi Zero 2W, 192.168.4.96)     application host (192.168.4.92)
+  plainsight head (Orange Pi Zero 2W, 192.168.4.100)    application host (192.168.4.92)
   Armbian trixie, arm64, Python 3.13, Docker (to add)   Debian 13, x86_64, Docker 29 + Compose v5
   |                                                     |
   |  head/compose.yaml                                  |  compose.yaml (network_mode: host)
@@ -465,11 +465,11 @@ Bind mounts, one root: `${PLAINSIGHT_DATA:-/srv/plainsight}` with
 `config/`, `state/`, `recordings/`, `snapshots/`, `adsb/`. Bind mounts rather than
 named volumes so the operator can read recordings and edit config with
 normal tools. `.env.example` lists `PLAINSIGHT_DATA`, `COMPOSE_PROFILES`, `HEAD_HOST`
-(default `192.168.4.96`), `CAMERA_DEVICE` (by-id path), the `FEEDER_*` and
+(default `192.168.4.100`), `CAMERA_DEVICE` (by-id path), the `FEEDER_*` and
 `ADSB_SDR_*` keys from 6.12, `TB3_ADSB_URL`,
 `TB3_LLM_URL`, `TB3_LLM_MODEL`, `TB3_LLM_API_KEY`, `TB3_DASHBOARD_AUTH`,
 `TB3_MCP_TOKEN`.
-`deviceHost` in config becomes `headUrl` (`http://192.168.4.96:8780`).
+`deviceHost` in config becomes `headUrl` (`http://192.168.4.100:8780`).
 
 One `Dockerfile` (multi-stage: `npm ci` + `tsc`, then a slim runtime stage
 with ffmpeg and the VAAPI driver). All three Node services run the same

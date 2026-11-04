@@ -21,7 +21,7 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 
 | key | default | meaning |
 |---|---|---|
-| headUrl | `http://192.168.4.96:8780` | the head controller (`http://host:port`); the MCP server and the dashboard both talk to it directly |
+| headUrl | `http://192.168.4.100:8780` | the head controller (`http://host:port`); the MCP server and the dashboard both talk to it directly |
 | stateDir | `/data/state` | directory for every persisted store file, including `agent.json` (the agent's armed flag) |
 | mcpPort | `8770` | MCP HTTP/SSE listen port |
 | mcpToken | (unset) | if set, clients must send `Authorization: Bearer <token>` |
