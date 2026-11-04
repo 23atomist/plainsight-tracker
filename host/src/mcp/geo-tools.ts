@@ -20,7 +20,7 @@ import {
 } from "./tool-helpers.js";
 import { AdsbSource } from "../shared/adsb/source.js";
 import { extrapolateSightingPosition } from "../shared/adsb/extrapolate.js";
-import { LimitsStore, effectiveLimits, CeilingLimits } from "../shared/limits-store.js";
+import { LimitsStore, effectiveLimits, hostCeiling, CeilingLimits } from "../shared/limits-store.js";
 
 // Sane band for WGS84 heights: comfortably covers below-sea-level basins
 // through mountain peaks, aircraft, drones, and near-space balloon altitudes.
@@ -96,13 +96,11 @@ export function registerGeoTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, session: TrackingSession,
   supervisor: SunSupervisor, source: AdsbSource, limitsStore: LimitsStore,
 ): void {
-  const cfgCeiling: CeilingLimits = {
-    panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
-  };
   // Re-read on every call, same rationale as tools.ts's effLimits(): a
-  // teach_limit/clear_taught_limits between two point_at calls must take
-  // effect on the very next one.
-  const effLimits = (): CeilingLimits => effectiveLimits(cfgCeiling, limitsStore.get());
+  // teach_limit/clear_taught_limits (or a Pico config change) between two
+  // point_at calls must take effect on the very next one.
+  const effLimits = (): CeilingLimits =>
+    effectiveLimits(hostCeiling(cfg, device.getAxisConfig()), limitsStore.get());
   // While the pan frame is unverified, solve_calibration solves from the
   // sightings taken since the re-reference ONLY (CalibrationStore.
   // freshSightings) and, on success, commits the frame as verified with the

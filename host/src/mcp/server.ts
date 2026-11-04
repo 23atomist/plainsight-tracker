@@ -29,7 +29,7 @@ import { registerSectorTools } from "./sector-tools.js";
 import { AimTrimStore } from "../shared/aim-trim-store.js";
 import { RangeStore } from "../shared/range-store.js";
 import { registerRangeTools } from "./range-tools.js";
-import { LimitsStore } from "../shared/limits-store.js";
+import { LimitsStore, ceilingWiderThanPico } from "../shared/limits-store.js";
 import { registerLimitsTools } from "./limits-tools.js";
 import { wireReferenceShift, flagPanFrameUnknown } from "./reference-shift.js";
 import { HeadRefWatch } from "./head-ref-watch.js";
@@ -452,7 +452,8 @@ export function buildApp(
         registerTrackTools(server, session, supervisor, aimTrimStore);
         registerSunTools(server, device, cfg, store, supervisor);
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore, rangeStore,
-          () => limitsStore.get(), () => policyStore.get(), (rs) => policyStore.set(rs as Ruleset));
+          () => limitsStore.get(), () => policyStore.get(), (rs) => policyStore.set(rs as Ruleset),
+          () => device.getAxisConfig());
         registerSectorTools(server, sectorStore);
         registerFloorTools(server, floorStore);
         registerRangeTools(server, rangeStore);
@@ -550,6 +551,16 @@ export async function main(): Promise<MainHandle> {
   const agentStore = new AgentStore(agentFile);
   agentStore.load();
   console.error(`agent armed file: ${agentFile} (armed: ${agentStore.get().armed})`);
+  // Spec 6.1: the host's limits are clamped to the Pico's (hostCeiling), and
+  // a config ceiling wider than them is warned about on every config fetch
+  // (connect, Pico link up, every `config` event).
+  device.onConfig((axis) => {
+    const wider = ceilingWiderThanPico(cfg, axis);
+    if (wider.length > 0) {
+      console.warn(`[limits] config ceiling is wider than the head's own (Pico) limits: ${wider.join("; ")} ` +
+        "(user frame); clamping to the Pico's");
+    }
+  });
   // Any head E-STOP disarms the agent, whoever latched it (estop-disarm.ts).
   // Before the first await, like the reference wiring below.
   wireEstopDisarm({ device, agent: agentStore, log: (m) => console.error(m) });
@@ -873,7 +884,7 @@ export async function main(): Promise<MainHandle> {
   const httpServer = app.listen(cfg.mcpPort, () => {
     console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → head ${cfg.headUrl}` +
       (cfg.mcpToken ? " (token required)" : ""));
-    console.log(`[tb3-mcp] limits pan[${cfg.panMin},${cfg.panMax}] tilt[${cfg.tiltMin},${cfg.tiltMax}] maxSpeed ${cfg.maxSpeedDps}°/s`);
+    console.log(`[tb3-mcp] config limits (clamped to the head's own once read) pan[${cfg.panMin},${cfg.panMax}] tilt[${cfg.tiltMin},${cfg.tiltMax}] maxSpeed ${cfg.maxSpeedDps}°/s`);
   });
 
   return {

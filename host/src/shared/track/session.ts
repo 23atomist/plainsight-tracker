@@ -15,7 +15,7 @@ import {
 import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
 import { TrackFloor, DISABLED_FLOOR, aboveFloor, enuElevationDeg } from "./floor.js";
 import { AimOffset, NudgeResult, ZERO_OFFSET, applyOffset, nudgeOffset as nudgeOffsetValue } from "./offset.js";
-import { TaughtEdges, effectiveLimits } from "../limits-store.js";
+import { TaughtEdges, effectiveLimits, hostCeiling } from "../limits-store.js";
 import { ESTOP_LATCHED_MSG } from "../../mcp/tool-helpers.js";
 
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
@@ -383,11 +383,11 @@ export class TrackingSession {
   // tiltMin/tiltMax directly, or a taught limit would stop rate jog earlier
   // than tracking/acquire, reopening the exact "enforced in some paths, not
   // others" gap Part 1 exists to close.
+  // The ceiling is config ∩ the head's own (Pico) limits, read fresh like
+  // the taught edges: a narrowed Pico range must read as pan_limit here, not
+  // as a reachable target whose TRACK the Pico then clamps.
   private limits(): GuardLimits {
-    return effectiveLimits(
-      { panMin: this.cfg.panMin, panMax: this.cfg.panMax, tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax },
-      this.limitsProvider(),
-    );
+    return effectiveLimits(hostCeiling(this.cfg, this.axisConfigProvider()), this.limitsProvider());
   }
 
   private rigPanTilt(): { panDeg: number; tiltDeg: number } {

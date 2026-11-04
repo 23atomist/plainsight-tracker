@@ -23,6 +23,9 @@ function store() {
 
 async function harness(env: Record<string, string> = {}) {
   mock = new FakeHead(); await mock.start({ port: PORT });
+  // A head whose own tilt travel reaches -90, as this config's does: the host
+  // clamps its limits to the Pico's (spec 6.1).
+  mock.config.tilt = { ...mock.config.tilt, min: -90 };
   const cfg = loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20", ...env });
   dev = new Device(cfg); dev.start();
   const t0 = Date.now();

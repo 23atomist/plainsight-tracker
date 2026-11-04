@@ -2,6 +2,7 @@ import { AxisConfig, Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
 import { applySign, checkPanTilt, checkSpeed, Limits } from "../shared/angles.js";
 import { usableOr } from "../shared/track/control.js";
+import { hostCeiling } from "../shared/limits-store.js";
 import { ESTOP_LATCHED_MSG } from "./tool-helpers.js";
 
 // The arrival budget's slack over the head's own trapezoid time: for a slow
@@ -42,9 +43,9 @@ export interface MoveResult {
 // signs, commands the move, and waits for arrival. Throws Error(message) on any
 // violation, device rejection, or timeout — callers turn that into an MCP error.
 //
-// `limits` defaults to the bare config ceiling so every existing caller that
-// doesn't know about operator-taught travel limits (limits-store.ts) keeps
-// its exact prior behavior. Callers that DO have a LimitsStore (tools.ts's
+// `limits` defaults to the host ceiling (config ∩ the head's own limits, no
+// taught edges), for callers that do not know about operator-taught travel
+// limits (limits-store.ts). Callers that DO have a LimitsStore (tools.ts's
 // goto_angle, geo-tools.ts's point_at/point_at_azel, track/session.ts's
 // tracking acquire) must pass the resolved effective (taught-or-config)
 // range instead — passing only the config ceiling here would silently
@@ -56,9 +57,7 @@ export interface MoveResult {
 // does not outlive the move it was waiting for.
 export async function moveToUserAngle(
   device: Device, cfg: Config, panDeg: number, tiltDeg: number, speedDps?: number,
-  limits: Pick<Limits, "panMin" | "panMax" | "tiltMin" | "tiltMax"> = {
-    panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
-  },
+  limits: Pick<Limits, "panMin" | "panMax" | "tiltMin" | "tiltMax"> = hostCeiling(cfg, device.getAxisConfig()),
   signal?: AbortSignal,
 ): Promise<MoveResult> {
   // Every absolute move (goto_angle, point_at*, the IMU and vision sweeps,

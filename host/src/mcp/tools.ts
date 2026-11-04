@@ -9,7 +9,7 @@ import { SunSupervisor } from "../shared/track/supervisor.js";
 import { CalibrationStore } from "../shared/calibration.js";
 import { CaptureController } from "../shared/capture/controller.js";
 import { PassJournal } from "../shared/capture/pass-journal.js";
-import { LimitsStore, effectiveLimits, CeilingLimits } from "../shared/limits-store.js";
+import { LimitsStore, effectiveLimits, hostCeiling, CeilingLimits } from "../shared/limits-store.js";
 import { limitGuard, GuardHorizon, usableOr } from "../shared/track/control.js";
 import { currentUserPanTilt } from "./geo-tools.js";
 import { AgentStore } from "../shared/agent-store.js";
@@ -48,13 +48,11 @@ export function registerTools(
   supervisor: SunSupervisor, store: CalibrationStore, capture: CaptureController,
   limitsStore: LimitsStore, journal: PassJournal, agentStore: AgentStore,
 ): void {
-  const cfgCeiling: CeilingLimits = {
-    panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
-  };
-  // The effective (taught-or-config) range, re-read on every call: a
-  // teach_limit/clear_taught_limits between two jog/goto_angle calls must
-  // take effect on the very next one, not require a daemon restart.
-  const effLimits = (): CeilingLimits => effectiveLimits(cfgCeiling, limitsStore.get());
+  // The effective range (config ∩ Pico ∩ taught), re-read on every call: a
+  // teach_limit/clear_taught_limits or a Pico config change between two
+  // jog/goto_angle calls must take effect on the very next one.
+  const effLimits = (): CeilingLimits =>
+    effectiveLimits(hostCeiling(cfg, device.getAxisConfig()), limitsStore.get());
 
   // Shared by every tool that moves the head or rewrites its frame. NOT used by
   // stop/estop/clear_estop: stopping must always be allowed.

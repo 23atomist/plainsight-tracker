@@ -9,7 +9,7 @@ import { SunSupervisor } from "../shared/track/supervisor.js";
 import { AdsbSource } from "../shared/adsb/source.js";
 import { AdsbFollower } from "../shared/adsb/follower.js";
 import { enrichAircraft, limitsOf, type PanTiltLimits } from "../shared/adsb/enrich.js";
-import { effectiveLimits, type TaughtEdges } from "../shared/limits-store.js";
+import { effectiveLimits, hostCeiling, type PicoAxisLimits, type TaughtEdges } from "../shared/limits-store.js";
 import { AdsbSnapshot, EnrichedAircraft } from "../shared/adsb/types.js";
 import { aircraftAltitudeM } from "../shared/adsb/convert.js";
 import { text, errText, SUN_LOCKED_MSG, ESTOP_LATCHED_MSG, automationBlockMsg } from "./tool-helpers.js";
@@ -178,6 +178,10 @@ export function registerAdsbTools(
   // to a no-op that throws so every existing caller/test -- none of which
   // exercise set_policy -- keeps compiling without wiring a store.
   policySetter: (rs: unknown) => void = () => { throw new Error("policy is read-only"); },
+  // The head's own limits (Device.getAxisConfig()), read fresh per call: the
+  // reachability envelope is config ∩ Pico ∩ taught, exactly what
+  // TrackingSession enforces. Defaulted to unknown (the config ceiling).
+  axisConfigProvider: () => PicoAxisLimits | null = () => null,
 ): void {
   const rigR = (): { rig: Geodetic | null; R: Mat3 | null } => {
     const p = store.get();
@@ -186,7 +190,7 @@ export function registerAdsbTools(
   // Camera-offset model, sourced the same way as point_at/point_at_azel: no
   // gravity calibration yet -> forward-only cHead, the no-op default.
   const cHead = (): Vec3 => store.getCHead() ?? [0, 1, 0];
-  const limits = (): PanTiltLimits => effectiveLimits(limitsOf(cfg), limitsProvider());
+  const limits = (): PanTiltLimits => effectiveLimits(hostCeiling(cfg, axisConfigProvider()), limitsProvider());
   const ruleset = (): Ruleset => policyProvider();
 
   server.registerTool(

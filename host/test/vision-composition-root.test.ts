@@ -174,6 +174,9 @@ async function driveMain(mount: Mount, opts: { seedTiltSign: boolean; biasPanDeg
 
   mock = new FakeHead(); await mock.start({ port: DEV_PORT });
   mock.setPosition(0, 0);
+  // These scenarios aim below the horizon (TB3_TILT_MIN -90 below): the head's
+  // own tilt travel must allow it, as the host clamps to the Pico's (spec 6.1).
+  mock.config.tilt = { ...mock.config.tilt, min: -90 };
 
   const dir = mkdtempSync(join(tmpdir(), "tb3-comproot-"));
   const calFile = join(dir, "calibration.json");

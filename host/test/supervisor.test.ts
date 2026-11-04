@@ -54,6 +54,9 @@ function provisionalStore(): CalibrationStore {
 // same instant and the age is ~0.
 async function harness(coneDeg = 25, fixedNowMs?: number) {
   mock = new FakeHead(); await mock.start({ port: PORT });
+  // The park tilt (-20) is below 0: a head whose own tilt travel reaches it
+  // (the host clamps its limits to the Pico's, spec 6.1).
+  mock.config.tilt = { ...mock.config.tilt, min: -90 };
   // sunGuardEnabled is explicit, not inherited: the config default is `false` (the rig's
   // current site has no direct sun), and these cases exercise the guard itself.
   const cfg = { ...loadConfig(undefined, { TB3_HEAD_URL: `http://127.0.0.1:${PORT}`, TB3_TILT_MIN: "-90", TB3_PARK_TILT_DEG: "-20" }), sunConeDeg: coneDeg, sunGuardEnabled: true };

@@ -8,8 +8,7 @@ import { moveToUserAngle } from "./move.js";
 import { solveImuMounting, GravitySample, dBaseFromGravity, solveNorthZero } from "../shared/geo/imu-orientation.js";
 import { Vec3 } from "../shared/geo/vec3.js";
 import { currentUserPanTilt } from "./geo-tools.js";
-import { LimitsStore, CeilingLimits, effectiveLimits } from "../shared/limits-store.js";
-import { ceilingFrom } from "./limits-tools.js";
+import { LimitsStore, CeilingLimits, effectiveLimits, hostCeiling } from "../shared/limits-store.js";
 import { text, errText, SUN_LOCKED_MSG, PAN_UNREFERENCED_MSG } from "./tool-helpers.js";
 
 export interface SweepPosition { panDeg: number; tiltDeg: number; }
@@ -120,7 +119,8 @@ export function registerImuTools(
   server: McpServer, device: Device, cfg: Config, store: CalibrationStore, supervisor: SunSupervisor,
   session: TrackingSession, limitsStore: LimitsStore,
 ): void {
-  const effLimits = (): CeilingLimits => effectiveLimits(ceilingFrom(cfg), limitsStore.get());
+  const effLimits = (): CeilingLimits =>
+    effectiveLimits(hostCeiling(cfg, device.getAxisConfig()), limitsStore.get());
   server.registerTool(
     "characterize_imu",
     {

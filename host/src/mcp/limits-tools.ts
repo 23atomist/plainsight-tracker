@@ -9,7 +9,9 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
-import { LimitsStore, LimitEdge, CeilingLimits, effectiveLimits } from "../shared/limits-store.js";
+import {
+  LimitsStore, LimitEdge, CeilingLimits, effectiveLimits, hostCeiling, picoUserLimits, type PicoAxisLimits,
+} from "../shared/limits-store.js";
 import { currentUserPanTilt } from "./geo-tools.js";
 import { text, errText, PAN_LIMITS_UNVERIFIED_MSG } from "./tool-helpers.js";
 
@@ -52,10 +54,12 @@ const IS_LOW: Record<LimitEdge, boolean> = {
 // config ceiling on `edge`'s side (never wider than config — the whole point
 // of the ceiling), then refuses (without persisting) if the result would
 // leave less than MIN_SPAN_DEG against the opposite edge.
+// `pico` (Device.getAxisConfig()) narrows the ceiling to the head's own
+// limits once known: a taught edge past them could never be reached anyway.
 export function applyTeachLimit(
-  store: LimitsStore, cfg: Config, edge: LimitEdge, candidateDeg: number,
+  store: LimitsStore, cfg: Config, edge: LimitEdge, candidateDeg: number, pico: PicoAxisLimits | null = null,
 ): TeachResult {
-  const ceiling = ceilingFrom(cfg);
+  const ceiling = hostCeiling(cfg, pico);
   let value = candidateDeg;
   let clamped = false;
 
@@ -129,7 +133,7 @@ export function registerLimitsTools(server: McpServer, device: Device, cfg: Conf
       const { panDeg, tiltDeg, moving } = currentUserPanTilt(device, cfg);
       const key = EDGE_MAP[edge];
       const candidate = key.startsWith("pan") ? panDeg : tiltDeg;
-      const result = applyTeachLimit(store, cfg, key, candidate);
+      const result = applyTeachLimit(store, cfg, key, candidate, device.getAxisConfig());
       if ("error" in result) return errText(result.error);
       const moveWarn = moving ? " WARNING: the rig was still moving; position may not be settled — re-teach once stopped." : "";
       const swapNote = result.swappedWith
@@ -140,7 +144,7 @@ export function registerLimitsTools(server: McpServer, device: Device, cfg: Conf
         ? ` Taught pan edge(s) ${stillUnverified.join(", ")} are still unverified from a pan re-reference — re-teach them too (or confirm_taught_limits); automated motion stays blocked until then.`
         : "";
       const note = result.clamped
-        ? `clamped to the configured ceiling (captured position was outside the configured range).${swapNote}${moveWarn}${unverifiedNote}`
+        ? `clamped to the ceiling (captured position was outside the configured range or the head's own limits).${swapNote}${moveWarn}${unverifiedNote}`
         : `captured.${swapNote}${moveWarn}${unverifiedNote}`;
       return text(JSON.stringify({
         edge, value_deg: Number(result.value.toFixed(3)), clamped: result.clamped,
@@ -154,7 +158,8 @@ export function registerLimitsTools(server: McpServer, device: Device, cfg: Conf
     {
       description:
         "Report the operator-taught travel limits (null per edge if never taught), the configured " +
-        "pan/tilt ceiling, the effective range actually enforced everywhere (whichever is tighter, " +
+        "pan/tilt ceiling, the head's own (Pico) limits in the user frame (null until the head's config " +
+        "is read), the effective range actually enforced everywhere (the tightest of the three, " +
         "per edge), and whether the taught pan edges are verified: pan_limits_verified is false after a pan " +
         "re-reference of unknown offset (a Pico reboot), and automated motion is blocked until they are " +
         "re-taught or confirm_taught_limits.",
@@ -163,7 +168,8 @@ export function registerLimitsTools(server: McpServer, device: Device, cfg: Conf
     async () => {
       const taught = store.get();
       const ceiling = ceilingFrom(cfg);
-      const eff = effectiveLimits(ceiling, taught);
+      const pico = picoUserLimits(device.getAxisConfig(), cfg);
+      const eff = effectiveLimits(hostCeiling(cfg, device.getAxisConfig()), taught);
       const unverified = store.panUnverifiedEdges().map((e) => EDGE_ARG_OF[e]);
       return text(JSON.stringify({
         pan_limits_verified: unverified.length === 0,
@@ -175,6 +181,9 @@ export function registerLimitsTools(server: McpServer, device: Device, cfg: Conf
         },
         config_ceiling: {
           pan_min: ceiling.panMin, pan_max: ceiling.panMax, tilt_min: ceiling.tiltMin, tilt_max: ceiling.tiltMax,
+        },
+        pico_limits: pico === null ? null : {
+          pan_min: pico.panMin, pan_max: pico.panMax, tilt_min: pico.tiltMin, tilt_max: pico.tiltMax,
         },
         effective: {
           pan_min: eff.panMin, pan_max: eff.panMax, tilt_min: eff.tiltMin, tilt_max: eff.tiltMax,

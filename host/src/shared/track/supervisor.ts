@@ -8,7 +8,7 @@ import { boresightEnu, limitHorizonMs, usableOr } from "./control.js";
 import { Vec3 } from "../geo/vec3.js";
 import { moveToUserAngle } from "../../mcp/move.js";
 import { applySign } from "../angles.js";
-import { CeilingLimits, TaughtEdges, effectiveLimits } from "../limits-store.js";
+import { CeilingLimits, TaughtEdges, effectiveLimits, hostCeiling } from "../limits-store.js";
 
 export type SunState = "disabled" | "monitoring" | "parking" | "parked" | "fault";
 
@@ -193,10 +193,7 @@ export class SunSupervisor {
   // identical rationale; the park path must not be the one place still
   // reading the config ceiling directly.
   private limits() {
-    return effectiveLimits(
-      { panMin: this.cfg.panMin, panMax: this.cfg.panMax, tiltMin: this.cfg.tiltMin, tiltMax: this.cfg.tiltMax },
-      this.limitsProvider(),
-    );
+    return effectiveLimits(hostCeiling(this.cfg, this.axisConfigProvider()), this.limitsProvider());
   }
 
   private currentBoresight(): Boresight | null {

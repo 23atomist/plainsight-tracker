@@ -61,7 +61,8 @@ function empty(): TaughtLimits {
 }
 
 // The effective pan/tilt range enforced everywhere: a taught edge if present,
-// else the config ceiling on that side. Re-clamped to the ceiling HERE (not
+// else the ceiling on that side. `ceiling` is hostCeiling() (config clamped
+// to the Pico's limits), so the result is config ∩ Pico ∩ taught. Re-clamped to the ceiling HERE (not
 // just at teach time in limits-tools.ts) so a config edit after teaching can
 // only ever tighten what is enforced, never let a stale taught value silently
 // widen past a newly-lowered ceiling.
@@ -72,6 +73,62 @@ export function effectiveLimits(ceiling: CeilingLimits, taught: TaughtEdges): Ce
     tiltMin: taught.tiltMin !== undefined ? Math.max(taught.tiltMin, ceiling.tiltMin) : ceiling.tiltMin,
     tiltMax: taught.tiltMax !== undefined ? Math.min(taught.tiltMax, ceiling.tiltMax) : ceiling.tiltMax,
   };
+}
+
+// The Pico's own soft limits (GET /api/config, Device.getAxisConfig()), in
+// the DEVICE frame. The head enforces them whatever the host asks for, so
+// the host must never plan past them (spec 4.1, 6.1).
+export interface PicoAxisLimits {
+  readonly pan: { readonly min: number; readonly max: number };
+  readonly tilt: { readonly min: number; readonly max: number };
+}
+
+/** The config keys the host ceiling is built from. */
+export interface CeilingConfig extends CeilingLimits {
+  readonly panSign: number;
+  readonly tiltSign: number;
+}
+
+// Device frame -> user frame: a negative sign mirrors the range.
+function userRange(r: { min: number; max: number }, sign: number): [number, number] {
+  return sign < 0 ? [-r.max, -r.min] : [r.min, r.max];
+}
+
+/** The Pico's limits in the user frame, or null while the head's config is unknown. */
+export function picoUserLimits(pico: PicoAxisLimits | null, cfg: CeilingConfig): CeilingLimits | null {
+  if (!pico) return null;
+  const [panMin, panMax] = userRange(pico.pan, cfg.panSign);
+  const [tiltMin, tiltMax] = userRange(pico.tilt, cfg.tiltSign);
+  return { panMin, panMax, tiltMin, tiltMax };
+}
+
+/**
+ * The host's travel ceiling: the config ceiling clamped to the Pico's own
+ * limits once they are known (spec 6.1). Pass this, never the bare config
+ * values, as effectiveLimits()'s `ceiling`, so every path that judges
+ * reachability or guards a limit agrees with what the head will accept.
+ * Until GET /api/config has answered it is the config ceiling alone.
+ */
+export function hostCeiling(cfg: CeilingConfig, pico: PicoAxisLimits | null): CeilingLimits {
+  const p = picoUserLimits(pico, cfg);
+  const c = { panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax };
+  if (!p) return c;
+  return {
+    panMin: Math.max(c.panMin, p.panMin), panMax: Math.min(c.panMax, p.panMax),
+    tiltMin: Math.max(c.tiltMin, p.tiltMin), tiltMax: Math.min(c.tiltMax, p.tiltMax),
+  };
+}
+
+/** The config edges wider than the Pico's (empty when none is), for the startup/config warning. */
+export function ceilingWiderThanPico(cfg: CeilingConfig, pico: PicoAxisLimits | null): string[] {
+  const p = picoUserLimits(pico, cfg);
+  if (!p) return [];
+  const wider: string[] = [];
+  if (cfg.panMin < p.panMin) wider.push(`panMin ${cfg.panMin} < Pico ${p.panMin}`);
+  if (cfg.panMax > p.panMax) wider.push(`panMax ${cfg.panMax} > Pico ${p.panMax}`);
+  if (cfg.tiltMin < p.tiltMin) wider.push(`tiltMin ${cfg.tiltMin} < Pico ${p.tiltMin}`);
+  if (cfg.tiltMax > p.tiltMax) wider.push(`tiltMax ${cfg.tiltMax} > Pico ${p.tiltMax}`);
+  return wider;
 }
 
 export class LimitsStore {

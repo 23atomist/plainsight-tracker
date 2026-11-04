@@ -6,7 +6,7 @@ import { TrackingSession } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
 import { wrapDeg180 } from "../shared/track/control.js";
 import { applySign, checkPanTilt } from "../shared/angles.js";
-import { effectiveLimits, TaughtEdges } from "../shared/limits-store.js";
+import { effectiveLimits, hostCeiling, TaughtEdges } from "../shared/limits-store.js";
 import { moveToUserAngle } from "./move.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 import { FrameSource } from "../shared/vision/frame-source.js";
@@ -547,10 +547,7 @@ export function registerVisionTools(
       const cur = device.getState();
       const startPanDeg = applySign(cur.panDeg, cfg.panSign);
       const startTiltDeg = applySign(cur.tiltDeg, cfg.tiltSign);
-      const limits = effectiveLimits(
-        { panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax },
-        limitsProvider(),
-      );
+      const limits = effectiveLimits(hostCeiling(cfg, device.getAxisConfig()), limitsProvider());
 
       // FIX A3: both target positions must be reachable BEFORE anything
       // moves -- stepping both axes (below) means both range checks have to
