@@ -299,7 +299,7 @@ give.
 
 `panMin`/`panMax`/`tiltMin`/`tiltMax` in `config.json` are a **ceiling**, not necessarily the rig's
 real reachable range — gyro wiring and the tilt-axis stepper wiring can constrain real travel
-tighter and asymmetrically, in a way that's only discoverable by feel. Three tools let an operator
+tighter and asymmetrically, in a way that's only discoverable by feel. These tools let an operator
 narrow that ceiling per edge, independently, without touching `config.json`:
 
 - **`teach_limit`** — jog carefully to where a cable just begins to tension, then call this with
@@ -307,7 +307,11 @@ narrow that ceiling per edge, independently, without touching `config.json`:
   edge. A captured position outside the configured ceiling is **clamped** to it (reported via
   `clamped: true`) — a taught limit can only ever be *tighter* than config, never wider.
 - **`get_taught_limits`** — reports what has been taught (`null` per edge if never taught), the
-  config ceiling, and the resulting `effective` range: whichever is tighter, per edge.
+  config ceiling, the resulting `effective` range (whichever is tighter, per edge), and
+  `pan_limits_verified` / `unverified_edges` (see below).
+- **`confirm_taught_limits`** — declares that the taught pan edges still mark the same physical
+  poses after a pan reference of unknown offset (the head was not moved). Idempotent; returns
+  the pan limits it confirmed.
 - **`clear_taught_limits`** — erases every taught edge, reverting the effective range to the
   config ceiling.
 
@@ -317,9 +321,19 @@ soft-limit guard, and `point_at`/`point_at_azel` — resolves and uses this same
 (taught-or-config) range; a limit enforced against only the config ceiling in one of those paths
 and the taught value in another would just be this section's bug moved somewhere else.
 
-Because a taught limit is a captured position relative to the software zero, **`set_position` shifts
-every taught edge** (and layer-2 calibration, whose `R` was tied to the old zero) by the delta in
-the head's `pan_reference` event, so nothing needs re-teaching after a re-reference.
+Because a taught limit is a captured position relative to pan's zero, a pan re-reference with a
+**known** offset (the head's `pan_reference` event carries `previous`) shifts every taught pan
+edge, and the calibration, by that delta, so nothing needs re-teaching.
+
+A re-reference with **no** known offset (`previous: null`: every reference after a Pico reboot,
+or a rename the host missed while it was not connected) cannot be shifted. It flags the
+calibration frame unverified and, when pan edges are taught, the taught pan limits too
+(`pan_limits_unverified`, persisted in `limitsFile`). Both block all automated motion
+(tracking, `track_aircraft`, idle park, the agent). A frame-verifying `solve_calibration` (or
+`confirm_pan_frame`) clears only the calibration flag: it does not re-teach the limits, and its
+reply says automation is still blocked while they are flagged. The limits flag clears once every
+flagged pan edge has been re-taught with `teach_limit`, or with `confirm_taught_limits` if the
+head was not moved. The dashboard shows a **PAN LIMITS UNVERIFIED** chip meanwhile.
 
 The dashboard's 3D rig view (see Operations Dashboard below) renders the effective envelope
 directly: a thin arc for each axis's permitted sweep, colored green/amber/red as the current pose

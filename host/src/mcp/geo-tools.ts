@@ -15,7 +15,9 @@ import { residualRmsBoundDeg, MAX_CHEAD_OFF_AXIS_DEG, DEFAULT_SIGHTING_SIGMA_DEG
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession, isPanUnreferenced } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
-import { text, errText, SUN_LOCKED_MSG, PAN_UNREFERENCED_MSG, ESTOP_LATCHED_MSG } from "./tool-helpers.js";
+import {
+  text, errText, SUN_LOCKED_MSG, PAN_UNREFERENCED_MSG, ESTOP_LATCHED_MSG, automationAfterFrameVerified,
+} from "./tool-helpers.js";
 import { AdsbSource } from "../shared/adsb/source.js";
 import { extrapolateSightingPosition } from "../shared/adsb/extrapolate.js";
 import { LimitsStore, effectiveLimits, CeilingLimits } from "../shared/limits-store.js";
@@ -107,9 +109,13 @@ export function registerGeoTools(
   // older sightings pruned in the same write -- they belong to a frame that no
   // longer exists. Too few fresh sightings: the solve runs as before, on the
   // old frame, and the flag stays.
+  // The calibration's frame is verified, but the same re-reference may have
+  // left the taught pan limits in the old frame: a solve does not re-teach
+  // them, so it must not announce automation is back while they are flagged.
   const frameVerifiedNote = (fresh: number, pruned: number): string =>
     ` Pan frame verified: solved from the ${fresh} sighting(s) taken since the pan re-reference; ` +
-    `the ${pruned} older sighting(s), from the previous frame, were removed. Automated motion is allowed again.`;
+    `the ${pruned} older sighting(s), from the previous frame, were removed. ` +
+    automationAfterFrameVerified(limitsStore.isPanUnverified());
   const frameStillUnverifiedNote = (needed: number, fresh: number): string =>
     ` Pan frame STILL UNVERIFIED: this solve needs ${needed} sighting(s) taken since the pan re-reference ` +
     `and has ${fresh}, so it is still in the old frame. Take ${needed - fresh} more and solve again ` +
@@ -129,7 +135,8 @@ export function registerGeoTools(
       if (isPanUnreferenced(device.getState())) return errText("pan unreferenced — nothing to confirm");
       const reason = store.frameUnverifiedReason();
       if (!store.confirmFrame()) return text("pan frame already verified — nothing to confirm");
-      return text(`pan frame confirmed by the operator; automated motion is allowed again (it had been held because: ${reason})`);
+      return text(`pan frame confirmed by the operator (it had been held because: ${reason}). ` +
+        automationAfterFrameVerified(limitsStore.isPanUnverified()));
     },
   );
 

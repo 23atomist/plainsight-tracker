@@ -28,7 +28,26 @@ export const CALIBRATION_UNVERIFIED_MSG =
   "calibration frame unverified — pan was re-referenced with no known offset from the frame the calibration was solved in; " +
   "re-sight and solve_calibration (the safe path), or confirm_pan_frame only if you are sure pan was not renamed";
 
+// The same unknown-offset re-reference left the taught pan limits in the old
+// frame (LimitsStore.panLimitsUnverified).
+export const PAN_LIMITS_UNVERIFIED_MSG =
+  "taught pan limits unverified — pan was re-referenced with no known offset from the frame they were taught in, " +
+  "so they may no longer keep pan off the cable; re-teach them (teach_limit pan_min/pan_max), or " +
+  "confirm_taught_limits only if you are sure the head was not moved";
+
 /** The tool-facing refusal for a session automation block (session.ts AutomationBlock). */
-export function automationBlockMsg(block: "pan_unreferenced" | "calibration_unverified"): string {
-  return block === "pan_unreferenced" ? PAN_UNREFERENCED_MSG : CALIBRATION_UNVERIFIED_MSG;
+export function automationBlockMsg(block: "pan_unreferenced" | "calibration_unverified" | "pan_limits_unverified"): string {
+  if (block === "pan_unreferenced") return PAN_UNREFERENCED_MSG;
+  return block === "calibration_unverified" ? CALIBRATION_UNVERIFIED_MSG : PAN_LIMITS_UNVERIFIED_MSG;
+}
+
+/**
+ * What a frame-verifying solve or confirm_pan_frame may say about automation
+ * afterwards: it is allowed again only if the taught pan limits are not still
+ * flagged from the same re-reference.
+ */
+export function automationAfterFrameVerified(panLimitsUnverified: boolean): string {
+  return panLimitsUnverified
+    ? `Automated motion is STILL BLOCKED: ${PAN_LIMITS_UNVERIFIED_MSG}.`
+    : "Automated motion is allowed again.";
 }

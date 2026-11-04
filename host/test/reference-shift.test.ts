@@ -14,7 +14,7 @@ import { CalibrationStore } from "../src/shared/calibration.js";
 import { LimitsStore, effectiveLimits } from "../src/shared/limits-store.js";
 import { boresightEnu } from "../src/shared/track/control.js";
 import { Mat3, Vec3, matMul, rotX, rotZ, deg2rad, matVec, normalize } from "../src/shared/geo/vec3.js";
-import { applyPanReferenceChange, wireReferenceShift } from "../src/mcp/reference-shift.js";
+import { applyPanReferenceChange, wireReferenceShift, flagPanFrameUnknown } from "../src/mcp/reference-shift.js";
 
 function tmpFile(name: string): string {
   return join(mkdtempSync(join(tmpdir(), "tb3-refshift-")), name);
@@ -232,8 +232,42 @@ describe("applyPanReferenceChange", () => {
     expect(applyPanReferenceChange({ source: "none", pan: null, previous: null, frameId: null }, deps)).toBeNull();
     expect(applyPanReferenceChange({ source: "host", pan: 12, previous: null, frameId: B }, deps)).toBeNull();
     expect(cal.getOrientation()).toEqual(orientBefore);
-    expect(limits.get()).toEqual(limBefore);
+    // Not shifted (the no-old-frame case flags them instead, below).
+    expect(limits.get()).toMatchObject({ panMin: limBefore.panMin, panMax: limBefore.panMax });
     expect(logs).toHaveLength(2);
+  });
+
+  // I3: the taught pan edges are off by the same unknown offset as the
+  // calibration, and a solve does not re-teach them.
+  it("a reference with no previous frame flags the taught pan limits too, and says so", () => {
+    const { limits, logs, deps } = setup(1);
+    applyPanReferenceChange({ source: "host", pan: 12, previous: null, frameId: B }, deps);
+    expect(limits.panUnverifiedEdges()).toEqual(["panMin", "panMax"]);
+    expect(limits.get()).toMatchObject({ panMin: -100, panMax: 100 });
+    expect(logs.join("\n")).toMatch(/taught pan limits \(panMin, panMax\) flagged unverified/);
+  });
+
+  it("flags no limits (and no gate) when no pan edge is taught", () => {
+    const { cal, limits, deps } = setup(1);
+    limits.clear();
+    limits.setEdge("tiltMax", 60);
+    applyPanReferenceChange({ source: "imu", pan: 12, previous: null, frameId: B }, deps);
+    expect(cal.isFrameUnverified()).toBe(true);
+    expect(limits.isPanUnverified()).toBe(false);
+  });
+
+  it("a known-delta rename shifts the limits without flagging them", () => {
+    const { limits, deps } = setup(1);
+    applyPanReferenceChange({ source: "host", pan: 30, previous: 20, frameId: B }, deps);
+    expect(limits.isPanUnverified()).toBe(false);
+  });
+
+  it("flagPanFrameUnknown (also the missed-rename path) flags both stores", () => {
+    const { cal, limits } = setup(1);
+    const note = flagPanFrameUnknown({ calibration: cal, limits }, "frame changed while the host was away");
+    expect(cal.isFrameUnverified()).toBe(true);
+    expect(limits.isPanUnverified()).toBe(true);
+    expect(note).toMatch(/confirm_taught_limits/);
   });
 
   it("every rename's frameId is accepted as the calibration's frame; a drop names none", () => {

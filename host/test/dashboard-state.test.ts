@@ -76,6 +76,16 @@ describe("mergeState tracking automation gates", () => {
     expect(mergeState(inputs({ tracking: ok(trk) }), 1).tracking.calibrationVerified).toBeNull();
     expect(mergeState(inputs({ tracking: err("down") }), 1).tracking.calibrationVerified).toBeNull();
   });
+
+  it("carries pan_limits_verified as panLimitsVerified; null when absent or not polled", () => {
+    const trk = { state: "waiting", label: null, target_azimuth_deg: null, target_elevation_deg: null,
+      target_range_m: null, pointing_error_deg: null, pan_limited: false, tilt_limited: false,
+      offset_pan_deg: 0, offset_tilt_deg: 0 };
+    expect(mergeState(inputs({ tracking: ok({ ...trk, pan_limits_verified: false }) }), 1)
+      .tracking.panLimitsVerified).toBe(false);
+    expect(mergeState(inputs({ tracking: ok(trk) }), 1).tracking.panLimitsVerified).toBeNull();
+    expect(mergeState(inputs({ tracking: err("down") }), 1).tracking.panLimitsVerified).toBeNull();
+  });
 });
 
 describe("mergeState rig: the head's state", () => {

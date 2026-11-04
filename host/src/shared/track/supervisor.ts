@@ -24,7 +24,7 @@ export interface SunStatus {
   readonly locked: boolean;
 }
 
-type IdleParkAbort = "estop_latched" | "pan_unreferenced" | "calibration_unverified" | "sun_locked" | "tracking_active";
+type IdleParkAbort = "estop_latched" | "pan_unreferenced" | "calibration_unverified" | "pan_limits_unverified" | "sun_locked" | "tracking_active";
 
 interface Boresight { readonly panDeg: number; readonly tiltDeg: number; readonly enu: Vec3 }
 
@@ -290,7 +290,7 @@ export class SunSupervisor {
       // Before planPark, so the fault names the real cause rather than
       // whatever a path planned from a meaningless pan happens to hit.
       // driveParkTick() repeats the check for a park already in flight.
-      const block = automationBlock(this.device.getState(), this.store);
+      const block = automationBlock(this.device.getState(), this.store, this.limitsProvider());
       if (block) { this.enterFault(block); return; }
       const plan = planPark(this.store.getOrientation()!, bore.panDeg, bore.tiltDeg, sEnu, this.coneDeg, this.parkTiltDeg,
         this.limits(), this.cHead(), this.cfg.geoPanSign);
@@ -326,7 +326,7 @@ export class SunSupervisor {
     // human clears it: a sun trip still halts the rig, it just cannot be
     // answered with a slew. The operator re-references with set_position (no
     // motion) / confirms the frame, or disables the guard to move manually.
-    const block = automationBlock(this.device.getState(), this.store);
+    const block = automationBlock(this.device.getState(), this.store, this.limitsProvider());
     if (block) { this.enterFault(block); return; }
     if (this.parkInFlight) return;
     const wp = plan.waypoints[this.parkStep];
@@ -362,7 +362,7 @@ export class SunSupervisor {
     // of unknown offset from the calibration's frame -- the park's own
     // sun-path check would be computed from a pan that means nothing. Also
     // re-checked on every leg, so a reference lost mid-flight aborts.
-    const block = automationBlock(this.device.getState(), this.store);
+    const block = automationBlock(this.device.getState(), this.store, this.limitsProvider());
     if (block) return block;
     // `locked` is true for the entire parking/parked/fault span (set by
     // setLocked at the exact instant tick() commits to a sun park), so this

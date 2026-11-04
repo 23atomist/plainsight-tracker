@@ -55,6 +55,8 @@ export interface TrackingRaw {
   // interface's tolerate-older-daemon convention; the dashboard only DISPLAYS
   // it (the daemon enforces it). The pan reference comes from rig.panRef.
   calibration_verified?: boolean;
+  // Same gate for the taught pan limits (LimitsStore.panLimitsUnverified).
+  pan_limits_verified?: boolean;
   // The standing drift-calibration aim-offset (see track/offset.ts) -- always
   // a number (defaults to 0), never null: an idle/stopped session still has
   // a well-defined (zero) offset.
@@ -197,6 +199,9 @@ export interface DashboardState {
     // False while the calibration's pan frame is unverified (the daemon then
     // refuses automation); null when not polled / the daemon is down.
     calibrationVerified: boolean | null;
+    // False while the taught pan limits are flagged unverified (automation
+    // refused); null when not polled / the daemon is down.
+    panLimitsVerified: boolean | null;
   };
   calibration: {
     calibrated: boolean; rig: Geo | null; sightings: unknown[]; solvedAt: string | null; provisional: boolean;
@@ -378,6 +383,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
       offsetPanDeg: trk?.offset_pan_deg ?? 0,
       offsetTiltDeg: trk?.offset_tilt_deg ?? 0,
       calibrationVerified: trk?.calibration_verified ?? null,
+      panLimitsVerified: trk?.pan_limits_verified ?? null,
     },
     calibration: {
       calibrated: cal?.calibrated ?? false,

@@ -59,6 +59,7 @@ const TrackingRawZ = z.object({
   // Automation gate (spec 6.8): displayed as a chip; optional per this
   // file's non-strict convention. (Pan reference is read from rig.panRef.)
   calibration_verified: z.boolean().optional(),
+  pan_limits_verified: z.boolean().optional(),
 });
 
 const AgentArmedZ = z.object({ armed: z.boolean() });

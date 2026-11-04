@@ -31,7 +31,7 @@ import { RangeStore } from "../shared/range-store.js";
 import { registerRangeTools } from "./range-tools.js";
 import { LimitsStore } from "../shared/limits-store.js";
 import { registerLimitsTools } from "./limits-tools.js";
-import { wireReferenceShift } from "./reference-shift.js";
+import { wireReferenceShift, flagPanFrameUnknown } from "./reference-shift.js";
 import { HeadRefWatch } from "./head-ref-watch.js";
 import { PolicyStore } from "../shared/policy-store.js";
 import type { Ruleset } from "../shared/policy/rules.js";
@@ -574,11 +574,12 @@ export async function main(): Promise<MainHandle> {
   // first tick of every connection and whenever it changes. It is also the
   // frame memory the event path consults for restores.
   const headRefFile = join(cfg.stateDir, "head-ref.json");
+  // A missed rename is an unknown offset like a `previous: null` reference:
+  // the taught pan limits are flagged with the calibration (I3).
   const headRefWatch = new HeadRefWatch(headRefFile, (why) => {
-    store.markFrameUnverified(why);
     console.error(
-      `[reference] ${why}; calibration flagged unverified. The safe path is to re-sight and solve_calibration ` +
-      "(and re-teach the pan limits); use confirm_pan_frame only if you are sure nothing renamed pan while the host was not watching.",
+      `[reference] ${why}; ${flagPanFrameUnknown({ calibration: store, limits: limitsStore }, why)}. ` +
+      "Re-sighting is the safe path; confirm only if you are sure nothing renamed pan while the host was not watching.",
     );
   });
   headRefWatch.load();

@@ -13,6 +13,10 @@
 //   CALIBRATION UNVERIFIED  tracking.calibrationVerified === false: pan was
 //                           re-referenced by an unknown offset; automation
 //                           is refused until re-sighted or confirmed.
+//   PAN LIMITS UNVERIFIED   tracking.panLimitsVerified === false: the same
+//                           re-reference left the taught pan limits in the
+//                           old frame; automation is refused until they are
+//                           re-taught or confirmed (a solve does not clear it).
 //   pico / imu              rig.link.pico / rig.link.imu (null: head unreachable).
 
 function escapeHtml(s) {
@@ -45,6 +49,9 @@ export function headChipsHtml(state) {
   }
   if (tracking.calibrationVerified === false) {
     chips.push('<span class="head-chip head-chip-warn" title="pan was re-referenced by an unknown offset: re-sight and solve, or confirm the frame">CALIBRATION UNVERIFIED</span>');
+  }
+  if (tracking.panLimitsVerified === false) {
+    chips.push('<span class="head-chip head-chip-warn" title="pan was re-referenced by an unknown offset: the taught pan limits may be off by it. Re-teach them, or confirm them if the head was not moved">PAN LIMITS UNVERIFIED</span>');
   }
   chips.push(linkChip("pico", link ? link.pico : null));
   chips.push(linkChip("imu", link ? link.imu : null));

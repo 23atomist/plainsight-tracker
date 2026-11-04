@@ -444,6 +444,23 @@ The head was left at pan 0.657°, tilt 0, E-STOP clear. It was not jogged back.
       `FEEDER_LAT` agree to about 40 m in latitude.
 - [ ] Sight landmarks, solve, trims, as in the dashboard procedures.
 
+### Recovery after a Pico reboot
+
+A Pico reboot drops pan's reference. The head restoring its persisted
+position in the frame the host already knows is accepted as is. Any other
+reference after the reboot (`reference_pan`, `set_position`, a restore of a
+frame the host does not know) arrives with no known offset from the old
+frame, so the host flags the calibration frame unverified and, if pan limits
+are taught, the taught pan limits too. All automated motion stays blocked
+until both are cleared:
+
+- [ ] Calibration: re-sight two landmarks or aircraft and `solve_calibration`
+      (the safe path), or `confirm_pan_frame` if the head was not moved.
+- [ ] Taught pan limits: re-teach both pan edges with `teach_limit`, or
+      `confirm_taught_limits` if the head was not moved. The solve does not
+      clear this one; its reply says automation is still blocked, and the
+      dashboard shows **PAN LIMITS UNVERIFIED** until it is done.
+
 ## 7. Pico `vmax`/`amax` (owner)
 
 - [ ] Raise from 5/10 via the head's `POST /api/config` until steps are lost,

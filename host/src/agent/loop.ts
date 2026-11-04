@@ -21,6 +21,9 @@ export interface RigStatus {
   // False while the calibration's pan frame is unverified (a reference of
   // unknown offset from the solve's frame); the daemon refuses automation.
   readonly calibrationVerified: boolean;
+  // False while the taught pan limits are flagged unverified by the same
+  // kind of re-reference; the daemon refuses automation then too.
+  readonly panLimitsVerified: boolean;
 }
 
 export interface RigMcpClient {
@@ -102,6 +105,9 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
   }
   if (!status.calibrationVerified) {
     return { action: { kind: "keep", reason: "calibration_unverified" }, state };
+  }
+  if (!status.panLimitsVerified) {
+    return { action: { kind: "keep", reason: "pan_limits_unverified" }, state };
   }
 
   const trackableHexes = new Set(trackable.map((a) => a.hex.toLowerCase()));

@@ -64,7 +64,7 @@ async function harness(env: Record<string, string> = {}, aircraft: unknown[] = [
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, store, session, supervisor, source };
+  return { client, store, session, supervisor, source, limitsStore };
 }
 
 afterEach(async () => {
@@ -1000,6 +1000,18 @@ describe("calibration frame verification (fix round E1)", () => {
     expect(textOf(res)).toMatch(/confirmed/i);
     res = await client.callTool({ name: "confirm_pan_frame", arguments: {} });
     expect(textOf(res)).toMatch(/already verified|nothing to confirm/i);
+  });
+
+  // I3: confirming the frame does not vouch for the taught pan limits.
+  it("confirm_pan_frame does not claim automation is back while the taught pan limits are unverified", async () => {
+    const { client, store, limitsStore } = await harness();
+    limitsStore.setEdge("panMax", 90);
+    limitsStore.markPanUnverified();
+    store.markFrameUnverified("pan referenced by imu with no previous frame");
+    const res: any = await client.callTool({ name: "confirm_pan_frame", arguments: {} });
+    expect(store.isFrameUnverified()).toBe(false);
+    expect(textOf(res)).not.toMatch(/allowed again/);
+    expect(textOf(res)).toMatch(/STILL BLOCKED: taught pan limits unverified/);
   });
 
   it("confirm_pan_frame refuses while pan is unreferenced: there is no frame to vouch for", async () => {

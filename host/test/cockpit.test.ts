@@ -261,6 +261,15 @@ describe("Cockpit head chips", () => {
     expect(html).toMatch(/led led-failed"><\/span>pico/);
   });
 
+  it("shows PAN LIMITS UNVERIFIED only when the daemon says the taught pan limits are unverified", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, tracking: { ...baseState.tracking, calibrationVerified: true, panLimitsVerified: false } });
+    expect(el.headChips.innerHTML).toContain("PAN LIMITS UNVERIFIED");
+    expect(el.headChips.innerHTML).not.toContain("CALIBRATION UNVERIFIED");
+    cockpit.render({ ...baseState, tracking: { ...baseState.tracking, panLimitsVerified: null } });
+    expect(el.headChips.innerHTML).not.toContain("PAN LIMITS UNVERIFIED");
+  });
+
   it("unknown links (head unreachable) and an unknown calibration frame draw no false alarm", () => {
     const { cockpit, el } = makeCockpit();
     cockpit.render({ ...baseState, rig: { ...baseState.rig, link: null, panRef: null },

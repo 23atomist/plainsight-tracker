@@ -37,19 +37,27 @@ export type WaitReason =
   // frame the calibration was solved in (CalibrationStore.frameUnverified):
   // every aim could be off by the whole rename. Held like pan_unreferenced
   // until a re-solve with a fresh sighting or confirm_pan_frame.
-  | "calibration_unverified";
+  | "calibration_unverified"
+  // The same unknown-offset re-reference left the taught pan limits in the
+  // old frame (LimitsStore.panLimitsUnverified): the guard that keeps pan off
+  // the cable could be off by the whole rename. Held until they are re-taught
+  // or confirm_taught_limits.
+  | "pan_limits_unverified";
 
 /** True when the head reports pan's origin as unknown (ref.pan "none"). */
 export function isPanUnreferenced(s: DeviceState): boolean {
   return s.ref.pan === "none";
 }
 
-/** The rig-state gates on ALL automated motion (spec 6.8 rule 2 + the frame check). */
-export type AutomationBlock = "pan_unreferenced" | "calibration_unverified";
+/** The rig-state gates on ALL automated motion (spec 6.8 rule 2 + the frame checks). */
+export type AutomationBlock = "pan_unreferenced" | "calibration_unverified" | "pan_limits_unverified";
 
-export function automationBlock(s: DeviceState, store: { isFrameUnverified(): boolean }): AutomationBlock | null {
+export function automationBlock(
+  s: DeviceState, store: { isFrameUnverified(): boolean }, taught: TaughtEdges = {},
+): AutomationBlock | null {
   if (isPanUnreferenced(s)) return "pan_unreferenced";
   if (store.isFrameUnverified()) return "calibration_unverified";
+  if ((taught.panLimitsUnverified?.length ?? 0) > 0) return "pan_limits_unverified";
   return null;
 }
 
@@ -321,9 +329,14 @@ export class TrackingSession {
     return !this.store.isFrameUnverified();
   }
 
+  /** False while taught pan limits are flagged unverified (LimitsStore.panLimitsUnverified). */
+  panLimitsVerified(): boolean {
+    return (this.limitsProvider().panLimitsUnverified?.length ?? 0) === 0;
+  }
+
   /** Why automated motion is refused right now, or null (tools, status). */
   automationBlock(): AutomationBlock | null {
-    return automationBlock(this.device.getState(), this.store);
+    return automationBlock(this.device.getState(), this.store, this.limitsProvider());
   }
 
   status(): TrackStatus {
@@ -509,7 +522,7 @@ export class TrackingSession {
     // pan's zero unknown -- or of unknown offset from the calibration's frame
     // -- no aim is meaningful. After telemetry_stale on purpose: a stale
     // snapshot's ref is as untrustworthy as its pan.
-    const block = automationBlock(dev, this.store);
+    const block = automationBlock(dev, this.store, this.limitsProvider());
     if (block) { this.wait(block); return; }
     const fixMs = lastFixMs(this.est);
     if (fixMs === null || t - fixMs > this.cfg.trackMaxTargetAgeMs) { this.wait("target_stale"); return; }

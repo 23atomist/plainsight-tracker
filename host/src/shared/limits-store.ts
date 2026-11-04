@@ -19,6 +19,8 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "
 import { dirname } from "node:path";
 
 export type LimitEdge = "panMin" | "panMax" | "tiltMin" | "tiltMax";
+export type PanEdge = "panMin" | "panMax";
+const PAN_EDGES: readonly PanEdge[] = ["panMin", "panMax"];
 
 const TaughtLimitsSchema = z.object({
   version: z.literal(1),
@@ -26,6 +28,10 @@ const TaughtLimitsSchema = z.object({
   panMax: z.number().optional(),
   tiltMin: z.number().optional(),
   tiltMax: z.number().optional(),
+  // The taught pan edges still in a pan frame of unknown offset from the
+  // current one (see markPanUnverified). Absent when every taught pan edge
+  // is verified. Part of the automation gate (session.ts automationBlock).
+  panLimitsUnverified: z.array(z.enum(["panMin", "panMax"])).min(1).optional(),
 });
 export type TaughtLimits = z.infer<typeof TaughtLimitsSchema>;
 
@@ -38,6 +44,9 @@ export interface TaughtEdges {
   panMax?: number;
   tiltMin?: number;
   tiltMax?: number;
+  // See TaughtLimitsSchema. Carried here so every limitsProvider (session,
+  // supervisor) sees the gate in the same read as the edges.
+  panLimitsUnverified?: readonly PanEdge[];
 }
 
 export interface CeilingLimits {
@@ -82,7 +91,8 @@ export class LimitsStore {
   }
 
   get(): TaughtLimits {
-    return { ...this.limits };
+    const l = this.limits;
+    return l.panLimitsUnverified ? { ...l, panLimitsUnverified: [...l.panLimitsUnverified] } : { ...l };
   }
 
   private save(): void {
@@ -92,9 +102,44 @@ export class LimitsStore {
     renameSync(tmp, this.filePath); // atomic on the same filesystem
   }
 
+  // Teaching a pan edge re-captures it in the current frame, so it is no
+  // longer unverified; the flag clears once every flagged edge is re-taught.
   setEdge(edge: LimitEdge, value: number): void {
-    this.limits = { ...this.limits, [edge]: value };
+    this.limits = withUnverified({ ...this.limits, [edge]: value }, this.panUnverifiedEdges().filter((e) => e !== edge));
     this.save();
+  }
+
+  /** The taught pan edges still in a frame of unknown offset (empty: verified). */
+  panUnverifiedEdges(): PanEdge[] {
+    return [...(this.limits.panLimitsUnverified ?? [])];
+  }
+
+  isPanUnverified(): boolean {
+    return this.panUnverifiedEdges().length > 0;
+  }
+
+  // Pan was re-referenced with no known offset from the frame the taught pan
+  // edges were captured in (reference-shift.ts, the same moment the
+  // calibration is flagged): they may now be off by that unknown offset, so
+  // they cannot be trusted to keep the axis off the cable or an obstruction.
+  // Flags every taught pan edge; returns those flagged (none taught: nothing
+  // to flag, no gate). Tilt is referenced by its endstop and is untouched.
+  markPanUnverified(): PanEdge[] {
+    const taught = PAN_EDGES.filter((e) => this.limits[e] !== undefined);
+    if (taught.length === 0) return [];
+    this.limits = withUnverified(this.limits, taught);
+    this.save();
+    return taught;
+  }
+
+  // The operator vouches that the taught pan edges still mark the same
+  // physical poses (the head was not moved while pan lost its frame).
+  // Idempotent: returns whether anything was unverified.
+  confirmPan(): boolean {
+    if (!this.isPanUnverified()) return false;
+    this.limits = withUnverified(this.limits, []);
+    this.save();
+    return true;
   }
 
   // The head renamed pan (spec 6.8 rule 1; see mcp/reference-shift.ts): the
@@ -108,6 +153,8 @@ export class LimitsStore {
   // Tilt is referenced by its endstop, not by pan's zero, and is untouched.
   shiftPan(deltaDeg: number): void {
     if (deltaDeg === 0) return;
+    // A known shift does not verify an edge that was already unverified: the
+    // unknown offset it carries is still in it, so the flag rides along.
     const { panMin, panMax } = this.limits;
     this.limits = {
       ...this.limits,
@@ -125,4 +172,9 @@ export class LimitsStore {
     this.limits = empty();
     this.save();
   }
+}
+
+function withUnverified(l: TaughtLimits, edges: readonly PanEdge[]): TaughtLimits {
+  const { panLimitsUnverified: _drop, ...rest } = l;
+  return edges.length > 0 ? { ...rest, panLimitsUnverified: [...edges] } : rest;
 }

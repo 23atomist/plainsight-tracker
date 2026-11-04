@@ -278,5 +278,6 @@ function statusBody(session: TrackingSession) {
     estop: session.estopLatched(),
     pan_referenced: session.panReferenced(),
     calibration_verified: session.calibrationVerified(),
+    pan_limits_verified: session.panLimitsVerified(),
   };
 }

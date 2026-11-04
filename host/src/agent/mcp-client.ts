@@ -18,20 +18,22 @@ const ScanRow = z.object({
 });
 const ScanBody = z.object({ aircraft: z.array(ScanRow) });
 const TrackedBody = z.object({ hex: z.string().nullable() });
-// estop, pan_referenced and calibration_verified are REQUIRED: a status that
-// does not say the head is unlatched, referenced and verified must never be
-// read as permission to move it (fail closed).
+// estop, pan_referenced, calibration_verified and pan_limits_verified are
+// REQUIRED: a status that does not say the head is unlatched, referenced and
+// verified must never be read as permission to move it (fail closed).
 const StatusBody = z.object({
   state: z.string(), label: z.string().nullable(), pointing_error_deg: z.number().nullable(),
   estop: z.boolean(),
   pan_referenced: z.boolean(),
   calibration_verified: z.boolean(),
+  pan_limits_verified: z.boolean(),
 });
 
 export function parseTrackingStatus(text: string): RigStatus {
   const b = StatusBody.parse(JSON.parse(text));
   return { state: b.state, label: b.label, pointingErrorDeg: b.pointing_error_deg, estop: b.estop,
-    panReferenced: b.pan_referenced, calibrationVerified: b.calibration_verified };
+    panReferenced: b.pan_referenced, calibrationVerified: b.calibration_verified,
+    panLimitsVerified: b.pan_limits_verified };
 }
 const ParkIdleBody = z.object({ parked: z.boolean(), reason: z.string() });
 // `armed` is REQUIRED: an answer that does not say the agent is armed must

@@ -11,13 +11,16 @@ import { Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
 import { LimitsStore, LimitEdge, CeilingLimits, effectiveLimits } from "../shared/limits-store.js";
 import { currentUserPanTilt } from "./geo-tools.js";
-import { text, errText } from "./tool-helpers.js";
+import { text, errText, PAN_LIMITS_UNVERIFIED_MSG } from "./tool-helpers.js";
 
 const EDGE_ARG = z.enum(["pan_min", "pan_max", "tilt_min", "tilt_max"]);
 type EdgeArg = z.infer<typeof EDGE_ARG>;
 
 const EDGE_MAP: Record<EdgeArg, LimitEdge> = {
   pan_min: "panMin", pan_max: "panMax", tilt_min: "tiltMin", tilt_max: "tiltMax",
+};
+const EDGE_ARG_OF: Record<LimitEdge, EdgeArg> = {
+  panMin: "pan_min", panMax: "pan_max", tiltMin: "tilt_min", tiltMax: "tilt_max",
 };
 
 // A taught edge that leaves less than this much room against the OTHER edge
@@ -132,9 +135,13 @@ export function registerLimitsTools(server: McpServer, device: Device, cfg: Conf
       const swapNote = result.swappedWith
         ? ` NOTE: this reading is on the other side of the already-taught ${result.swappedWith}, so the two captures were assigned by value (lower→min, higher→max) rather than by label — this axis reads the opposite way round from the button names.`
         : "";
+      const stillUnverified = store.panUnverifiedEdges().map((e) => EDGE_ARG_OF[e]);
+      const unverifiedNote = stillUnverified.length > 0
+        ? ` Taught pan edge(s) ${stillUnverified.join(", ")} are still unverified from a pan re-reference — re-teach them too (or confirm_taught_limits); automated motion stays blocked until then.`
+        : "";
       const note = result.clamped
-        ? `clamped to the configured ceiling (captured position was outside the configured range).${swapNote}${moveWarn}`
-        : `captured.${swapNote}${moveWarn}`;
+        ? `clamped to the configured ceiling (captured position was outside the configured range).${swapNote}${moveWarn}${unverifiedNote}`
+        : `captured.${swapNote}${moveWarn}${unverifiedNote}`;
       return text(JSON.stringify({
         edge, value_deg: Number(result.value.toFixed(3)), clamped: result.clamped,
         swapped_with: result.swappedWith ?? null, note,
@@ -147,15 +154,21 @@ export function registerLimitsTools(server: McpServer, device: Device, cfg: Conf
     {
       description:
         "Report the operator-taught travel limits (null per edge if never taught), the configured " +
-        "pan/tilt ceiling, and the effective range actually enforced everywhere (whichever is tighter, " +
-        "per edge).",
+        "pan/tilt ceiling, the effective range actually enforced everywhere (whichever is tighter, " +
+        "per edge), and whether the taught pan edges are verified: pan_limits_verified is false after a pan " +
+        "re-reference of unknown offset (a Pico reboot), and automated motion is blocked until they are " +
+        "re-taught or confirm_taught_limits.",
       inputSchema: {},
     },
     async () => {
       const taught = store.get();
       const ceiling = ceilingFrom(cfg);
       const eff = effectiveLimits(ceiling, taught);
+      const unverified = store.panUnverifiedEdges().map((e) => EDGE_ARG_OF[e]);
       return text(JSON.stringify({
+        pan_limits_verified: unverified.length === 0,
+        unverified_edges: unverified,
+        ...(unverified.length > 0 ? { note: PAN_LIMITS_UNVERIFIED_MSG } : {}),
         taught: {
           pan_min: taught.panMin ?? null, pan_max: taught.panMax ?? null,
           tilt_min: taught.tiltMin ?? null, tilt_max: taught.tiltMax ?? null,
@@ -167,6 +180,30 @@ export function registerLimitsTools(server: McpServer, device: Device, cfg: Conf
           pan_min: eff.panMin, pan_max: eff.panMax, tilt_min: eff.tiltMin, tilt_max: eff.tiltMax,
         },
       }, null, 2));
+    },
+  );
+
+  server.registerTool(
+    "confirm_taught_limits",
+    {
+      description:
+        "Declare that the taught pan limits still mark the same physical poses after a pan re-reference of " +
+        "unknown offset (use after a Pico reboot when the head was not moved). Clears the pan_limits_unverified " +
+        "automation block. Re-teaching the pan edges is the safe path if pan may have been renamed. Idempotent; " +
+        "returns the limits it confirmed.",
+      inputSchema: {},
+    },
+    async () => {
+      const was = store.panUnverifiedEdges().map((e) => EDGE_ARG_OF[e]);
+      const confirmed = store.confirmPan();
+      const taught = store.get();
+      return text(JSON.stringify({
+        confirmed: { pan_min: taught.panMin ?? null, pan_max: taught.panMax ?? null },
+        was_unverified: was,
+        note: confirmed
+          ? "taught pan limits confirmed by the operator; they no longer block automated motion"
+          : "taught pan limits were already verified — nothing to confirm",
+      }));
     },
   );
 

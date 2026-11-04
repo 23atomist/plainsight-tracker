@@ -85,12 +85,12 @@ describe("MCP tools", () => {
   // 18 from registerTools + 3 from registerLimitsTools (teach/get/clear), both
   // wired into this file's shared harness — the Part 1 jog-guard tests below
   // need teach_limit available on the same server as "jog".
-  it("lists all 22 tools; the retired ESP32 program/camera/zero tools are gone", async () => {
+  it("lists all 23 tools; the retired ESP32 program/camera/zero tools are gone", async () => {
     const { client } = await harness();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
-      "capture_snapshot", "clear_estop", "clear_taught_limits", "estop", "get_agent_armed", "get_capture_status",
+      "capture_snapshot", "clear_estop", "clear_taught_limits", "confirm_taught_limits", "estop", "get_agent_armed", "get_capture_status",
       "get_head_config", "get_status", "get_taught_limits", "goto_angle", "home", "jog",
       "list_passes", "reference_pan", "set_agent_armed", "set_capture_mode", "set_head_config", "set_position",
       "start_recording", "stop", "stop_recording", "teach_limit",

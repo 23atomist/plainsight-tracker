@@ -8,6 +8,74 @@ const file = () => join(mkdtempSync(join(tmpdir(), "limits-")), "limits.json");
 
 const CEILING: CeilingLimits = { panMin: -180, panMax: 180, tiltMin: -90, tiltMax: 90 };
 
+describe("LimitsStore pan-limits-unverified flag (I3)", () => {
+  function taughtPan(f = file()): LimitsStore {
+    const s = new LimitsStore(f);
+    s.load();
+    s.setEdge("panMin", -100);
+    s.setEdge("panMax", 100);
+    s.setEdge("tiltMax", 60);
+    return s;
+  }
+
+  it("flags every taught pan edge, persists it, and leaves the values alone", () => {
+    const f = file();
+    const s = taughtPan(f);
+    expect(s.markPanUnverified()).toEqual(["panMin", "panMax"]);
+    const back = new LimitsStore(f);
+    back.load();
+    expect(back.get()).toEqual({ version: 1, panMin: -100, panMax: 100, tiltMax: 60, panLimitsUnverified: ["panMin", "panMax"] });
+    expect(back.isPanUnverified()).toBe(true);
+  });
+
+  it("flags only the pan edges that are taught, and nothing at all when none is", () => {
+    const s = new LimitsStore(file());
+    s.load();
+    s.setEdge("tiltMin", 5);
+    expect(s.markPanUnverified()).toEqual([]);
+    expect(s.isPanUnverified()).toBe(false);
+    s.setEdge("panMax", 90);
+    expect(s.markPanUnverified()).toEqual(["panMax"]);
+  });
+
+  it("re-teaching clears per edge; teaching tilt does not", () => {
+    const s = taughtPan();
+    s.markPanUnverified();
+    s.setEdge("tiltMax", 70);
+    expect(s.panUnverifiedEdges()).toEqual(["panMin", "panMax"]);
+    s.setEdge("panMin", -95);
+    expect(s.panUnverifiedEdges()).toEqual(["panMax"]);
+    s.setEdge("panMax", 97);
+    expect(s.isPanUnverified()).toBe(false);
+    expect(s.get()).not.toHaveProperty("panLimitsUnverified");
+  });
+
+  it("confirmPan clears it and is idempotent; clear() drops it with the edges", () => {
+    const s = taughtPan();
+    s.markPanUnverified();
+    expect(s.confirmPan()).toBe(true);
+    expect(s.confirmPan()).toBe(false);
+    expect(s.get()).toMatchObject({ panMin: -100, panMax: 100 });
+    s.markPanUnverified();
+    s.clear();
+    expect(s.isPanUnverified()).toBe(false);
+  });
+
+  it("a known-delta shift does not verify an edge that was already unverified", () => {
+    const s = taughtPan();
+    s.markPanUnverified();
+    s.shiftPan(10);
+    expect(s.get()).toMatchObject({ panMin: -90, panMax: 110, panLimitsUnverified: ["panMin", "panMax"] });
+  });
+
+  it("get() hands out a copy of the flag", () => {
+    const s = taughtPan();
+    s.markPanUnverified();
+    (s.get().panLimitsUnverified as string[]).length = 0;
+    expect(s.isPanUnverified()).toBe(true);
+  });
+});
+
 describe("LimitsStore", () => {
   it("defaults to nothing taught when the file is missing", () => {
     const s = new LimitsStore(file());
