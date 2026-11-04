@@ -96,8 +96,13 @@ export function createEstop({ el, toast, applyMotionGate, refreshCockpitLock, no
       if (!r) return `${leg}: —`;
       return `${leg}: ${r.ok ? "ok" : "FAIL"} (${r.message})`;
     });
+    // The head answered but its Pico did not confirm: the latch IS set (every
+    // motion route refuses), the physical stop is unconfirmed. Said first.
+    const unconfirmed = result.head && result.head.ok && result.pico_confirmed === false;
+    if (unconfirmed) parts.unshift("E-STOP latched — Pico did not confirm, check the head");
     el.estopBannerDetail.textContent = parts.join(" · ");
-    if (result.allOk) toast("E-STOP: head latched, tracking stopped, agent disarmed", true);
+    if (unconfirmed) toast("E-STOP latched — Pico did not confirm, check the head", false);
+    else if (result.allOk) toast("E-STOP: head latched, tracking stopped, agent disarmed", true);
     else if (result.head && result.head.ok) toast("E-STOP: head latched (a daemon leg failed — see banner)", false);
     else toast("E-STOP: the HEAD did not confirm — use the physical stop if the rig is moving", false);
   }

@@ -50,6 +50,32 @@ describe("runOnce", () => {
     expect(out.state.lastSwitchMs).toBe(7);
   });
 
+  // The model call can take seconds; Auto turned off in that window wins.
+  it("re-checks the armed flag right before tracking, stopping, or idle-parking", async () => {
+    const seq = (...v: boolean[]) => { let i = 0; return async () => v[Math.min(i++, v.length - 1)]; };
+    let r = client({ getAgentArmed: seq(true, false) });
+    let out = await runOnce(deps(r.c, async () => ({ action: "track", hex: "bbb", reason: "" })), { lastSwitchMs: 3 });
+    expect(r.calls).toEqual([]);
+    expect(out).toEqual({ action: { kind: "keep", reason: "disarmed" }, state: { lastSwitchMs: 3 } });
+
+    r = client({ getAgentArmed: seq(true, false), getTracked: async () => ({ hex: "aaa" }) });
+    out = await runOnce(deps(r.c, async () => ({ action: "stop", reason: "" })), { lastSwitchMs: 0 });
+    expect(r.calls).toEqual([]);
+    expect(out.action).toEqual({ kind: "keep", reason: "disarmed" });
+
+    // Disarmed between the stop and the park: the stop is reported, no park.
+    r = client({ getAgentArmed: seq(true, true, false), getTracked: async () => ({ hex: "aaa" }) });
+    out = await runOnce(deps(r.c, async () => ({ action: "stop", reason: "" })), { lastSwitchMs: 0 });
+    expect(r.calls).toEqual(["stop"]);
+    expect(out.action).toEqual({ kind: "stop" });
+
+    // Nothing to track, idle: the park is gated too.
+    r = client({ getAgentArmed: seq(true, false), scanAircraft: async () => [] });
+    out = await runOnce(deps(r.c, async () => ({ action: "keep", reason: "" })), { lastSwitchMs: 0 });
+    expect(r.calls).toEqual([]);
+    expect(out.action).toEqual({ kind: "keep", reason: "disarmed" });
+  });
+
   it("a failing armed-flag read throws (the tick errors) rather than acting", async () => {
     const { c, calls } = client({ getAgentArmed: async () => { throw new Error("mcp down"); } });
     const choose = vi.fn(async () => ({ action: "track" as const, hex: "aaa", reason: "" }));

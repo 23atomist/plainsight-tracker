@@ -119,15 +119,26 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
     action = failSafeAction(currentHex, currentHealthy);
   }
 
+  // Re-checked immediately before anything that moves the rig: the model
+  // call above can take seconds, and an operator turning Auto off in that
+  // window must win over the decision made before it.
+  const DISARMED: Action = { kind: "keep", reason: "disarmed" };
   let lastSwitchMs = state.lastSwitchMs;
-  if (action.kind === "track") { await deps.client.track(action.hex); lastSwitchMs = deps.now(); }
-  else if (action.kind === "stop") { await deps.client.stop(); }
+  if (action.kind === "track" || action.kind === "stop") {
+    if (!(await deps.client.getAgentArmed())) return { action: DISARMED, state };
+    if (action.kind === "track") { await deps.client.track(action.hex); lastSwitchMs = deps.now(); }
+    else { await deps.client.stop(); }
+  }
 
   // Nothing being tracked and nothing to track: park up rather than leave the
   // rig wherever the last pass ended. Covers both "just stopped" and "was
   // already idle, still nothing eligible" -- the latter is exactly the
   // multi-minute idle-gap symptom this task exists to fix.
   if (action.kind === "stop" || (action.kind === "keep" && currentHex === null && trackable.length === 0)) {
+    // A stop that already happened is still reported as the stop.
+    if (!(await deps.client.getAgentArmed())) {
+      return { action: action.kind === "stop" ? action : DISARMED, state: { lastSwitchMs } };
+    }
     const park = await deps.client.parkIdle();
     // A silent failure to park is exactly the outcome that started this
     // work ("it's been pointing at my neighbours for the last few minutes")

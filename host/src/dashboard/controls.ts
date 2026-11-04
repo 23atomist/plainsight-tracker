@@ -1,3 +1,4 @@
+import type { EstopOutcome } from "./head.js";
 import { withTimeout } from "./util.js";
 
 export interface ControlDeps {
@@ -37,7 +38,7 @@ export interface ControlDeps {
   setAgentArmed(armed: boolean): Promise<void>;
   // DIRECT to the head (head.ts's HeadDirectClient), never through the MCP
   // daemon: the dashboard E-STOP must latch the head with the daemon down.
-  headEstop(): Promise<void>;
+  headEstop(): Promise<EstopOutcome>;
   headClearEstop(): Promise<void>;
   // The daemon's own clear_estop, best-effort alongside headClearEstop.
   mcpClearEstop(): Promise<void>;
@@ -76,14 +77,21 @@ export interface ControlDeps {
 }
 
 export interface ActionResult { ok: boolean; message: string; }
-// `head` is the leg that matters: the response is an error (502) only when it
-// failed. agent/tracking are best-effort MCP legs, reported but not fatal.
-export interface EstopResult { agent: ActionResult; tracking: ActionResult; head: ActionResult; allOk: boolean; }
+// `head` is the leg that matters: `ok` (and the HTTP status: 502 otherwise)
+// follows it alone. `pico_confirmed` false means the head latched but the
+// Pico did not confirm the stop (`warning` says so). agent/tracking are
+// best-effort MCP legs, reported but not fatal.
+export interface EstopResult {
+  ok: boolean;
+  pico_confirmed: boolean;
+  warning?: string;
+  head: ActionResult; agent: ActionResult; tracking: ActionResult;
+  allOk: boolean;
+}
 
-// Budget for each best-effort MCP leg of the E-STOP. The legs run BEFORE the
-// head latch (see emergencyStop), so a wedged daemon delays the latch by at
-// most twice this. Kept short for that reason; a down daemon (connection
-// refused) fails in well under it.
+// Budget for each best-effort MCP leg of the E-STOP. They run AFTER the head
+// latch, in parallel, so this only bounds how long the response waits for
+// them; it never delays the latch.
 export const ESTOP_MCP_LEG_TIMEOUT_MS = 1000;
 
 function msg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
@@ -95,24 +103,39 @@ async function attempt(fn: () => Promise<unknown>, okMsg: string): Promise<Actio
 
 // Field lesson ("E-STOP is the reliable stop", 2026-07-22 roof bring-up): the
 // operator's stop must not depend on the MCP daemon, whose session can wedge
-// or cascade. So the head leg goes straight to the head, and the daemon legs
-// are best-effort and bounded.
+// or cascade. So the head is latched FIRST, directly, before anything else is
+// even attempted: a hung daemon must never delay the latch by even a second.
+// The latch alone refuses every motion route on the head (423), so whatever
+// the agent or the tracking session try next is refused there.
 //
-// ORDER matters (spec 6.4: E-STOP clears the armed flag before stopping
-// motion): disarm the agent first so its next tick cannot pick a new target,
-// end the tracking session so nothing re-issues setpoints, THEN latch the
-// head. The latch alone already refuses every motion route (423), so the
-// order costs nothing in safety if the daemon legs fail -- it only keeps the
-// system's own state consistent when they succeed.
+// Then, best-effort and in parallel, the daemon legs (spec 6.4's "E-STOP
+// clears the armed flag"): disarm the agent so its next tick does not pick a
+// new target once the latch is cleared, and end the tracking session so it
+// stops issuing setpoints into a latched head. Each is bounded so a hung
+// daemon delays only the response, never the stop.
 export async function emergencyStop(
   d: ControlDeps, mcpLegTimeoutMs: number = ESTOP_MCP_LEG_TIMEOUT_MS,
 ): Promise<EstopResult> {
-  const agent = await attempt(
-    () => withTimeout(d.setAgentArmed(false), mcpLegTimeoutMs, "setAgentArmed(false)"), "agent disarmed");
-  const tracking = await attempt(
-    () => withTimeout(d.stopTracking(), mcpLegTimeoutMs, "stopTracking"), "tracking stopped");
-  const head = await attempt(() => d.headEstop(), "head E-STOP latched");
-  return { agent, tracking, head, allOk: agent.ok && tracking.ok && head.ok };
+  let head: ActionResult;
+  let picoConfirmed = false;
+  let warning: string | undefined;
+  try {
+    const out = await d.headEstop();
+    picoConfirmed = out.picoConfirmed;
+    warning = out.warning;
+    head = { ok: true, message: out.warning ?? "head E-STOP latched" };
+  } catch (e) {
+    head = { ok: false, message: msg(e) };
+  }
+  const [agent, tracking] = await Promise.all([
+    attempt(() => withTimeout(d.setAgentArmed(false), mcpLegTimeoutMs, "setAgentArmed(false)"), "agent disarmed"),
+    attempt(() => withTimeout(d.stopTracking(), mcpLegTimeoutMs, "stopTracking"), "tracking stopped"),
+  ]);
+  return {
+    ok: head.ok, pico_confirmed: picoConfirmed, ...(warning ? { warning } : {}),
+    head, agent, tracking,
+    allOk: head.ok && picoConfirmed && agent.ok && tracking.ok,
+  };
 }
 
 // Releasing the latch: the head clear is the one that must succeed; the

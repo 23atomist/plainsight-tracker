@@ -7,6 +7,18 @@ const STATE_TIMEOUT_MS = 2000;
 // here would report a failure for an E-STOP the head is still confirming.
 const COMMAND_TIMEOUT_MS = 6000;
 
+// The statuses the head answers /api/estop with when its latch is set but
+// the Pico round trip failed (docs/HEAD-API.md "POST /api/estop": the latch
+// is set BEFORE the round trip and stays set if the send fails).
+const LATCHED_UNCONFIRMED = new Set([400, 502, 503, 504]);
+
+export interface EstopOutcome {
+  // false: the head's latch IS set (every motion route refuses), but the
+  // Pico did not confirm the stop -- check the head.
+  picoConfirmed: boolean;
+  warning?: string;
+}
+
 /**
  * The dashboard's own line to the head controller, independent of the MCP
  * daemon. This is what makes the dashboard E-STOP work with the MCP server
@@ -32,13 +44,36 @@ export class HeadDirectClient {
   }
 
   /**
-   * Latch the head's E-STOP. Throws when the head did not confirm, so the
-   * dashboard's E-STOP reports the head leg as failed. Any answer from the
-   * head at all means the latch is set (it latches before talking to the
-   * Pico); a non-2xx answer means the Pico has not confirmed the stop.
+   * Latch the head's E-STOP. A JSON answer from the head means the latch is
+   * set: 2xx is confirmed by the Pico; 400/502/503/504 is latched but NOT
+   * confirmed (resolves with a warning -- the stop did happen on the head
+   * side, and calling it a failure would send the operator hunting for a
+   * fault in the wrong place). Throws only when the head was not reached,
+   * did not answer JSON, or answered something else: then nothing says the
+   * latch is set.
    */
-  async estop(): Promise<void> {
-    await this.post("/api/estop", "the head latched E-STOP but the Pico did not confirm the stop");
+  async estop(): Promise<EstopOutcome> {
+    let r: Response;
+    try {
+      r = await this.fetchFn(`${this.base}/api/estop`, { method: "POST", signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS) });
+    } catch (e) {
+      throw new Error(`head unreachable at ${this.base}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    let body: { error?: unknown };
+    try {
+      body = await r.json() as { error?: unknown };
+    } catch {
+      throw new Error(`E-STOP not confirmed: HTTP ${r.status} from ${this.base} was not a head answer (not JSON)`);
+    }
+    if (r.ok) return { picoConfirmed: true };
+    const err = typeof body?.error === "string" ? ` ${body.error}` : "";
+    if (LATCHED_UNCONFIRMED.has(r.status)) {
+      return {
+        picoConfirmed: false,
+        warning: `head E-STOP latched, but the Pico did not confirm the stop (HTTP ${r.status}${err}) -- check the head`,
+      };
+    }
+    throw new Error(`E-STOP not confirmed: HTTP ${r.status}${err}`);
   }
 
   /** Release the latch. Safe when not latched. */

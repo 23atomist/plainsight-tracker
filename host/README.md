@@ -552,17 +552,21 @@ Example: `http://192.168.4.104:8788`
 
 ### E-STOP Behavior
 
-The **E-STOP** button runs three legs, in this order:
+The **E-STOP** button runs three legs:
 
-1. **Disarms the agent** — `set_agent_armed {armed:false}` via the MCP server (best effort, 1 s budget)
-2. **Stops tracking** — `stop_tracking` via the MCP server (best effort, 1 s budget)
-3. **Latches the head** — `POST <headUrl>/api/estop`, **directly** from the dashboard to the head, never through
-   the MCP server. Every motion route on the head then refuses (423) until the latch is cleared.
+1. **Latches the head, first** — `POST <headUrl>/api/estop`, **directly** from the dashboard to the head, never
+   through the MCP server, before anything else is attempted. Every motion route on the head then refuses (423)
+   until the latch is cleared.
+2. **Disarms the agent** — `set_agent_armed {armed:false}` via the MCP server (best effort, 1 s budget)
+3. **Stops tracking** — `stop_tracking` via the MCP server (best effort, 1 s budget, in parallel with 2)
 
-Field lesson: E-STOP is the reliable stop. Because the head leg does not go through the MCP server, the E-STOP
-works with the MCP server down; the two MCP legs then report failed, and the response is still a success. The
-response is **502** only when the head leg itself failed (the head unreachable, or the Pico did not confirm), with
-the head's error text; every leg's result is shown in the banner either way.
+Field lesson: E-STOP is the reliable stop. A down or hung MCP server never delays the latch; its two legs then
+report failed and the response is still a success. The head sets its latch before talking to the Pico, so a head
+503/504 means "latched, but the Pico did not confirm": the response is 200 with `pico_confirmed: false` and a
+`warning`, and the page shows "E-STOP latched — Pico did not confirm, check the head". The response is **502** only
+when nothing says the head latched (unreachable, or an answer that is not the head's JSON), with the error text.
+Every leg's result is shown in the banner either way. The dashboard does not wait for the MCP server at startup,
+so the E-STOP route is up even while the MCP server is hung.
 
 The page latches the instant the button is clicked, and also whenever the head reports its latch set (an E-STOP
 from the MCP `estop` tool or another browser). **Clear E-STOP** posts `clear_estop`: it clears the head's latch

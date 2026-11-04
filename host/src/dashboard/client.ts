@@ -56,9 +56,8 @@ const TrackingRawZ = z.object({
   offset_tilt_deg: z.number().optional(),
   // Absent on an older daemon (pre-predictive-coasting estimator).
   coasting: z.boolean().optional(),
-  // Automation gates (spec 6.8): displayed as chips; optional per this file's
-  // non-strict convention.
-  pan_referenced: z.boolean().optional(),
+  // Automation gate (spec 6.8): displayed as a chip; optional per this
+  // file's non-strict convention. (Pan reference is read from rig.panRef.)
   calibration_verified: z.boolean().optional(),
 });
 
@@ -212,34 +211,44 @@ export class McpDashboardClient {
     return this.token ? { requestInit: { headers: { authorization: `Bearer ${this.token}` } } } : undefined;
   }
 
-  async connect(): Promise<void> {
-    await this.client.connect(new StreamableHTTPClientTransport(new URL(this.url), this.transportOpts()));
+  // The one in-flight connect or reconnect, shared: collect() fires a dozen
+  // calls per tick, and each would otherwise race its own fresh Client
+  // against the others. call() waits for it, so a call made while the
+  // startup connect is still running does not hit a half-initialized client.
+  private inflight: Promise<void> | null = null;
+
+  private share(p: () => Promise<void>): Promise<void> {
+    this.inflight ??= p().finally(() => { this.inflight = null; });
+    return this.inflight;
+  }
+
+  // Safe to fire and forget (main() does): a failure is retried by the next
+  // call that finds the client not connected.
+  connect(): Promise<void> {
+    return this.share(() => this.client.connect(
+      new StreamableHTTPClientTransport(new URL(this.url), this.transportOpts())));
   }
 
   // Rebuild the client + transport to obtain a fresh session id after the
-  // daemon restarts. Called from call() when a session error is seen.
-  private async reconnect(): Promise<void> {
-    try { await this.client.close(); } catch { /* already gone */ }
-    this.client = this.newClient();
-    await this.connect();
-  }
-
-  // One reconnect at a time: collect() fires a dozen calls per tick, and each
-  // would otherwise race its own fresh Client against the others.
-  private reconnecting: Promise<void> | null = null;
-
+  // daemon restarts, or after a failed startup connect.
   private reconnectOnce(): Promise<void> {
-    this.reconnecting ??= this.reconnect().finally(() => { this.reconnecting = null; });
-    return this.reconnecting;
+    return this.share(async () => {
+      try { await this.client.close(); } catch { /* already gone */ }
+      this.client = this.newClient();
+      await this.client.connect(new StreamableHTTPClientTransport(new URL(this.url), this.transportOpts()));
+    });
   }
 
   private async call(name: string, args: Record<string, unknown>): Promise<string> {
+    if (this.inflight) {
+      try { await this.inflight; } catch { /* the call below fails "Not connected" and reconnects */ }
+    }
     try {
       return resultText(name, await this.client.callTool({ name, arguments: args }));
     } catch (e) {
       // "Not connected": the startup connect failed (the dashboard started
-      // before the MCP server). Without this the dashboard would stay
-      // degraded until restarted, even after the MCP server came up.
+      // before the MCP server, or it never answered). Without this the
+      // dashboard would stay degraded until restarted.
       if (!isSessionError(e) && !isNotConnected(e)) throw e;
       await this.reconnectOnce();
       return resultText(name, await this.client.callTool({ name, arguments: args }));
@@ -318,10 +327,10 @@ export class McpDashboardClient {
   }
   async setAgentArmed(armed: boolean): Promise<void> { await this.call("set_agent_armed", { armed }); }
 
-  // The MCP-side E-STOP tools. The dashboard's own E-STOP button latches the
-  // head DIRECTLY (head.ts) so it works with this daemon down; these are the
-  // best-effort daemon legs alongside it.
-  async estop(): Promise<void> { await this.call("estop", {}); }
+  // The daemon's clear_estop, the best-effort second leg of Clear E-STOP (the
+  // head itself is cleared DIRECTLY, head.ts). There is no daemon estop leg:
+  // the dashboard E-STOP latches the head directly so it works with this
+  // daemon down.
   async clearEstop(): Promise<void> { await this.call("clear_estop", {}); }
 
   // Head reference procedures (Setup drawer). Each relays the tool's own

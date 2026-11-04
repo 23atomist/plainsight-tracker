@@ -23,13 +23,14 @@ export type UpDown = "up" | "down";
 // collect()). `agentArmed` is the agent's armed flag (get_agent_armed, spec
 // 6.4), not a process state -- the agent container always runs and idles
 // while disarmed. It is null when the MCP server is down (unknown, which is
-// different from disarmed).
+// different from disarmed). Every field is null before the first poll
+// (unknown, so the page does not flash red for the first second).
 export interface ServicesState {
-  mcp: UpDown;
+  mcp: UpDown | null;
   agentArmed: boolean | null;
-  mediamtx: UpDown;
-  adsb: UpDown;
-  head: UpDown;
+  mediamtx: UpDown | null;
+  adsb: UpDown | null;
+  head: UpDown | null;
 }
 
 // The fields of the MCP get_status tool this dashboard consumes (user frame).
@@ -50,10 +51,9 @@ export interface TrackingRaw {
   // Riding the estimator's prediction (dropout coasting). Optional so an
   // older daemon's payload still parses.
   coasting?: boolean;
-  // Automation gates from get_tracking_status (spec 6.8). Optional per this
+  // Automation gate from get_tracking_status (spec 6.8). Optional per this
   // interface's tolerate-older-daemon convention; the dashboard only DISPLAYS
-  // them (the daemon is what enforces them).
-  pan_referenced?: boolean;
+  // it (the daemon enforces it). The pan reference comes from rig.panRef.
   calibration_verified?: boolean;
   // The standing drift-calibration aim-offset (see track/offset.ts) -- always
   // a number (defaults to 0), never null: an idle/stopped session still has

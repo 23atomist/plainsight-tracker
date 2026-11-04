@@ -145,7 +145,7 @@ describe("McpDashboardClient -- armed flag, E-STOP legs, head procedures", () =>
       async () => text(JSON.stringify({ armed })));
     server.registerTool("set_agent_armed", { description: "f", inputSchema: { armed: z.boolean() } },
       async ({ armed: a }: { armed: boolean }) => { seen.push(["set_agent_armed", a]); armed = a; return text("{}"); });
-    for (const name of ["estop", "clear_estop", "reference_pan"]) {
+    for (const name of ["clear_estop", "reference_pan"]) {
       server.registerTool(name, { description: "f", inputSchema: {} },
         async () => { seen.push([name, {}]); return text(`${name} ok`); });
     }
@@ -156,7 +156,7 @@ describe("McpDashboardClient -- armed flag, E-STOP legs, head procedures", () =>
       async (a: unknown) => { seen.push(["set_position", a]); return text("position declared"); });
     server.registerTool("get_tracking_status", { description: "f", inputSchema: {} }, async () => text(JSON.stringify({
       state: "waiting", label: null, target_azimuth_deg: null, target_elevation_deg: null, target_range_m: null,
-      pointing_error_deg: null, pan_limited: false, tilt_limited: false, pan_referenced: true, calibration_verified: false,
+      pointing_error_deg: null, pan_limited: false, tilt_limited: false, calibration_verified: false,
     })));
     const sdkClient = (dash as unknown as { client: { connect(t: unknown): Promise<void> } }).client;
     const [c, s] = InMemoryTransport.createLinkedPair();
@@ -172,24 +172,22 @@ describe("McpDashboardClient -- armed flag, E-STOP legs, head procedures", () =>
     expect(seen).toEqual([["set_agent_armed", true]]);
   });
 
-  it("calls estop, clear_estop, home, set_position and reference_pan with their real argument shapes", async () => {
+  it("calls clear_estop, home, set_position and reference_pan with their real argument shapes", async () => {
     const { dash, seen } = await wired();
-    await dash.estop();
     await dash.clearEstop();
     expect(await dash.home()).toBe("homing tilt");
     await dash.setPosition(12.5, undefined);
     await dash.setPosition(undefined, -2);
     expect(await dash.referencePan()).toBe("reference_pan ok");
     expect(seen).toEqual([
-      ["estop", {}], ["clear_estop", {}], ["home", { axes: ["tilt"] }],
+      ["clear_estop", {}], ["home", { axes: ["tilt"] }],
       ["set_position", { pan_deg: 12.5 }], ["set_position", { tilt_deg: -2 }], ["reference_pan", {}],
     ]);
   });
 
-  it("getTrackingStatus carries pan_referenced and calibration_verified", async () => {
+  it("getTrackingStatus carries calibration_verified", async () => {
     const { dash } = await wired();
     const t = await dash.getTrackingStatus();
-    expect(t.pan_referenced).toBe(true);
     expect(t.calibration_verified).toBe(false);
   });
 

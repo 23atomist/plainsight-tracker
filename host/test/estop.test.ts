@@ -95,6 +95,21 @@ describe("createEstop", () => {
     expect(toasts.some(([m, ok]) => !ok && /head latched.*daemon leg failed/i.test(m))).toBe(true);
   });
 
+  // Head answered 503/504: latched, Pico unconfirmed. The page says exactly that.
+  it("a latched head whose Pico did not confirm shows 'E-STOP latched — Pico did not confirm, check the head'", async () => {
+    const { estop, el, toasts } = setup((async () =>
+      ({ status: 200, json: async () => ({
+        ok: true, pico_confirmed: false, warning: "head E-STOP latched, but the Pico did not confirm the stop (HTTP 503)",
+        head: { ok: true, message: "head E-STOP latched, but the Pico did not confirm the stop (HTTP 503)" },
+        agent: { ok: true, message: "agent disarmed" }, tracking: { ok: true, message: "tracking stopped" },
+        allOk: false,
+      }) })) as unknown as typeof fetch);
+    await estop.trigger();
+    expect(estop.isLatched()).toBe(true);
+    expect(el.estopBannerDetail.textContent).toMatch(/^E-STOP latched — Pico did not confirm, check the head · head: ok/);
+    expect(toasts).toContainEqual(["E-STOP latched — Pico did not confirm, check the head", false]);
+  });
+
   // The 502 body: the head did not confirm. Must say so loudly.
   it("reports a failed HEAD leg without claiming success", async () => {
     const { estop, el, toasts } = setup((async () =>

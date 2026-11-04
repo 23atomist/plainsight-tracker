@@ -193,8 +193,20 @@ describe("Cockpit health glance -- service dot semantics", () => {
 
   it("is failed when any service is down", () => {
     const { cockpit, el } = makeCockpit();
-    cockpit.render({ ...baseState, services: { mcp: "up", agentArmed: false, mediamtx: "down", adsb: "up", head: "up" } });
+    cockpit.render({ ...baseState, services: { mcp: "up", agentArmed: false, mediamtx: "up", adsb: "down", head: "up" } });
     expect(svcDotClass(el.health.innerHTML)).toBe("led-failed");
+  });
+
+  // MediaMTX only matters when it is the camera source.
+  it("counts MediaMTX only when it is the active camera source", () => {
+    const { cockpit, el } = makeCockpit();
+    const services = { mcp: "up", agentArmed: false, mediamtx: "down", adsb: "up", head: "up" };
+    cockpit.render({ ...baseState, services, camera: { source: "mediamtx" } });
+    expect(svcDotClass(el.health.innerHTML)).toBe("led-failed");
+    cockpit.render({ ...baseState, services, camera: { source: "v4l2" } });
+    expect(svcDotClass(el.health.innerHTML)).toBe("led-active");
+    cockpit.render({ ...baseState, services: { ...services, mediamtx: null }, camera: { source: "v4l2" } });
+    expect(svcDotClass(el.health.innerHTML)).toBe("led-active");
   });
 
   it("is unknown before the first tick (no services yet), distinct from both healthy and failed", () => {

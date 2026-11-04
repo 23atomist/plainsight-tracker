@@ -60,10 +60,27 @@ describe("HeadDirectClient", () => {
     ]);
   });
 
-  it("estop() throws with the head's error text when the Pico did not confirm", async () => {
-    const { fn } = recorder(() => ({ ok: false, status: 503, body: { ok: false, error: "pico link down" } }));
-    await expect(new HeadDirectClient("http://h:8780", fn).estop())
-      .rejects.toThrow(/latched E-STOP but the Pico did not confirm.*503 pico link down/);
+  it("estop() resolves confirmed on a 2xx JSON answer", async () => {
+    const { fn } = recorder(() => ({ ok: true, status: 200, body: { ok: true } }));
+    expect(await new HeadDirectClient("http://h:8780", fn).estop()).toEqual({ picoConfirmed: true });
+  });
+
+  // The head latches BEFORE the Pico round trip, so these answers mean the
+  // latch is set but the stop is unconfirmed: not a failure.
+  it("estop() on a head 503/504 (and 400/502) resolves latched-but-unconfirmed with the head's error text", async () => {
+    for (const status of [503, 504, 400, 502]) {
+      const { fn } = recorder(() => ({ ok: false, status, body: { ok: false, error: "pico link down" } }));
+      const out = await new HeadDirectClient("http://h:8780", fn).estop();
+      expect(out.picoConfirmed).toBe(false);
+      expect(out.warning).toMatch(new RegExp(`latched, but the Pico did not confirm.*HTTP ${status} pico link down.*check the head`));
+    }
+  });
+
+  it("estop() throws on a non-JSON answer (not the head) or an unexpected status", async () => {
+    const notJson = (async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("bad"); } })) as unknown as typeof fetch;
+    await expect(new HeadDirectClient("http://h:8780", notJson).estop()).rejects.toThrow(/not JSON/);
+    const { fn } = recorder(() => ({ ok: false, status: 404, body: { error: "nope" } }));
+    await expect(new HeadDirectClient("http://h:8780", fn).estop()).rejects.toThrow(/HTTP 404 nope/);
   });
 
   it("estop() throws 'head unreachable' when the head cannot be reached", async () => {

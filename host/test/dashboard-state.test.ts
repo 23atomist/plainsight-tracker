@@ -69,7 +69,7 @@ describe("mergeState tracking automation gates", () => {
     const trk = { state: "waiting", label: null, target_azimuth_deg: null, target_elevation_deg: null,
       target_range_m: null, pointing_error_deg: null, pan_limited: false, tilt_limited: false,
       offset_pan_deg: 0, offset_tilt_deg: 0 };
-    expect(mergeState(inputs({ tracking: ok({ ...trk, calibration_verified: false, pan_referenced: true }) }), 1)
+    expect(mergeState(inputs({ tracking: ok({ ...trk, calibration_verified: false }) }), 1)
       .tracking.calibrationVerified).toBe(false);
     expect(mergeState(inputs({ tracking: ok({ ...trk, calibration_verified: true }) }), 1)
       .tracking.calibrationVerified).toBe(true);

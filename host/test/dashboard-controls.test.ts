@@ -22,7 +22,8 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
     setTrackFloor: rec("setTrackFloor"),
     setSunGuard: rec("setSunGuard"),
     setAgentArmed: rec("setAgentArmed"),
-    headEstop: rec("headEstop"), headClearEstop: rec("headClearEstop"), mcpClearEstop: rec("mcpClearEstop"),
+    headEstop: async () => { calls.push("headEstop:[]"); return { picoConfirmed: true }; },
+    headClearEstop: rec("headClearEstop"), mcpClearEstop: rec("mcpClearEstop"),
     home: async () => { calls.push("home:[]"); return "homing tilt"; },
     setPosition: async (p?: number, t?: number) => { calls.push(`setPosition:${JSON.stringify([p ?? null, t ?? null])}`); return "position declared"; },
     referencePan: async () => { calls.push("referencePan:[]"); return "re-referencing pan"; },
@@ -46,45 +47,62 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
 }
 
 describe("emergencyStop", () => {
-  // Spec 6.4 + plan Review Focus 3: disarm, stop tracking, THEN latch the
-  // head -- in that order.
-  it("disarms the agent, stops tracking, then latches the head, in that order, and reports allOk", async () => {
+  // Controller ruling: the head is latched FIRST; a hung MCP must never delay
+  // the latch. Then the two daemon legs, best-effort.
+  it("latches the head first, then disarms the agent and stops tracking, and reports allOk", async () => {
     const { d, calls } = deps();
     const r = await emergencyStop(d);
-    expect(calls).toEqual(["setAgentArmed:[false]", "stopTracking:[]", "headEstop:[]"]);
-    expect(r.allOk).toBe(true);
+    expect(calls[0]).toBe("headEstop:[]");
+    expect([...calls].sort()).toEqual(["headEstop:[]", "setAgentArmed:[false]", "stopTracking:[]"]);
+    expect(r).toMatchObject({ ok: true, pico_confirmed: true, allOk: true });
+    expect(r.warning).toBeUndefined();
     expect(r.head).toEqual({ ok: true, message: "head E-STOP latched" });
   });
 
   // The field lesson: the E-STOP must not depend on the MCP daemon.
-  it("still latches the head when every MCP leg throws (daemon down)", async () => {
+  it("latches the head when every MCP leg throws (daemon down); ok stays true", async () => {
     const { d, calls } = deps({
       setAgentArmed: async () => { throw new Error("fetch failed"); },
       stopTracking: async () => { throw new Error("fetch failed"); },
     });
     const r = await emergencyStop(d);
     expect(calls).toEqual(["headEstop:[]"]);
-    expect(r.head.ok).toBe(true);
+    expect(r.ok).toBe(true);
     expect(r.agent).toEqual({ ok: false, message: "fetch failed" });
     expect(r.tracking.ok).toBe(false);
     expect(r.allOk).toBe(false);
   });
 
-  it("bounds a wedged MCP leg so the head latch is not held hostage", async () => {
+  it("with the MCP legs hanging, the head is latched at once and the response waits at most one leg budget", async () => {
     const never = () => new Promise<void>(() => {});
-    const { d, calls } = deps({ setAgentArmed: never, stopTracking: never });
+    let latchedAt = -1;
     const t0 = Date.now();
-    const r = await emergencyStop(d, 30);
-    expect(Date.now() - t0).toBeLessThan(1000);
+    const { d } = deps({
+      setAgentArmed: never, stopTracking: never,
+      headEstop: async () => { latchedAt = Date.now() - t0; return { picoConfirmed: true }; },
+    });
+    const r = await emergencyStop(d, 200);
+    expect(latchedAt).toBeGreaterThanOrEqual(0);
+    expect(latchedAt).toBeLessThan(50);
+    expect(Date.now() - t0).toBeLessThan(1000);   // legs run in parallel, one budget
     expect(r.agent.message).toMatch(/timed out/);
     expect(r.tracking.message).toMatch(/timed out/);
-    expect(calls).toEqual(["headEstop:[]"]);
-    expect(r.head.ok).toBe(true);
+    expect(r.ok).toBe(true);
   });
 
-  it("reports a failed head leg without claiming success", async () => {
+  it("a latched head whose Pico did not confirm is ok, with pico_confirmed false and the warning", async () => {
+    const warning = "head E-STOP latched, but the Pico did not confirm the stop (HTTP 503 pico link down) -- check the head";
+    const { d } = deps({ headEstop: async () => ({ picoConfirmed: false, warning }) });
+    const r = await emergencyStop(d);
+    expect(r).toMatchObject({ ok: true, pico_confirmed: false, warning, allOk: false });
+    expect(r.head).toEqual({ ok: true, message: warning });
+  });
+
+  it("reports a failed head leg (nothing says it latched) without claiming success", async () => {
     const { d } = deps({ headEstop: async () => { throw new Error("head unreachable"); } });
     const r = await emergencyStop(d);
+    expect(r.ok).toBe(false);
+    expect(r.pico_confirmed).toBe(false);
     expect(r.head).toEqual({ ok: false, message: "head unreachable" });
     expect(r.agent.ok).toBe(true);
     expect(r.allOk).toBe(false);

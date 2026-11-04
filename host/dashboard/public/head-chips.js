@@ -67,10 +67,12 @@ export function serviceLed(key, value) {
 
 // The single "svc" dot in the health glance: any reachability "down" is red;
 // anything not yet known is unknown; otherwise healthy. agentArmed never
-// colours it (disarmed is not a fault; unknown already implies mcp down).
-export function servicesHealthClass(services) {
+// colours it (disarmed is not a fault; unknown already implies mcp down), and
+// neither does MediaMTX unless it is the active camera source (the v4l2 path
+// does not use it, so its absence is not a fault there).
+export function servicesHealthClass(services, cameraSource) {
   const s = services || {};
-  const keys = ["mcp", "mediamtx", "adsb", "head"];
+  const keys = cameraSource === "mediamtx" ? ["mcp", "mediamtx", "adsb", "head"] : ["mcp", "adsb", "head"];
   const vals = keys.map((k) => s[k]);
   if (vals.some((v) => v === "down")) return "led-failed";
   if (vals.some((v) => v !== "up")) return "led-unknown";

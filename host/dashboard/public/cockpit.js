@@ -551,8 +551,9 @@ export class Cockpit {
     // permanently-amber "capture skipped" chip, a permanently-red "capture
     // ERROR"), and both were treated as real defects. So the dot reflects
     // reachability only: any "down" is red, anything not yet known is
-    // unknown, otherwise healthy (servicesHealthClass, head-chips.js).
-    const svcCls = servicesHealthClass(services);
+    // unknown, otherwise healthy; MediaMTX counts only when it is the camera
+    // source (servicesHealthClass, head-chips.js).
+    const svcCls = servicesHealthClass(services, state.camera ? state.camera.source : undefined);
 
     const sunCls = sunGuard.state === "unknown" || sunGuard.state === undefined
       ? "led-unknown"

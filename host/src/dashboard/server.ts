@@ -175,7 +175,7 @@ export function mediamtxProbeUrl(cfg: Config): string {
   return `${cfg.cameraMediamtxControlUrl.replace(/\/+$/, "")}/v3/paths/list`;
 }
 
-// Exported for test/dashboard-services-probe.test.ts. The services row has no
+// Exported for test/dashboard-adsb.test.ts. The services row has no
 // service manager behind it: each field is a direct observation.
 //   mcp        -- whether get_agent_armed answered (the cheapest MCP call
 //                 there is; any answer at all means the daemon is reachable)
@@ -339,8 +339,8 @@ function emptySources(cfg: Config, cameraError: string | null): SourceInputs {
     taughtLimits: NOT_POLLED_YET, // mergeState collapses this to taughtLimits: null pre-first-poll
     vision: NOT_POLLED_YET, // mergeState collapses this to vision's safe-by-default shape pre-first-poll
     policy: NOT_POLLED_YET, // mergeState collapses this to DEFAULT_RULESET pre-first-poll
-    // Not polled yet reads as down/unknown; the first tick (~1 s) replaces it.
-    services: { mcp: "down", agentArmed: null, mediamtx: "down", adsb: "down", head: "down" },
+    // Not polled yet: unknown (null), not down -- the first tick (~1 s) replaces it.
+    services: { mcp: null, agentArmed: null, mediamtx: null, adsb: null, head: null },
     camera: { enabled: false, streaming: false, viewers: 0, source: cfg.cameraSource },
     // Known immediately, unlike the polled fields above -- so even the
     // pre-first-poll snapshot (a client connecting to /api/stream/state
@@ -562,13 +562,14 @@ function registerRoutes(
 // test/dashboard-estop-route.test.ts. Expects express.json() to be mounted.
 export function registerControlRoutes(app: Express, deps: ControlDeps): void {
   // E-STOP; registered ahead of the generic /api/control/* handler below so
-  // "estop" is never routed through runAction. 502 only when the HEAD leg
-  // failed: that is the leg that actually stops the rig, and the daemon legs
-  // failing (e.g. the MCP server is down) must not read as a failed stop.
-  // The body always carries every leg's result for the banner.
+  // "estop" is never routed through runAction. 502 only when nothing says the
+  // head latched (unreachable / not a head answer): that is the leg that
+  // actually stops the rig. A latched head whose Pico did not confirm is 200
+  // with pico_confirmed:false; the daemon legs failing (e.g. the MCP server
+  // is down) never make it an error. The body always carries every leg.
   app.post("/api/control/estop", async (_req: Request, res: Response) => {
     const result = await emergencyStop(deps);
-    if (result.head.ok) { res.json(result); return; }
+    if (result.ok) { res.json(result); return; }
     res.status(502).json({ ...result, error: result.head.message });
   });
 
@@ -625,14 +626,14 @@ export async function main(): Promise<{ close(): void }> {
   const cfg = loadConfig(process.env.TB3_CONFIG ?? "config.json");
 
   const client = new McpDashboardClient(`http://127.0.0.1:${cfg.mcpPort}/mcp`, cfg.mcpToken);
-  try {
-    await client.connect();
-  } catch (e) {
-    // Tolerate a failed connect: collect() wraps every client.* call in its
-    // own Result, so the aggregator just degrades those fields instead of
-    // refusing to start.
+  // NOT awaited: a wedged MCP server (accepts TCP, never answers) would
+  // otherwise hold back app.listen -- and with it the E-STOP route -- for the
+  // SDK's 60 s initialize timeout. A failed or slow connect is tolerated:
+  // collect() wraps every client.* call in its own bounded Result, and the
+  // client reconnects on the next call that finds it not connected.
+  void client.connect().catch((e: unknown) => {
     console.error("[tb3-dashboard] daemon MCP connect failed (continuing, degraded):", errMsg(e));
-  }
+  });
 
   const head = new HeadDirectClient(cfg.headUrl);
   // Capture backend is chosen once, at startup: a camera swap is a config

@@ -33,11 +33,20 @@ export class AgentStore {
 
   get(): AgentArmed { return { ...this.state }; }
 
+  // A failed write throws, and must never leave the agent armed in memory:
+  //  - arming writes the disk FIRST and only then flips memory, so an arm that
+  //    could not be persisted never takes effect;
+  //  - disarming flips memory FIRST, so the disarm takes effect in this
+  //    process even when the disk write then fails (the caller still sees
+  //    the error; the next restart reads whatever the file says, and the
+  //    file can only say armed if an earlier arm WAS persisted).
   set(armed: boolean): void {
-    this.state = { armed };
+    const next: AgentArmed = { armed };
+    if (!armed) this.state = next;
     mkdirSync(dirname(this.filePath), { recursive: true });
     const tmp = `${this.filePath}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.state, null, 2));
+    writeFileSync(tmp, JSON.stringify(next, null, 2));
     renameSync(tmp, this.filePath);   // atomic on the same filesystem
+    this.state = next;
   }
 }

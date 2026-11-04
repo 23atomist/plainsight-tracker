@@ -73,3 +73,45 @@ describe("dashboard startup survives an unusable cameraFfmpegBin", () => {
     expect(estopBody.error).toMatch(/head unreachable/);
   });
 });
+
+// Reviewer finding (Task 8 fix round): main() used to AWAIT the MCP connect
+// before app.listen, so an MCP server that accepts TCP and never answers held
+// the dashboard -- and its E-STOP route -- down for the SDK's 60 s initialize
+// timeout. The connect is now fire-and-forget.
+describe("dashboard startup with a hung MCP server", () => {
+  let handle: { close(): void } | null = null;
+  let hung: import("node:net").Server | null = null;
+  const sockets: import("node:net").Socket[] = [];
+  const keys = ["TB3_CONFIG", "TB3_DASHBOARD_PORT", "TB3_MCP_PORT", "TB3_HEAD_URL", "TB3_CAMERA_SOURCE", "TB3_CAMERA_FFMPEG_BIN"];
+  const saved: Record<string, string | undefined> = {};
+
+  afterEach(() => {
+    handle?.close();
+    handle = null;
+    for (const s of sockets) s.destroy();
+    hung?.close();
+    hung = null;
+    for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  });
+
+  it("main() resolves and the E-STOP route is listening within 1 s", async () => {
+    const net = await import("node:net");
+    hung = net.createServer((sock) => { sockets.push(sock); });   // accepts, never answers
+    await new Promise<void>((r) => hung!.listen(8944, "127.0.0.1", r));
+    for (const k of keys) saved[k] = process.env[k];
+    process.env.TB3_CONFIG = "";
+    process.env.TB3_DASHBOARD_PORT = "8943";
+    process.env.TB3_MCP_PORT = "8944";
+    process.env.TB3_HEAD_URL = "http://127.0.0.1:8945";   // nothing listens: the head leg fails fast
+    process.env.TB3_CAMERA_SOURCE = "v4l2";
+    process.env.TB3_CAMERA_FFMPEG_BIN = "ffmpeg";
+
+    const t0 = Date.now();
+    handle = await main();
+    expect(Date.now() - t0).toBeLessThan(1000);
+    const r = await fetch("http://127.0.0.1:8943/api/control/estop", { method: "POST" });
+    expect(Date.now() - t0).toBeLessThan(3000);   // head refused at once; MCP legs bounded at 1 s
+    expect(r.status).toBe(502);
+    expect(((await r.json()) as { error: string }).error).toMatch(/head unreachable/);
+  });
+});
