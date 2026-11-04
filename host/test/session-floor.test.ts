@@ -56,6 +56,8 @@ class FakeDevice {
     return new Promise<void>(() => {});   // never settles; goto resolution is out of scope
   }
   async waitForArrival() { return this.getState(); }
+  // moveToUserAngle reads the head's axis config before the goto (picoTarget).
+  getAxisConfig() { return null; }
   async stop() { this.stopCalls++; }
 }
 

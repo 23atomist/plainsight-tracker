@@ -288,6 +288,13 @@ Pico line: `MOVE`. Body schema: [goto.json](head-api/schemas/goto.json).
 Any subset of the four axes, at least one. Accepted while moving; the Pico
 retargets. Returns **202**.
 
+For an axis with a `period` (pan: 360, see `GET /api/config`) the Pico moves
+to the equivalent angle (`+ 360k`) nearest its current position that lies
+inside its soft limits, then clamps to them: a goto to `177` from `-177` is a
+6° move that leaves the counter at `-183`, not a 354° one. The tick reports
+the counter as it is. A host waiting for the counter to read the requested
+value must predict this (host `picoTarget`, move.ts).
+
 ```json goto
 {"pan": 123.4, "tilt": 31.2}
 ```

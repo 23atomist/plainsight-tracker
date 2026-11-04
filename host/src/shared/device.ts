@@ -424,7 +424,8 @@ export class Device {
       this.scheduleConfigRetry();
       return;
     }
-    const pick = (a: HeadAxisConfig): HeadAxisConfig => ({ min: a.min, max: a.max, vmax: a.vmax, amax: a.amax });
+    const pick = (a: HeadAxisConfig): HeadAxisConfig =>
+      ({ min: a.min, max: a.max, vmax: a.vmax, amax: a.amax, ...(a.period !== undefined ? { period: a.period } : {}) });
     const config: AxisConfig = { pan: pick(parsed.data.pan), tilt: pick(parsed.data.tilt) };
     this.axisConfig = config;
     for (const cb of this.configListeners) {

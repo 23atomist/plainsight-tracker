@@ -64,7 +64,8 @@ export interface HeadEvent {
 }
 
 /** The subset of a Pico axis config scope (`GET /api/config`) the host uses. */
-export interface HeadAxisConfig { min: number; max: number; vmax: number; amax: number }
+/** `period`: the Pico CFG angle equivalence (360 for pan; 0 or absent = none). */
+export interface HeadAxisConfig { min: number; max: number; vmax: number; amax: number; period?: number }
 
 export interface HeadImuSample {
   t: number;
@@ -221,7 +222,7 @@ export const HeadImuBurstZ = z.object({
  * are deliberately NOT strict: only the four keys the host needs are required.
  */
 const AxisConfigZ = z.object({
-  min: z.number(), max: z.number(), vmax: z.number(), amax: z.number(),
+  min: z.number(), max: z.number(), vmax: z.number(), amax: z.number(), period: z.number().optional(),
 }).passthrough();
 /** The whole `GET /api/config` body ({pan, tilt, zoom, focus, global, head}), validated loosely. */
 export const HeadConfigResponseZ = z.record(z.string(), z.record(z.string(), z.unknown()));

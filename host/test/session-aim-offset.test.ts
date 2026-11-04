@@ -47,6 +47,8 @@ class FakeDevice {
     return new Promise<void>((resolve, reject) => { this.gotoDeferreds.push({ resolve, reject }); });
   }
   async waitForArrival() { return this.getState(); }
+  // moveToUserAngle reads the head's axis config before the goto (picoTarget).
+  getAxisConfig() { return null; }
   async stop() { this.stopCalls++; }
 }
 

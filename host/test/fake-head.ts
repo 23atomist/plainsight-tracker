@@ -327,6 +327,28 @@ export class FakeHead {
     }
   }
 
+  // The firmware's pickTarget (motion.cpp): an axis with a CFG `period`
+  // moves to the equivalent angle nearest its current position inside its
+  // soft limits (C roundf ties go away from zero); then the limit clamp.
+  private pickTarget(name: HeadAxisName, requested: number, current: number): number {
+    const c = this.config[name] ?? {};
+    const period = c.period ?? 0;
+    const min = c.min ?? -Infinity, max = c.max ?? Infinity;
+    let best = requested;
+    if (period > 0) {
+      const q = (current - requested) / period;
+      best = requested + Math.sign(q) * Math.round(Math.abs(q)) * period;
+      let bestDist = Infinity, pick = best;
+      for (let n = -2; n <= 2; n++) {
+        const cand = best + n * period;
+        const dist = Math.abs(cand - current);
+        if (cand >= min && cand <= max && dist < bestDist) { bestDist = dist; pick = cand; }
+      }
+      best = pick;
+    }
+    return Math.min(max, Math.max(min, best));
+  }
+
   private gotoSpeed(name: HeadAxisName): number {
     return this.gotoAtVmax ? (this.config[name]?.vmax ?? SIM_DPS) : SIM_DPS;
   }
@@ -439,8 +461,9 @@ export class FakeHead {
       if (!b) return;
       this.lastGoto = { ...b } as Partial<Record<HeadAxisName, number>>;
       this.gotoCount += 1;
-      for (const [name, tgt] of Object.entries(this.lastGoto) as [HeadAxisName, number][]) {
+      for (const [name, requested] of Object.entries(this.lastGoto) as [HeadAxisName, number][]) {
         const a = this.model.axes[name];
+        const tgt = this.pickTarget(name, requested, a.pos);
         const d = tgt - a.pos;
         this.model.axes[name] = d === 0
           ? { ...a, tgt, vel: 0, mode: "I" }

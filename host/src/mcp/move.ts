@@ -1,4 +1,5 @@
 import { AxisConfig, Device } from "../shared/device.js";
+import { HeadAxisConfig } from "../shared/head-types.js";
 import { Config } from "../shared/config.js";
 import { applySign, checkPanTilt, checkSpeed, Limits } from "../shared/angles.js";
 import { usableOr } from "../shared/track/control.js";
@@ -31,6 +32,37 @@ export function gotoArrivalBudgetMs(
   };
   const sec = Math.max(axisSec("pan"), axisSec("tilt"));
   return Math.max(ARRIVAL_FLOOR_MS, sec * 1000 * ARRIVAL_MARGIN + ARRIVAL_SLACK_MS);
+}
+
+// C's roundf: half away from zero. JS Math.round(-0.5) is -0, and the tie
+// decides which way an exact half-turn request goes.
+const roundHalfAway = (x: number): number => Math.sign(x) * Math.round(Math.abs(x));
+
+/**
+ * Where the Pico takes a goto of `requestedDeg` from `currentDeg`: a mirror of
+ * the firmware's pickTarget + limit clamp (plainsight firmware motion.cpp).
+ * For an axis with a `period` (pan: 360) it moves to the equivalent angle
+ * (`+ period*k`) nearest its current position that lies inside its soft
+ * limits, so +177 from -177 is a 6° move to -183, not a 354° one; any target
+ * is then clamped to [min, max]. Field 2026-11-04: waiting for the counter
+ * to read the requested +177 timed out the IMU sweep every time. With no
+ * config yet the request is taken verbatim.
+ */
+export function picoTarget(requestedDeg: number, currentDeg: number, axis: HeadAxisConfig | undefined): number {
+  if (!axis) return requestedDeg;
+  const period = axis.period ?? 0;
+  let best = requestedDeg;
+  if (period > 0) {
+    best = requestedDeg + roundHalfAway((currentDeg - requestedDeg) / period) * period;
+    let bestDist = Infinity, pick = best;
+    for (let n = -2; n <= 2; n++) {
+      const cand = best + n * period;
+      const dist = Math.abs(cand - currentDeg);
+      if (cand >= axis.min && cand <= axis.max && dist < bestDist) { bestDist = dist; pick = cand; }
+    }
+    best = pick;
+  }
+  return Math.min(axis.max, Math.max(axis.min, best));
 }
 
 export interface MoveResult {
@@ -71,6 +103,13 @@ export async function moveToUserAngle(
 
   const devPan = applySign(panDeg, cfg.panSign);
   const devTilt = applySign(tiltDeg, cfg.tiltSign);
+  // The counter value the Pico will actually settle at (see picoTarget), read
+  // against the position at command time: that is the wait target and the
+  // distance the budget is sized from, not the request.
+  const before = device.getState();
+  const axisCfg = device.getAxisConfig();
+  const headPan = picoTarget(devPan, before.panDeg, axisCfg?.pan);
+  const headTilt = picoTarget(devTilt, before.tiltDeg, axisCfg?.tilt);
   try {
     await device.gotoAngle(devPan, devTilt, speedDps);
   } catch (e) {
@@ -81,13 +120,12 @@ export async function moveToUserAngle(
     throw new Error(`device rejected goto: ${(e as Error).message}`, { cause: e });
   }
 
-  const cur = device.getState();
   const timeoutMs = gotoArrivalBudgetMs(
-    { pan: Math.abs(devPan - cur.panDeg), tilt: Math.abs(devTilt - cur.tiltDeg) },
-    device.getAxisConfig(), cfg,
+    { pan: Math.abs(headPan - before.panDeg), tilt: Math.abs(headTilt - before.tiltDeg) },
+    axisCfg, cfg,
   );
 
-  const final = await device.waitForArrival(devPan, devTilt, timeoutMs, signal);
+  const final = await device.waitForArrival(headPan, headTilt, timeoutMs, signal);
   return {
     arrived: true,
     pan_deg: Number(applySign(final.panDeg, cfg.panSign).toFixed(3)),

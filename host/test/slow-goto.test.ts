@@ -37,9 +37,12 @@ afterEach(async () => {
 });
 
 // A head at the Pico's real speed (pan vmax 5 deg/s, amax 10) on a virtual clock.
-async function slowHead(onStep: () => void = () => {}): Promise<Config> {
+async function slowHead(
+  onStep: () => void = () => {}, panPatch: Record<string, number> = {},
+): Promise<Config> {
   head = new FakeHead();
   head.gotoAtVmax = true;
+  head.config.pan = { ...head.config.pan, ...panPatch };
   await head.start({ tickMs: 0 });
   const cfg = loadConfig(undefined, { TB3_HEAD_URL: head.url, TB3_MAX_SPEED_DPS: "30" });
   device = new Device(cfg, () => virtualMs);
@@ -127,5 +130,27 @@ describe("a long goto on a slow head (vmax 5 deg/s)", () => {
     }
     expect(virtualMs - t0).toBeGreaterThan(30_000);
     expect([...reasons]).not.toContain("goto_failed");
+  }, 15000);
+});
+
+// Field 2026-11-04: the IMU sweep's leg from (-177, 45) to (+177, 45) never
+// "arrived". The Pico's pan is periodic (CFG period 360, limits ±270): it
+// moved 6° to -183, the equivalent of +177 nearest its position, while the
+// host waited ~110 s for the counter to read +177 and then timed out.
+describe("a goto across the ±180 seam on a periodic pan", () => {
+  it("arrives at the Pico's own pick (-183) in seconds instead of timing out", async () => {
+    const cfg = await slowHead(() => {}, { min: -270, max: 270, period: 360 });
+    // From -150 (33° short of the seam, so the budget outlasts the wait
+    // loop's first real-time sleep on this 50x virtual clock): +177 is a
+    // 33° move to -183, where the old code would have waited ~100 s for the
+    // counter to read +177.
+    head.model.axes.pan = { ...head.model.axes.pan, pos: -150, tgt: -150 };
+    head.tick();
+    await sleep(20);
+    const t0 = virtualMs;
+    const moved = await moveToUserAngle(device, cfg, 177, 0);
+    expect(moved).toMatchObject({ arrived: true, pan_deg: -183 });
+    expect(head.lastGoto).toMatchObject({ pan: 177 }); // the request is still the user's angle
+    expect(virtualMs - t0).toBeLessThan(20_000);       // 33° at 5°/s, not 327°
   }, 15000);
 });
