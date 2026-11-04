@@ -566,7 +566,10 @@ export async function main(): Promise<MainHandle> {
   const headRefFile = join(cfg.stateDir, "head-ref.json");
   const headRefWatch = new HeadRefWatch(headRefFile, (why) => {
     store.markFrameUnverified(why);
-    console.error(`[reference] ${why}; calibration flagged unverified — re-sight and solve_calibration, or confirm_pan_frame if the head was not moved`);
+    console.error(
+      `[reference] ${why}; calibration flagged unverified. The safe path is to re-sight and solve_calibration ` +
+      "(and re-teach the pan limits); use confirm_pan_frame only if you are sure nothing renamed pan while the host was not watching.",
+    );
   });
   headRefWatch.load();
   wireReferenceShift(device, {

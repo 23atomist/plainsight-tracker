@@ -541,6 +541,68 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
     expect(mock!.lastGoto).not.toBeNull();
   });
 
+  // N1, gravity path: while the frame is unverified the solve fits the fresh
+  // sightings ONLY (the old-frame ones would contradict them) and, on
+  // success, prunes the old ones together with clearing the flag.
+  it("gravity path: a frame-verifying solve fits only the fresh sightings and prunes the old frame", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    const { rS } = solveImuMounting(samples, -1);
+    const anchor = anchorAtSweep(rS, 0);
+    const targets = [
+      { azDeg: 154, elDeg: 8, rangeM: 18000, label: "low_far" },
+      { azDeg: 41, elDeg: 54, rangeM: 6000, label: "high_near" },
+    ];
+    // Old frame: heading 12. After the re-reference the same sky reads as heading 47.
+    await sightAll(client, synthSightings(anchor, 12, 2.5, targets.map((t) => ({ ...t, label: `old_${t.label}` }))));
+    store.setImuMounting(rS, anchor);
+    store.markFrameUnverified("test");
+    for (const x of synthSightings(anchor, 47, 2.5, targets)) {
+      mock!.setPosition(x.panDeg, x.tiltDeg);
+      await new Promise((r) => setTimeout(r, 200));
+      await client.callTool({ name: "sight_landmark", arguments: { lat: x.lat, lon: x.lon, height_m: x.height, label: x.label } });
+    }
+
+    const { g, ready } = stubGravityAt(0);
+    await ready;
+    vi.spyOn(dev!, "getGravity").mockResolvedValue(normalize([g.ax, g.ay, g.az] as Vec3));
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    if (res.isError) throw new Error(`solve failed: ${textOf(res)}`);
+    const body = JSON.parse(textOf(res));
+    expect(body.rms_deg).toBeLessThan(0.5);             // the fresh pair alone: consistent
+    expect(body.note).toMatch(/frame verified.*2 older sighting\(s\).*removed/i);
+    expect(store.isFrameUnverified()).toBe(false);
+    expect(store.get().sightings.map((x) => x.label)).toEqual(["low_far", "high_near"]);
+    // The cached fit describes the pruned list, index for index.
+    expect(store.getLastFit()!.residualsDeg).toHaveLength(2);
+  });
+
+  // The preview the gate judges must be the fresh-only fit too: an old-frame
+  // sighting next to a single fresh one contradicts it, and gating on the
+  // mixed fit would refuse the very solve that verifies the frame.
+  it("gravity path: the residual gate judges the fresh-only fit, not the old frame mixed in", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    const { rS } = solveImuMounting(samples, -1);
+    const anchor = anchorAtSweep(rS, 0);
+    await sightAll(client, synthSightings(anchor, 12, 0, [{ azDeg: 41, elDeg: 30, rangeM: 6000, label: "old" }]));
+    store.setImuMounting(rS, anchor);
+    store.markFrameUnverified("test");
+    const [x] = synthSightings(anchor, 47, 0, [{ azDeg: 154, elDeg: 8, rangeM: 18000, label: "fresh" }]);
+    mock!.setPosition(x.panDeg, x.tiltDeg);
+    await new Promise((r) => setTimeout(r, 200));
+    await client.callTool({ name: "sight_landmark", arguments: { lat: x.lat, lon: x.lon, height_m: x.height, label: x.label } });
+
+    // Control: the two together really are inconsistent.
+    expect(store.previewFit()!.rmsDeg).toBeGreaterThan(5);
+
+    const { g, ready } = stubGravityAt(0);
+    await ready;
+    vi.spyOn(dev!, "getGravity").mockResolvedValue(normalize([g.ax, g.ay, g.az] as Vec3));
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    if (res.isError) throw new Error(`solve failed: ${textOf(res)}`);
+    expect(store.isFrameUnverified()).toBe(false);
+    expect(store.get().sightings.map((s) => s.label)).toEqual(["fresh"]);
+  });
+
   // The checked-in fixture, used as what it actually is: mutually
   // inconsistent data. The solve must refuse it and name the worst sighting
   // rather than absorb the contradiction into a camera offset.
@@ -890,37 +952,61 @@ describe("calibration frame verification (fix round E1)", () => {
     expect(store.isFrameUnverified()).toBe(true);
   });
 
-  it("solve_calibration clears the flag only once a sighting taken after it is in the solve", async () => {
+  // N1: the old-frame sightings must not survive a frame-verifying solve, or
+  // the next routine TRIAD solve (oldest pair) re-solves from them and puts
+  // the old-frame orientation back with automation enabled.
+  it("TRIAD: verifies from two fresh sightings, prunes the old frame, and a later routine solve keeps the new frame", async () => {
     const { client, store } = await harness();
+    const sight = async (pan: number, tilt: number, lat: number, lon: number, label: string) => {
+      mock!.setPosition(pan, tilt);
+      await new Promise((r) => setTimeout(r, 200));
+      await client.callTool({ name: "sight_landmark", arguments: { lat, lon, height_m: 100, label } });
+    };
     await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
-    mock!.setPosition(0, 2);
-    await new Promise((r) => setTimeout(r, 200));
-    await client.callTool({ name: "sight_landmark", arguments: { lat: 46, lon: 10, height_m: 100, label: "N" } });
+    // Old frame: pan read 30 deg more than it does after the re-reference.
+    await sight(30, 2, 46, 10, "N_old");
+    await sight(110, 1, 45, 11.4, "E_old");
+    await client.callTool({ name: "solve_calibration", arguments: {} });
+    const rOld = store.getOrientation()!;
     store.markFrameUnverified("test");
 
-    // Only the pre-flag sighting (+ the TRIAD fallback needs two): solve
-    // refuses for lack of sightings, flag stays.
-    await client.callTool({ name: "solve_calibration", arguments: {} });
-    expect(store.isFrameUnverified()).toBe(true);
-
-    mock!.setPosition(80, 1);
-    await new Promise((r) => setTimeout(r, 200));
-    await client.callTool({ name: "sight_landmark", arguments: { lat: 45, lon: 11.4, height_m: 100, label: "E" } });
-    // No IMU characterization -> TRIAD, which takes the two NEWEST sightings
-    // while the frame is unverified and needs BOTH to be fresh: N (old frame)
-    // + E is not enough.
+    // One fresh sighting is not enough for TRIAD: solved on the old pair, flag stays.
+    await sight(45, 1, 45.7, 10.99, "NE");
     let res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
     expect(res.isError).toBeFalsy();
     expect(store.isFrameUnverified()).toBe(true);
-    expect(textOf(res)).toMatch(/two newest sightings.*clear_sightings.*confirm_pan_frame/);
+    expect(textOf(res)).toMatch(/needs 2 sighting\(s\) taken since the pan re-reference and has 1/);
+    expect(store.get().sightings).toHaveLength(3);
 
-    mock!.setPosition(45, 1);
-    await new Promise((r) => setTimeout(r, 200));
-    await client.callTool({ name: "sight_landmark", arguments: { lat: 45.7, lon: 10.99, height_m: 100, label: "NE" } });
+    // Two fresh: verified from them, the old two pruned in the same write.
+    await sight(80, 1, 45, 11.4, "E");
     res = await client.callTool({ name: "solve_calibration", arguments: {} });
     expect(res.isError).toBeFalsy();
     expect(store.isFrameUnverified()).toBe(false);
-    expect(textOf(res)).toMatch(/frame verified/i);
+    expect(textOf(res)).toMatch(/frame verified.*2 older sighting\(s\).*removed/i);
+    expect(store.get().sightings.map((x) => x.label)).toEqual(["NE", "E"]);
+    const rNew = store.getOrientation()!;
+
+    // A routine solve after one more sighting takes the oldest pair -- now
+    // the fresh one -- so the new frame stands.
+    await sight(0, 2, 46, 10, "N");
+    res = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError).toBeFalsy();
+    const rAfter = store.getOrientation()!;
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) expect(rAfter[i][j]).toBeCloseTo(rNew[i][j], 9);
+    // ...and it is genuinely not the old-frame answer (pan was renamed by 30 deg).
+    expect(Math.abs(rNew[0][0] - rOld[0][0]) + Math.abs(rNew[0][1] - rOld[0][1])).toBeGreaterThan(0.1);
+  });
+
+  it("confirm_pan_frame keeps every sighting", async () => {
+    const { client, store } = await harness();
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    store.addSighting({ lat: 46, lon: 10, height: 100, panDeg: 0, tiltDeg: 2 });
+    store.markFrameUnverified("test");
+    store.addSighting({ lat: 45, lon: 11.4, height: 100, panDeg: 80, tiltDeg: 1 });
+    await client.callTool({ name: "confirm_pan_frame", arguments: {} });
+    expect(store.isFrameUnverified()).toBe(false);
+    expect(store.get().sightings).toHaveLength(2);
   });
 
   it("get_calibration reports frame_verified and the reason", async () => {

@@ -65,10 +65,13 @@ export interface ReferenceShiftDeps {
  * edges are recorded through applySign), so the delta crosses cfg.panSign.
  */
 export function applyPanReferenceChange(c: ReferenceChange, deps: ReferenceShiftDeps): number | null {
-  // Every rename names the frame in force afterwards; whatever happens below
-  // explains it, so the tick that follows must not read as a missed rename.
-  try { return applyChange(c, deps); }
-  finally { if (c.frameId !== null) deps.frames.acceptFrame(c.frameId); }
+  // Every rename names the frame in force afterwards; once handled it is
+  // explained, so the tick that follows must not read as a missed rename.
+  // Accepted only AFTER the shift or the flag has been persisted: if that
+  // write throws, the frame stays unknown and the tick watch flags it.
+  const applied = applyChange(c, deps);
+  if (c.frameId !== null) deps.frames.acceptFrame(c.frameId);
+  return applied;
 }
 
 function applyChange(c: ReferenceChange, { panSign, stores, frames, log }: ReferenceShiftDeps): number | null {
@@ -78,9 +81,12 @@ function applyChange(c: ReferenceChange, { panSign, stores, frames, log }: Refer
     return null;
   }
   const known = frames.knownFrameId();
-  if (c.reason === "restored" && c.frameId !== null && c.frameId === known) {
+  // A restore with no frame on record at all (first run of this host
+  // against a head with frame ids) is adopt-only, exactly as the tick watch
+  // treats its first id: there is nothing to compare it with.
+  if (c.reason === "restored" && c.frameId !== null && (known === null || c.frameId === known)) {
     log(`[reference] pan restored by ${c.source} from the head's persisted position (pan ${c.pan}, frame ${c.frameId}); ` +
-      "the calibration's own frame, nothing to shift");
+      (known === null ? "no frame on record yet, adopted" : "the calibration's own frame, nothing to shift"));
     return null;
   }
   if (c.previous === null) {

@@ -181,9 +181,17 @@ export class CalibrationStore {
   // c_head paired with a NEW R, decoupled from each other. setGravityCalibration
   // is the with-cHead setter and sets its own. Also clears orientationProvisional:
   // a real 2-sighting TRIAD solve always supersedes a set_north_zero seed.
-  setOrientation(R: Mat3, solvedAtIso: string): void {
+  //
+  // `verifyFrame`: this solve came only from fresh sightings (see
+  // freshSightings), so it also verifies the pan frame -- prune and clear in
+  // the SAME write as the new orientation (verifiedFrameProfile).
+  setOrientation(R: Mat3, solvedAtIso: string, opts: { verifyFrame?: boolean } = {}): void {
     const flat = [R[0][0], R[0][1], R[0][2], R[1][0], R[1][1], R[1][2], R[2][0], R[2][1], R[2][2]];
-    this.profile = { ...this.profile, orientation: flat, solvedAt: solvedAtIso, cHead: undefined, orientationProvisional: undefined };
+    const base = opts.verifyFrame ? this.verifiedFrameProfile() : this.profile;
+    // A cached fit indexes the OLD sighting list; after a prune it would
+    // mislabel residuals, so it goes (a TRIAD solve has none of its own).
+    if (opts.verifyFrame) this.lastFit = null;
+    this.profile = { ...base, orientation: flat, solvedAt: solvedAtIso, cHead: undefined, orientationProvisional: undefined };
     this.save();
   }
 
@@ -246,10 +254,12 @@ export class CalibrationStore {
     };
   }
 
-  setBaseDown(v: Vec3): void {
-    this.profile = { ...this.profile, baseDown: [v[0], v[1], v[2]] };
-    this.save();
-    this.resolve();
+  // `verifyFrame`: as setOrientation's. One write either way: resolve()
+  // persists the whole profile with its fit; only a no-fit outcome saves here.
+  setBaseDown(v: Vec3, opts: { verifyFrame?: boolean } = {}): void {
+    const base = opts.verifyFrame ? this.verifiedFrameProfile() : this.profile;
+    this.profile = { ...base, baseDown: [v[0], v[1], v[2]] };
+    if (!this.resolve()) this.save();
   }
 
   /** baseDown if solve_calibration has verified one, else characterize_imu's. */
@@ -285,12 +295,15 @@ export class CalibrationStore {
    * `anchorOverride` is the freshly measured d_base a caller is considering
    * adopting; omitted, the stored anchor is used.
    */
-  previewFit(anchorOverride?: Vec3): CalibrationFit | null {
+  previewFit(anchorOverride?: Vec3, only?: readonly Sighting[]): CalibrationFit | null {
     const rig = this.profile.rig;
     const anchor = anchorOverride ?? this.gravityAnchor();
-    if (!rig || anchor === null || this.profile.sightings.length === 0) return null;
+    // `only`: fit a subset (solve_calibration previews the fresh sightings
+    // alone before a frame-verifying commit). Defaults to all of them.
+    const sightings = only ?? this.profile.sightings;
+    if (!rig || anchor === null || sightings.length === 0) return null;
 
-    const fitInput: FitSighting[] = this.profile.sightings.map((s) => ({
+    const fitInput: FitSighting[] = sightings.map((s) => ({
       panDeg: s.panDeg,
       tiltDeg: s.tiltDeg,
       enuUnit: enuDirection(rig, { lat: s.lat, lon: s.lon, height: s.height }).unit,
@@ -357,25 +370,25 @@ export class CalibrationStore {
   }
 
   /**
-   * After a successful solve: clears the flag iff the solve used at least one
-   * sighting taken since the flag was (last) set -- that sighting was aimed in
-   * the CURRENT frame, so the solve is anchored to it. Ids, not timestamps:
-   * exact, and immune to clock steps. Returns whether it cleared.
+   * The sightings taken since the flag was (last) set -- aimed in the CURRENT
+   * frame. Ids, not timestamps: exact, and immune to clock steps. Empty while
+   * the frame is verified.
    */
-  //
-  // `requireAll`: every used sighting must be post-flag. The TRIAD fallback
-  // passes it -- two sightings ARE its whole orientation, so one from the old
-  // frame corrupts it outright, where the N-sighting fit can at least show
-  // the disagreement in its residual.
-  clearFrameUnverifiedIfResighted(used: readonly Sighting[], requireAll = false): boolean {
+  freshSightings(): Sighting[] {
     const f = this.profile.frameUnverified;
-    if (!f) return false;
+    if (!f) return [];
     const prior = new Set(f.priorSightingIds);
-    const fresh = (s: Sighting): boolean => s.id !== undefined && !prior.has(s.id);
-    if (used.length === 0 || !(requireAll ? used.every(fresh) : used.some(fresh))) return false;
-    this.profile = { ...this.profile, frameUnverified: undefined };
-    this.save();
-    return true;
+    return this.profile.sightings.filter((s) => s.id !== undefined && !prior.has(s.id)).map((s) => ({ ...s }));
+  }
+
+  // The profile a frame-verifying solve commits: the flag cleared AND the
+  // pre-flag sightings dropped, together. Those sightings belong to a frame
+  // that no longer exists; kept, the very next routine solve (TRIAD takes the
+  // oldest pair) would re-solve from them and overwrite the verified
+  // orientation with the old-frame answer, automation enabled. An operator
+  // whose frame did NOT change uses confirm_pan_frame, which keeps them all.
+  private verifiedFrameProfile(): CalibrationProfile {
+    return { ...this.profile, sightings: this.freshSightings(), frameUnverified: undefined };
   }
 
   /**

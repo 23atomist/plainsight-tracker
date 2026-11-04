@@ -71,6 +71,8 @@ describe("head API contract", () => {
       // A rename must name its frame.
       ["event", { type: "event", t: 1, name: "pan_reference", axis: null, detail: { source: "imu", pan: 1, previous: null } }],
       ["tick", { ...tick, ref: { pan: "imu", persisted: true, ageS: 1 } }],
+      // ref is strict: the old host-side timestamp identity is not a head field.
+      ["tick", { ...tick, ref: { ...(tick.ref as object), setAtMs: 1 } }],
       ["event", { type: "event", t: 1, name: "pan_reference", axis: null, detail: { source: "none", reason: "bored" } }],
       ["event", { type: "event", t: 1, name: "config", axis: null, detail: { scope: "pan", key: "vmax", value: 1, x: 1 } }],
       ["event", { type: "event", t: 1, name: "made_up", axis: null, detail: null }],

@@ -67,7 +67,8 @@ export class HeadRefWatch implements PanFrameMemory {
     if (id === this.known) return;
     this.onMismatch(
       `the head's pan frame changed from ${this.known} to ${id} with no pan_reference event the host saw ` +
-      `(the telemetry link was down, the host was not running, or the head minted a new frame)`,
+      `(the telemetry link was down, the host was not running, or the head minted a new frame). ` +
+      "A missed rename can leave the calibration AND the taught pan limits off by an unknown delta",
     );
     this.acceptFrame(id);
   }

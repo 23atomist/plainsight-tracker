@@ -272,6 +272,24 @@ describe("applyPanReferenceChange", () => {
     expect(cal.frameUnverifiedReason()).toMatch(/not the calibration's frame/);
   });
 
+  // N2: no frame on record (this host's first run against a frame-id head)
+  // -- a restore is adopted, as the tick watch adopts its first id.
+  it("a restore with no frame on record is adopt-only", () => {
+    const { cal, m, deps } = setup(1, null);
+    applyPanReferenceChange({ source: "imu", pan: 12, previous: null, reason: "restored", frameId: B }, deps);
+    expect(cal.isFrameUnverified()).toBe(false);
+    expect(m.known).toBe(B);
+  });
+
+  // N4: if flagging fails to persist, the frame must NOT be adopted -- the
+  // tick watch then still sees an unexplained frame and flags it.
+  it("does not accept the new frame when persisting the flag throws", () => {
+    const { cal, m, deps } = setup(1, A);
+    cal.markFrameUnverified = () => { throw new Error("disk full"); };
+    expect(() => applyPanReferenceChange({ source: "host", pan: 12, previous: null, frameId: B }, deps)).toThrow(/disk full/);
+    expect(m.known).toBe(A);
+  });
+
   it("a drop (source none) does not flag it -- the unreferenced gate owns that state", () => {
     const { cal, deps } = setup(1);
     applyPanReferenceChange({ source: "none", pan: null, previous: null, reason: "pan unhomed", frameId: null }, deps);

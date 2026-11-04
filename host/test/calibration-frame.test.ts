@@ -41,41 +41,54 @@ describe("CalibrationStore frame-unverified flag", () => {
     expect(back.frameUnverifiedReason()).toMatch(/no previous frame/);
   });
 
-  it("a solve over only pre-flag sightings does not clear it", () => {
+  it("freshSightings is empty while verified, and lists only sightings taken since the flag", () => {
     const s = solvedStore(join(tmpDir(), "cal.json"));
+    expect(s.freshSightings()).toEqual([]);
     s.markFrameUnverified("x");
-    expect(s.clearFrameUnverifiedIfResighted(s.get().sightings)).toBe(false);
-    expect(s.isFrameUnverified()).toBe(true);
+    expect(s.freshSightings()).toEqual([]);
+    s.addSighting({ lat: 33.3, lon: -112.0, height: 5000, panDeg: 120, tiltDeg: 12, label: "new" });
+    expect(s.freshSightings().map((x) => x.label)).toEqual(["new"]);
   });
 
-  it("a solve that uses a sighting taken after the flag clears it", () => {
-    const s = solvedStore(join(tmpDir(), "cal.json"));
-    s.markFrameUnverified("x");
-    s.addSighting({ lat: 33.3, lon: -112.0, height: 5000, panDeg: 120, tiltDeg: 12 });
-    expect(s.clearFrameUnverifiedIfResighted(s.get().sightings)).toBe(true);
-    expect(s.isFrameUnverified()).toBe(false);
-  });
-
-  it("only sightings the solve actually used count", () => {
-    const s = solvedStore(join(tmpDir(), "cal.json"));
-    s.markFrameUnverified("x");
-    s.addSighting({ lat: 33.3, lon: -112.0, height: 5000, panDeg: 120, tiltDeg: 12 });
-    expect(s.clearFrameUnverifiedIfResighted(s.get().sightings.slice(0, 1))).toBe(false);
-    expect(s.isFrameUnverified()).toBe(true);
-  });
-
-  it("a second unverified reference re-arms it: sightings from between the two no longer count", () => {
+  it("a second unverified reference re-arms it: sightings from between the two are no longer fresh", () => {
     const s = solvedStore(join(tmpDir(), "cal.json"));
     s.markFrameUnverified("first");
     s.addSighting({ lat: 33.3, lon: -112.0, height: 5000, panDeg: 120, tiltDeg: 12 });
     s.markFrameUnverified("second");
-    expect(s.clearFrameUnverifiedIfResighted(s.get().sightings)).toBe(false);
+    expect(s.freshSightings()).toEqual([]);
   });
 
-  it("confirmFrame clears it (the operator says the head did not move)", () => {
+  // N1: the commit that verifies the frame drops the old-frame sightings in
+  // the SAME write, so nothing can later re-solve from them.
+  it("a frame-verifying setOrientation prunes the pre-flag sightings and clears the flag in one persisted write", () => {
+    const f = join(tmpDir(), "cal.json");
+    const s = solvedStore(f);
+    s.markFrameUnverified("x");
+    s.addSighting({ lat: 33.3, lon: -112.0, height: 5000, panDeg: 120, tiltDeg: 12, label: "a" });
+    s.addSighting({ lat: 33.6, lon: -112.3, height: 5000, panDeg: -60, tiltDeg: 15, label: "b" });
+    s.setOrientation([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], new Date(0).toISOString(), { verifyFrame: true });
+    const back = new CalibrationStore(f, 1);
+    back.load();
+    expect(back.isFrameUnverified()).toBe(false);
+    expect(back.get().sightings.map((x) => x.label)).toEqual(["a", "b"]);
+    expect(back.getOrientation()).toEqual([[0, 1, 0], [-1, 0, 0], [0, 0, 1]]);
+  });
+
+  it("a plain setOrientation leaves the flag and every sighting alone", () => {
     const s = solvedStore(join(tmpDir(), "cal.json"));
     s.markFrameUnverified("x");
+    s.addSighting({ lat: 33.3, lon: -112.0, height: 5000, panDeg: 120, tiltDeg: 12 });
+    s.setOrientation([[1, 0, 0], [0, 1, 0], [0, 0, 1]], new Date(0).toISOString());
+    expect(s.isFrameUnverified()).toBe(true);
+    expect(s.get().sightings).toHaveLength(2);
+  });
+
+  it("confirmFrame clears it and keeps every sighting (the operator says the head did not move)", () => {
+    const s = solvedStore(join(tmpDir(), "cal.json"));
+    s.markFrameUnverified("x");
+    s.addSighting({ lat: 33.3, lon: -112.0, height: 5000, panDeg: 120, tiltDeg: 12 });
     expect(s.confirmFrame()).toBe(true);
+    expect(s.get().sightings).toHaveLength(2);
     expect(s.isFrameUnverified()).toBe(false);
     expect(s.confirmFrame()).toBe(false);
   });
@@ -219,6 +232,7 @@ describe("missed-rename detection against FakeHead", () => {
     await reconnect(() => { head!.model.ref = { pan: "imu", persisted: true, ageS: 1, frameId: FakeHead.newFrameId() }; });
     expect(store.isFrameUnverified()).toBe(true);
     expect(why.join("\n")).toMatch(/no pan_reference event the host saw/);
+    expect(why.join("\n")).toMatch(/calibration AND the taught pan limits/);
   });
 
   it("the same frame across a reconnect flags nothing, even with a much younger ageS (a head restart)", async () => {

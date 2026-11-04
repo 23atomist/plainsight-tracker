@@ -101,22 +101,19 @@ export function registerGeoTools(
   // teach_limit/clear_taught_limits between two point_at calls must take
   // effect on the very next one.
   const effLimits = (): CeilingLimits => effectiveLimits(cfgCeiling, limitsStore.get());
-  // After a successful solve: the calibration-frame flag clears only if the
-  // solve used a sighting aimed in the CURRENT frame (taken since the flag).
-  const verifyFrameNote = (used: readonly Sighting[], triad = false): string => {
-    if (!store.isFrameUnverified()) return "";
-    if (store.clearFrameUnverifiedIfResighted(used, triad)) {
-      return triad
-        ? " Pan frame verified: both sightings in this solve were taken since the pan re-reference; automated motion is allowed again."
-        : " Pan frame verified: this solve includes a sighting taken since the pan re-reference; automated motion is allowed again.";
-    }
-    return triad
-      // TRIAD (no IMU characterization) solves from exactly two sightings --
-      // while the frame is unverified, the two NEWEST -- and both must be
-      // from the current frame, or the orientation mixes two frames.
-      ? " Pan frame STILL UNVERIFIED: without an IMU characterization the solve uses the two newest sightings, and both must be taken since the pan re-reference. Take another sighting (or clear_sightings and re-sight two) and solve again, or confirm_pan_frame if the head was not moved."
-      : " Pan frame STILL UNVERIFIED: every sighting in this solve predates the pan re-reference, so it is still in the old frame. Take a new sighting and solve again, or confirm_pan_frame if the head was not moved.";
-  };
+  // While the pan frame is unverified, solve_calibration solves from the
+  // sightings taken since the re-reference ONLY (CalibrationStore.
+  // freshSightings) and, on success, commits the frame as verified with the
+  // older sightings pruned in the same write -- they belong to a frame that no
+  // longer exists. Too few fresh sightings: the solve runs as before, on the
+  // old frame, and the flag stays.
+  const frameVerifiedNote = (fresh: number, pruned: number): string =>
+    ` Pan frame verified: solved from the ${fresh} sighting(s) taken since the pan re-reference; ` +
+    `the ${pruned} older sighting(s), from the previous frame, were removed. Automated motion is allowed again.`;
+  const frameStillUnverifiedNote = (needed: number, fresh: number): string =>
+    ` Pan frame STILL UNVERIFIED: this solve needs ${needed} sighting(s) taken since the pan re-reference ` +
+    `and has ${fresh}, so it is still in the old frame. Take ${needed - fresh} more and solve again ` +
+    "(the old-frame sightings are then dropped). Use confirm_pan_frame only if you are sure pan was not renamed — it keeps every sighting.";
 
   server.registerTool(
     "confirm_pan_frame",
@@ -451,7 +448,10 @@ export function registerGeoTools(
         // mis-aimed sighting re-anchor the rig on bad data. The bound is the
         // fit module's own residual rule (residualRmsBoundDeg), not a second
         // copy of it, so the two cannot drift apart.
-        const candidate = store.previewFit(dBase);
+        const fresh = store.freshSightings();   // [] while the frame is verified
+        const verifying = fresh.length > 0;
+        const solveSet = verifying ? fresh : p.sightings;
+        const candidate = store.previewFit(dBase, verifying ? fresh : undefined);
         if (!candidate) return errText("solve failed: no usable sightings for the fit");
         // A heading-only fit holds the camera offset at forward, so a REAL
         // boresight offset it could not identify lands entirely in its
@@ -471,7 +471,7 @@ export function registerGeoTools(
           // is not actionable, but "drop this one" is.
           let worst = 0;
           candidate.residualsDeg.forEach((r, i) => { if (r > candidate.residualsDeg[worst]) worst = i; });
-          const bad = p.sightings[worst];
+          const bad = solveSet[worst];
           const leanNote = candidate.baseLeanDeg > 1.5
             ? ` The tripod base is ${candidate.baseLeanDeg.toFixed(1)}° off level, which is the most likely cause — level it and re-solve BEFORE re-sighting (the existing sightings stay valid).`
             : "";
@@ -489,10 +489,12 @@ export function registerGeoTools(
         // sighting list. setBaseDown calls resolve() itself, so this is the
         // same code path load()/addSighting() use — there is exactly one
         // place a calibration is produced.
-        store.setBaseDown(dBase);
+        store.setBaseDown(dBase, { verifyFrame: verifying });
         const fit = store.getLastFit();
         if (!fit) return errText("solve failed: no usable sightings for the fit");
-        const frameNote = verifyFrameNote(store.get().sightings.filter((_, i) => !fit.rejected[i]));
+        const frameNote = verifying
+          ? frameVerifiedNote(fresh.length, p.sightings.length - fresh.length)
+          : store.isFrameUnverified() ? frameStillUnverifiedNote(1, 0) : "";
 
         const imuNote = imuDisagreeDeg > 2
           ? ` WARNING: the live gravity read disagrees with the stored IMU characterization by ${imuDisagreeDeg.toFixed(1)}° — that should be ~0° regardless of posture, so R_s is stale (the IMU moved, or characterize_imu was run on a different setup). Re-run characterize_imu.`
@@ -524,11 +526,12 @@ export function registerGeoTools(
       if (p.sightings.length < 2) {
         return errText(`need two sightings to solve without an IMU characterization; have ${p.sightings.length} (run characterize_imu to solve from one)`);
       }
-      // Normally the two oldest (the legacy pair). While the pan frame is
-      // unverified, the two NEWEST: only sightings taken since the
-      // re-reference can be in the current frame, and the oldest two never
-      // are -- solving from them could never verify anything.
-      const [sa, sb] = store.isFrameUnverified() ? p.sightings.slice(-2) : p.sightings;
+      // The oldest pair -- of the fresh sightings when there are two of them
+      // (the frame-verifying solve; the old ones are pruned on commit, so the
+      // next routine solve takes this same pair), else of all of them.
+      const fresh = store.freshSightings();   // [] while the frame is verified
+      const verifying = fresh.length >= 2;
+      const [sa, sb] = verifying ? fresh : p.sightings;
       const landmarkA: Geodetic = { lat: sa.lat, lon: sa.lon, height: sa.height };
       const landmarkB: Geodetic = { lat: sb.lat, lon: sb.lon, height: sb.height };
       const enuA = enuDirection(rig, landmarkA).unit;
@@ -549,8 +552,10 @@ export function registerGeoTools(
         );
       }
       const R = solveOrientation(mountA, enuA, mountB, enuB);
-      store.setOrientation(R, new Date().toISOString());
-      const frameNote = verifyFrameNote([sa, sb], true);
+      store.setOrientation(R, new Date().toISOString(), { verifyFrame: verifying });
+      const frameNote = verifying
+        ? frameVerifiedNote(fresh.length, p.sightings.length - fresh.length)
+        : store.isFrameUnverified() ? frameStillUnverifiedNote(2, fresh.length) : "";
 
       // Heading = ENU azimuth the boresight points at pan=0,tilt=0, i.e. the
       // direction of the mount-forward (+Y) axis = second column of R.
