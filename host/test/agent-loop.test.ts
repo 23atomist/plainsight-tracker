@@ -15,6 +15,7 @@ function brief(hex: string): AircraftBrief {
 function client(over: Partial<RigMcpClient> = {}): { c: RigMcpClient; calls: string[] } {
   const calls: string[] = [];
   const c: RigMcpClient = {
+    getAgentArmed: async () => true,
     scanAircraft: async () => [brief("aaa"), brief("bbb")],
     getTracked: async () => ({ hex: null }),
     getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: true, calibrationVerified: true }),
@@ -30,6 +31,33 @@ function deps(c: RigMcpClient, choose: (i: ChooseInput) => Promise<Decision>, no
 }
 
 describe("runOnce", () => {
+  // Spec 6.4: the agent process always runs; disarmed it does nothing at all
+  // -- no scan, no model call, no stop of an operator's hand-started pass, no
+  // idle park.
+  it("keeps with reason disarmed without scanning, asking the LLM, or moving when disarmed", async () => {
+    const scan = vi.fn(async () => [brief("aaa")]);
+    const { c, calls } = client({
+      getAgentArmed: async () => false,
+      scanAircraft: scan,
+      getTracked: async () => ({ hex: "aaa" }),
+    });
+    const choose = vi.fn(async () => ({ action: "stop" as const, reason: "" }));
+    const out = await runOnce(deps(c, choose), { lastSwitchMs: 7 });
+    expect(choose).not.toHaveBeenCalled();
+    expect(scan).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    expect(out.action).toEqual({ kind: "keep", reason: "disarmed" });
+    expect(out.state.lastSwitchMs).toBe(7);
+  });
+
+  it("a failing armed-flag read throws (the tick errors) rather than acting", async () => {
+    const { c, calls } = client({ getAgentArmed: async () => { throw new Error("mcp down"); } });
+    const choose = vi.fn(async () => ({ action: "track" as const, hex: "aaa", reason: "" }));
+    await expect(runOnce(deps(c, choose), { lastSwitchMs: 0 })).rejects.toThrow(/mcp down/);
+    expect(choose).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
   // Spec 6.8 rule 2: with pan's origin unknown the daemon refuses all
   // automated motion; the agent must not even ask the model, let alone track,
   // stop or idle-park.

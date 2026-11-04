@@ -6,7 +6,7 @@ import { runOnce, type LoopState } from "./loop.js";
 
 // URL and model only -- the API key must never reach a log line.
 export function startupLine(cfg: Pick<Config, "agentMcpUrl" | "llmUrl" | "llmModel">): string {
-  return `[tb3-agent] connected to ${cfg.agentMcpUrl}; LLM ${cfg.llmUrl} (${cfg.llmModel})`;
+  return `[agent] connected to ${cfg.agentMcpUrl}; LLM ${cfg.llmUrl} (${cfg.llmModel})`;
 }
 
 export async function main(): Promise<void> {
@@ -27,11 +27,11 @@ export async function main(): Promise<void> {
       cfg: { maxRangeKm: cfg.adsbMaxRangeKm, minDwellMs: cfg.agentMinDwellSec * 1000 },
       now: Date.now,
     }, state)
-      .then((r) => { state = r.state; if (r.action.kind !== "keep") console.log(`[tb3-agent] ${JSON.stringify(r.action)}`); })
-      .catch((e: unknown) => console.error("[tb3-agent] tick error:", e))
+      .then((r) => { state = r.state; if (r.action.kind !== "keep") console.log(`[agent] ${JSON.stringify(r.action)}`); })
+      .catch((e: unknown) => console.error("[agent] tick error:", e))
       .finally(() => { running = false; });
   });
-  console.log(`[tb3-agent] deciding every ${cfg.agentTickSec}s (min-dwell ${cfg.agentMinDwellSec}s)`);
+  console.log(`[agent] deciding every ${cfg.agentTickSec}s (min-dwell ${cfg.agentMinDwellSec}s)`);
 }
 
 const isEntry = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;

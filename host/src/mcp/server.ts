@@ -23,6 +23,7 @@ import { AdsbFollower } from "../shared/adsb/follower.js";
 import { registerAdsbTools } from "./adsb-tools.js";
 import { SectorStore } from "../shared/sector-store.js";
 import { FloorStore } from "../shared/floor-store.js";
+import { AgentStore } from "../shared/agent-store.js";
 import { registerFloorTools } from "./floor-tools.js";
 import { registerSectorTools } from "./sector-tools.js";
 import { AimTrimStore } from "../shared/aim-trim-store.js";
@@ -413,7 +414,7 @@ export function buildApp(
   sectorStore: SectorStore, capture: CaptureController, limitsStore: LimitsStore,
   frames: FrameSource, detector: SizeGuardedDetector, visionRuntime: VisionRuntime,
   visionScaleStore: VisionScaleStore, journal: PassJournal, aimTrimStore: AimTrimStore,
-  rangeStore: RangeStore, floorStore: FloorStore, policyStore: PolicyStore,
+  rangeStore: RangeStore, floorStore: FloorStore, policyStore: PolicyStore, agentStore: AgentStore,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -444,7 +445,7 @@ export function buildApp(
         });
         transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
         const server = new McpServer({ name: "tb3-mcp", version: "0.1.0" });
-        registerTools(server, device, cfg, session, supervisor, store, capture, limitsStore, journal);
+        registerTools(server, device, cfg, session, supervisor, store, capture, limitsStore, journal, agentStore);
         registerGeoTools(server, device, cfg, store, session, supervisor, source, limitsStore);
         registerImuTools(server, device, cfg, store, supervisor, session, limitsStore);
         registerTrackTools(server, session, supervisor, aimTrimStore);
@@ -543,6 +544,11 @@ export async function main(): Promise<MainHandle> {
   const policyStore = new PolicyStore(policyFile);
   policyStore.load();
   console.error(`agent target policy file: ${policyFile} (${policyStore.get().rules.filter((r) => r.enabled).length} enabled rules)`);
+  // Spec 6.4: the agent's armed flag (default and fallback: disarmed).
+  const agentFile = join(cfg.stateDir, "agent.json");
+  const agentStore = new AgentStore(agentFile);
+  agentStore.load();
+  console.error(`agent armed file: ${agentFile} (armed: ${agentStore.get().armed})`);
   const session = new TrackingSession(
     device, cfg, store, Date.now, realScheduler, () => sectorStore.get(), () => limitsStore.get(),
     () => aimTrimStore.get(), () => floorStore.get(), () => device.getAxisConfig(),
@@ -857,10 +863,10 @@ export async function main(): Promise<MainHandle> {
   const app = buildApp(
     device, cfg, store, session, supervisor, source, follower, sectorStore, capture, limitsStore,
     frames, detector, visionRuntime, visionScaleStore, journal, aimTrimStore, rangeStore, floorStore,
-    policyStore,
+    policyStore, agentStore,
   );
   const httpServer = app.listen(cfg.mcpPort, () => {
-    console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → device ${cfg.deviceHost}` +
+    console.log(`[tb3-mcp] MCP streamable HTTP on :${cfg.mcpPort}/mcp → head ${cfg.headUrl}` +
       (cfg.mcpToken ? " (token required)" : ""));
     console.log(`[tb3-mcp] limits pan[${cfg.panMin},${cfg.panMax}] tilt[${cfg.tiltMin},${cfg.tiltMax}] maxSpeed ${cfg.maxSpeedDps}°/s`);
   });

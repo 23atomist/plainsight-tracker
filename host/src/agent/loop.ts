@@ -21,6 +21,9 @@ export interface RigStatus {
 }
 
 export interface RigMcpClient {
+  // The operator's armed flag (get_agent_armed, spec 6.4). The agent process
+  // always runs; while this is false it does nothing at all.
+  getAgentArmed(): Promise<boolean>;
   scanAircraft(p: { maxRangeKm: number; onlyTrackable: boolean; onlyEligible: boolean; limit: number }): Promise<AircraftBrief[]>;
   getTracked(): Promise<{ hex: string | null }>;
   // panReferenced: false while the head reports pan's origin unknown (spec
@@ -65,6 +68,14 @@ export interface LoopDeps {
 }
 
 export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ action: Action; state: LoopState }> {
+  // Spec 6.4: disarmed means do nothing -- no scan, no model call, no stop,
+  // no idle park. Checked first so a disarmed agent costs one cheap MCP call
+  // per tick. A pass the operator started by hand is theirs; the agent must
+  // not end it just because it is disarmed.
+  if (!(await deps.client.getAgentArmed())) {
+    return { action: { kind: "keep", reason: "disarmed" }, state };
+  }
+
   // The policy gate still runs BEFORE the model sees anything -- it now runs in
   // the daemon (only_eligible), so the dashboard and the agent share one
   // implementation instead of two that can drift.
@@ -123,7 +134,7 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
     // -- surface every refusal except the normal steady-state no-op
     // ("already_parked", expected on every idle tick once actually parked).
     if (!park.parked && park.reason !== "already_parked") {
-      console.error(`[tb3-agent] idle park did not happen: ${park.reason}`);
+      console.error(`[agent] idle park did not happen: ${park.reason}`);
     }
   }
 

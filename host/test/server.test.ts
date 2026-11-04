@@ -17,6 +17,7 @@ import { AimTrimStore } from "../src/shared/aim-trim-store.js";
 import { RangeStore } from "../src/shared/range-store.js";
 import { LimitsStore } from "../src/shared/limits-store.js";
 import { PolicyStore } from "../src/shared/policy-store.js";
+import { AgentStore } from "../src/shared/agent-store.js";
 import { CaptureController, type CaptureDeps } from "../src/shared/capture/controller.js";
 import { PassJournal } from "../src/shared/capture/pass-journal.js";
 import { FrameSource } from "../src/shared/vision/frame-source.js";
@@ -103,6 +104,7 @@ describe("server", () => {
       dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
       fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(), fakeJournal(),
       aimTrimStore, rangeStore, floorStore, policyStore,
+      new AgentStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "agent.json")),
     );
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 
@@ -111,7 +113,7 @@ describe("server", () => {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(60); // 11 base (get_status, goto_angle, jog, stop, home, set_position, reference_pan, estop, clear_estop, get/set_head_config; the retired ESP32 tools are gone) + 11 geo (+sight_aircraft, +remove_sighting, +clear_sightings, +confirm_pan_frame) + 2 imu (+set_north_zero) + 11 tracking (+nudge/get/clear_aim_offset, +set/get/clear_aim_trim, +park_idle) + 2 sun + 5 adsb (scan/track/get_tracked + get/set_policy) + 2 sector + 2 range (get/set_track_range) + 5 capture + 1 list_passes + 3 limits (teach/get/clear) + 3 vision (get_vision_status/set_vision_enabled/calibrate_vision_scale) + 2 floor (get/set_min_track_elevation)
+    expect(tools.length).toBe(62); // 13 base (get_status, goto_angle, jog, stop, home, set_position, reference_pan, estop, clear_estop, get/set_head_config, get/set_agent_armed; the retired ESP32 tools are gone) + 11 geo (+sight_aircraft, +remove_sighting, +clear_sightings, +confirm_pan_frame) + 2 imu (+set_north_zero) + 11 tracking (+nudge/get/clear_aim_offset, +set/get/clear_aim_trim, +park_idle) + 2 sun + 5 adsb (scan/track/get_tracked + get/set_policy) + 2 sector + 2 range (get/set_track_range) + 5 capture + 1 list_passes + 3 limits (teach/get/clear) + 3 vision (get_vision_status/set_vision_enabled/calibrate_vision_scale) + 2 floor (get/set_min_track_elevation)
 
     const res: any = await client.callTool({ name: "get_status", arguments: {} });
     expect(res.content[0].text).toMatch(/"pan_deg":\s*45/);
@@ -152,6 +154,7 @@ describe("server", () => {
       dev, cfg, store, session, supervisor, source, follower, sectorStore, fakeCapture(), limitsStore,
       fakeFrames(), fakeDetector(), fakeVisionRuntime(cfg), fakeVisionScaleStore(), fakeJournal(),
       aimTrimStore, rangeStore, floorStore, policyStore,
+      new AgentStore(join(mkdtempSync(join(tmpdir(), "tb3srv-")), "agent.json")),
     );
     await new Promise<void>((r) => { httpServer = app.listen(MCP_PORT, r); });
 

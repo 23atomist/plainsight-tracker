@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resultText, parseTrackingStatus } from "../src/agent/mcp-client.js";
+import { resultText, parseTrackingStatus, parseAgentArmed } from "../src/agent/mcp-client.js";
 
 describe("resultText", () => {
   it("returns the text of a success result", () => {
@@ -40,5 +40,18 @@ describe("parseTrackingStatus", () => {
   it("rejects a status without pan_referenced or calibration_verified", () => {
     expect(() => parseTrackingStatus(JSON.stringify({ ...body, calibration_verified: true }))).toThrow();
     expect(() => parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: true }))).toThrow();
+  });
+});
+
+describe("parseAgentArmed", () => {
+  it("reads the armed flag", () => {
+    expect(parseAgentArmed(JSON.stringify({ armed: true }))).toBe(true);
+    expect(parseAgentArmed(JSON.stringify({ armed: false }))).toBe(false);
+  });
+
+  // Fail closed: an answer that does not say "armed" must never be read as armed.
+  it("rejects a body without a boolean armed", () => {
+    expect(() => parseAgentArmed(JSON.stringify({}))).toThrow();
+    expect(() => parseAgentArmed(JSON.stringify({ armed: "true" }))).toThrow();
   });
 });

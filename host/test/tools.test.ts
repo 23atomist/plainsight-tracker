@@ -16,6 +16,7 @@ import { TrackingSession } from "../src/shared/track/session.js";
 import { SunSupervisor } from "../src/shared/track/supervisor.js";
 import { CaptureController, type CaptureDeps } from "../src/shared/capture/controller.js";
 import { PassJournal } from "../src/shared/capture/pass-journal.js";
+import { AgentStore } from "../src/shared/agent-store.js";
 
 let mock: FakeHead | null = null;
 let dev: Device | null = null;
@@ -43,13 +44,15 @@ async function harness(env: Record<string, string> = {}) {
   };
   const capture = new CaptureController(captureDeps, { debounceMs: 5000, autoEnabled: true });
   const journal = new PassJournal(join(dir, "passes.jsonl"));
+  const agentStore = new AgentStore(join(dir, "agent.json"));
+  agentStore.load();
   const server = new McpServer({ name: "tb3-mcp", version: "test" });
-  registerTools(server, dev, cfg, session, supervisor, store, capture, limitsStore, journal);
+  registerTools(server, dev, cfg, session, supervisor, store, capture, limitsStore, journal, agentStore);
   registerLimitsTools(server, dev, cfg, limitsStore);
   const client = new Client({ name: "test-client", version: "1.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);
-  return { client, session, store, supervisor, capture, limitsStore, journal, cfg };
+  return { client, session, store, supervisor, capture, limitsStore, journal, cfg, agentStore };
 }
 
 afterEach(async () => {
@@ -82,14 +85,14 @@ describe("MCP tools", () => {
   // 18 from registerTools + 3 from registerLimitsTools (teach/get/clear), both
   // wired into this file's shared harness — the Part 1 jog-guard tests below
   // need teach_limit available on the same server as "jog".
-  it("lists all 20 tools; the retired ESP32 program/camera/zero tools are gone", async () => {
+  it("lists all 22 tools; the retired ESP32 program/camera/zero tools are gone", async () => {
     const { client } = await harness();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
-      "capture_snapshot", "clear_estop", "clear_taught_limits", "estop", "get_capture_status",
+      "capture_snapshot", "clear_estop", "clear_taught_limits", "estop", "get_agent_armed", "get_capture_status",
       "get_head_config", "get_status", "get_taught_limits", "goto_angle", "home", "jog",
-      "list_passes", "reference_pan", "set_capture_mode", "set_head_config", "set_position",
+      "list_passes", "reference_pan", "set_agent_armed", "set_capture_mode", "set_head_config", "set_position",
       "start_recording", "stop", "stop_recording", "teach_limit",
     ]);
     // Built from parts so the repo-wide retired-name grep stays empty.
@@ -401,7 +404,10 @@ describe("jog rate-limit enforcement (Part 1 safety fix)", () => {
       now: () => Date.now(), nowIso: () => new Date().toISOString(),
     }, { debounceMs: 5000, autoEnabled: true });
     const server = new McpServer({ name: "tb3-mcp", version: "test" });
-    registerTools(server, dev, cfg, session, supervisor, store, capture, limitsStore, new PassJournal(join(dir, "p.jsonl")));
+    registerTools(
+      server, dev, cfg, session, supervisor, store, capture, limitsStore, new PassJournal(join(dir, "p.jsonl")),
+      new AgentStore(join(dir, "agent.json")),
+    );
     const client = new Client({ name: "test-client", version: "1.0.0" });
     const [c, s2] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(s2), client.connect(c)]);
@@ -530,6 +536,22 @@ describe("head tools (home / set_position / reference_pan / estop / head config)
     expect(callsTo("/api/estop/clear")).toHaveLength(1);
   });
 
+  // Spec 6.4: E-STOP clears the agent's armed flag before stopping motion,
+  // and clear_estop does NOT re-arm it -- re-arming is an explicit operator act.
+  it("estop disarms the agent even when the head post fails; clear_estop leaves it disarmed", async () => {
+    const { client, agentStore } = await harness();
+    agentStore.set(true);
+    await client.callTool({ name: "estop", arguments: {} });
+    expect(agentStore.get().armed).toBe(false);
+    agentStore.set(true);
+    mock!.failNext("/api/estop", 500);
+    const res: any = await client.callTool({ name: "estop", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(agentStore.get().armed).toBe(false);
+    await client.callTool({ name: "clear_estop", arguments: {} });
+    expect(agentStore.get().armed).toBe(false);
+  });
+
   it("get_head_config returns the head's config; set_head_config posts scope/key/value with save and force", async () => {
     const { client } = await harness();
     const cfgRes = JSON.parse(textOf(await client.callTool({ name: "get_head_config", arguments: {} })));
@@ -573,5 +595,25 @@ describe("head tools (home / set_position / reference_pan / estop / head config)
     expect(textOf(res)).toMatch(/tracking active/i);
     expect(mock!.calls.filter((c) => c.path === "/api/config" && c.method === "POST")).toHaveLength(0);
     session.stop();
+  });
+});
+
+describe("agent armed flag tools (spec 6.4)", () => {
+  it("get_agent_armed defaults to disarmed; set_agent_armed persists through the store", async () => {
+    const { client, agentStore } = await harness();
+    expect(JSON.parse(textOf(await client.callTool({ name: "get_agent_armed", arguments: {} })))).toEqual({ armed: false });
+    const res: any = await client.callTool({ name: "set_agent_armed", arguments: { armed: true } });
+    expect(res.isError ?? false).toBe(false);
+    expect(agentStore.get().armed).toBe(true);
+    expect(JSON.parse(textOf(await client.callTool({ name: "get_agent_armed", arguments: {} })))).toEqual({ armed: true });
+    await client.callTool({ name: "set_agent_armed", arguments: { armed: false } });
+    expect(agentStore.get().armed).toBe(false);
+  });
+
+  it("set_agent_armed rejects a non-boolean", async () => {
+    const { client, agentStore } = await harness();
+    const res: any = await client.callTool({ name: "set_agent_armed", arguments: { armed: "yes" } });
+    expect(res.isError).toBe(true);
+    expect(agentStore.get().armed).toBe(false);
   });
 });

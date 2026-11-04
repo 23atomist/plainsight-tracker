@@ -33,6 +33,13 @@ export function parseTrackingStatus(text: string): RigStatus {
     calibrationVerified: b.calibration_verified };
 }
 const ParkIdleBody = z.object({ parked: z.boolean(), reason: z.string() });
+// `armed` is REQUIRED: an answer that does not say the agent is armed must
+// never be read as permission to act (fail closed, like StatusBody above).
+const AgentArmedBody = z.object({ armed: z.boolean() });
+
+export function parseAgentArmed(text: string): boolean {
+  return AgentArmedBody.parse(JSON.parse(text)).armed;
+}
 
 // Narrow a CallToolResult to its text content, throwing on an error result so
 // a daemon-reported failure (isError:true, e.g. sun-lock, not-calibrated, or a
@@ -64,7 +71,7 @@ export class McpRigClient implements RigMcpClient {
     this.client = this.newClient();
   }
 
-  private newClient(): Client { return new Client({ name: "tb3-agent", version: "0.1.0" }); }
+  private newClient(): Client { return new Client({ name: "plainsight-agent", version: "0.1.0" }); }
 
   private transportOpts(): { requestInit: { headers: Record<string, string> } } | undefined {
     return this.token ? { requestInit: { headers: { authorization: `Bearer ${this.token}` } } } : undefined;
@@ -108,6 +115,9 @@ export class McpRigClient implements RigMcpClient {
       rule: a.rule ?? null,
       canPreempt: a.can_preempt ?? false,
     }));
+  }
+  async getAgentArmed(): Promise<boolean> {
+    return parseAgentArmed(await this.call("get_agent_armed", {}));
   }
   async getTracked(): Promise<{ hex: string | null }> {
     return { hex: TrackedBody.parse(JSON.parse(await this.call("get_tracked_aircraft", {}))).hex };

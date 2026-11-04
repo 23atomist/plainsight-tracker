@@ -12,6 +12,7 @@ import { PassJournal } from "../shared/capture/pass-journal.js";
 import { LimitsStore, effectiveLimits, CeilingLimits } from "../shared/limits-store.js";
 import { limitGuard, GuardHorizon, usableOr } from "../shared/track/control.js";
 import { currentUserPanTilt } from "./geo-tools.js";
+import { AgentStore } from "../shared/agent-store.js";
 import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -45,7 +46,7 @@ export const jogArgsShape = {
 export function registerTools(
   server: McpServer, device: Device, cfg: Config, session: TrackingSession,
   supervisor: SunSupervisor, store: CalibrationStore, capture: CaptureController,
-  limitsStore: LimitsStore, journal: PassJournal,
+  limitsStore: LimitsStore, journal: PassJournal, agentStore: AgentStore,
 ): void {
   const cfgCeiling: CeilingLimits = {
     panMin: cfg.panMin, panMax: cfg.panMax, tiltMin: cfg.tiltMin, tiltMax: cfg.tiltMax,
@@ -259,13 +260,24 @@ export function registerTools(
 
   server.registerTool(
     "estop",
-    { description: "Emergency stop: latch the head (every motion route is refused until clear_estop) and end tracking.", inputSchema: {} },
+    {
+      description:
+        "Emergency stop: disarm the autonomous agent, end tracking, and latch the head (every motion route is " +
+        "refused until clear_estop).",
+      inputSchema: {},
+    },
     // Always allowed: not gated by the sun lock or an active session. Order:
-    // end the session first so nothing re-issues motion, then latch. The
+    // disarm the agent, end the session so nothing re-issues motion, then latch. The
     // supervisor has no abort method; its idle-park polls idleParkAbortReason(),
     // which reads "estop" from device state, so the latch alone aborts it
     // within one poll.
     async () => {
+      // Spec 6.4: disarm the agent BEFORE stopping motion, so its next tick
+      // cannot pick a new target the instant the latch is cleared. Done first
+      // and unconditionally: a failed head post below must still leave the
+      // agent disarmed.
+      try { agentStore.set(false); }
+      catch (e) { console.error(`[estop] could not persist agent disarm: ${(e as Error).message}`); }
       session.stop();
       try {
         await device.estop();
@@ -276,12 +288,41 @@ export function registerTools(
 
   server.registerTool(
     "clear_estop",
-    { description: "Release the E-STOP latch. Motion stays idle until commanded.", inputSchema: {} },
+    {
+      description:
+        "Release the E-STOP latch. Motion stays idle until commanded; the agent stays disarmed until " +
+        "set_agent_armed {armed:true}.",
+      inputSchema: {},
+    },
     async () => {
       try {
         await device.clearEstop();
         return text("E-STOP cleared");
       } catch (e) { return errText(`device rejected clear_estop: ${(e as Error).message}`); }
+    },
+  );
+
+  // The autonomous agent's armed flag (spec 6.4): the agent process always
+  // runs and does nothing while disarmed. Default and fallback: disarmed.
+  server.registerTool(
+    "get_agent_armed",
+    { description: "Whether the autonomous agent is armed (it picks and tracks targets only while armed).", inputSchema: {} },
+    async () => text(JSON.stringify(agentStore.get())),
+  );
+
+  server.registerTool(
+    "set_agent_armed",
+    {
+      description:
+        "Arm or disarm the autonomous agent. Disarming does not stop a pass in progress; use stop_tracking " +
+        "or estop for that. Persisted across restarts.",
+      inputSchema: { armed: z.boolean().describe("true to arm the agent, false to disarm it") },
+    },
+    async ({ armed }) => {
+      try {
+        agentStore.set(armed);
+        return text(JSON.stringify(agentStore.get()));
+      } catch (e) { return errText(`could not persist the agent armed flag: ${(e as Error).message}`); }
     },
   );
 
