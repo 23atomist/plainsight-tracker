@@ -379,6 +379,47 @@ describe("Device (head API)", () => {
     expect(h.stopCount).toBe(2);
   });
 
+  // M2: the same answer semantics as the dashboard's HeadDirectClient.
+  describe("estop answer semantics", () => {
+    const paths = (h: FakeHead) => h.calls.map((c) => c.path);
+
+    it("a head that takes 3 s to confirm (the Pico gets up to 5 s) is confirmed, not failed", async () => {
+      const h = await startHead();
+      const d = await startDevice(h);
+      h.responseDelayMs = 3000;
+      await expect(d.estop()).resolves.toEqual({ picoConfirmed: true });
+      expect(h.model.estop).toBe(true);
+    }, 10000);
+
+    it("latched but unconfirmed (the head's 503 with the Pico link down) resolves with a warning and sends no STOP", async () => {
+      const h = await startHead();
+      const d = await startDevice(h);
+      h.model.link = { ...h.model.link, pico: false };
+      const outcome = await d.estop();
+      expect(outcome.picoConfirmed).toBe(false);
+      expect(outcome.warning).toMatch(/latched, but the Pico did not confirm.*HTTP 503 pico link down/);
+      expect(h.model.estop).toBe(true);
+      expect(paths(h)).not.toContain("/api/stop");
+    });
+
+    it("a genuine failure rejects, and a plain STOP is still sent", async () => {
+      const h = await startHead();
+      const d = await startDevice(h);
+      h.failNext("/api/estop", 500);
+      await expect(d.estop()).rejects.toThrow(/injected failure 500; a plain STOP was sent instead/);
+      expect(paths(h).slice(-2)).toEqual(["/api/estop", "/api/stop"]);
+      expect(h.stopCount).toBe(1);
+    });
+
+    it("says so when the fallback STOP fails too", async () => {
+      const h = await startHead();
+      const d = await startDevice(h);
+      h.failNext("/api/estop", 500);
+      h.failNext("/api/stop", 500);
+      await expect(d.estop()).rejects.toThrow(/the fallback STOP failed too/);
+    });
+  });
+
   it("estop, clearEstop, home, setPos and reference hit their routes", async () => {
     const h = await startHead();
     const d = await startDevice(h);

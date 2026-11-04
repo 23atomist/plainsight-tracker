@@ -61,6 +61,17 @@ describe.skipIf(!dockerAvailable)("compose.yaml", () => {
     expect(services.dashboard.group_add).toHaveLength(2);
   });
 
+  // M7: recordings/keep and the camera device must not depend on config.json
+  // having been derived from config.example.json.
+  it("pins the recordings paths and the camera device for mcp and the dashboard", () => {
+    for (const name of ["mcp", "dashboard"]) {
+      const env = services[name].environment ?? {};
+      expect(env.TB3_CAPTURE_RECORDINGS_DIR, name).toBe("/recordings/tb3");
+      expect(env.TB3_CAPTURE_KEEP_DIR, name).toBe("/recordings/keep");
+      expect(env.TB3_CAMERA_V4L2_DEVICE, name).toMatch(/^\/dev\/v4l\/by-id\//);
+    }
+  });
+
   it("runs mediamtx as uid 1000 with /recordings writable", () => {
     expect(services.mediamtx.user).toBe("1000:1000");
     const rec = services.mediamtx.volumes?.find((v) => v.target === "/recordings") as

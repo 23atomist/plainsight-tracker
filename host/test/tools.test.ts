@@ -487,10 +487,21 @@ describe("head tools (home / set_position / reference_pan / estop / head config)
     const clr = vi.spyOn(limitsStore, "clear");
     const res: any = await client.callTool({ name: "set_position", arguments: { pan_deg: 10, tilt_deg: 5 } });
     expect(res.isError ?? false).toBe(false);
-    expect(textOf(res)).toMatch(/pan_reference/);
+    // M3: the reply states what actually happened (the head was at pan 0,
+    // homed, so the reference carried the delta), and never claims a sector shift.
+    expect(textOf(res)).toBe("position declared — the calibration and taught pan limits were shifted by 10° (user frame); nothing was cleared");
     expect(callsTo("/api/setpos").map((c) => c.body)).toEqual([{ pan: -10, tilt: 5 }]);
     expect(inv).not.toHaveBeenCalled();
     expect(clr).not.toHaveBeenCalled();
+  });
+
+  it("set_position on an unhomed pan (after a Pico reboot) says the calibration and limits were flagged unverified", async () => {
+    const { client } = await harness();
+    mock!.model.axes.pan = { ...mock!.model.axes.pan, homed: false };
+    const res: any = await client.callTool({ name: "set_position", arguments: { pan_deg: 30 } });
+    expect(res.isError ?? false).toBe(false);
+    expect(textOf(res)).toMatch(/^position declared — pan had no previous frame.*flagged UNVERIFIED/);
+    expect(textOf(res)).not.toMatch(/sector/);
   });
 
   it("set_position sends only the axes given, and refuses an empty call, tracking, and sun lock", async () => {
@@ -534,6 +545,17 @@ describe("head tools (home / set_position / reference_pan / estop / head config)
     const clr: any = await client.callTool({ name: "clear_estop", arguments: {} });
     expect(clr.isError ?? false).toBe(false);
     expect(callsTo("/api/estop/clear")).toHaveLength(1);
+  });
+
+  // M2: a 503 from the head is its latch set with the Pico unconfirmed, not
+  // a failed E-STOP that sends the operator hunting for the physical stop.
+  it("estop on a head whose Pico link is down reports latched-but-unconfirmed, not a failure", async () => {
+    const { client } = await harness();
+    mock!.model.link = { ...mock!.model.link, pico: false };
+    const res: any = await client.callTool({ name: "estop", arguments: {} });
+    expect(res.isError ?? false).toBe(false);
+    expect(textOf(res)).toMatch(/^E-STOP latched; clear_estop to release\. WARNING: .*Pico did not confirm/);
+    expect(mock!.model.estop).toBe(true);
   });
 
   // Spec 6.4: E-STOP clears the agent's armed flag before stopping motion,

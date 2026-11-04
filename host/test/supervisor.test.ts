@@ -231,6 +231,25 @@ describe("SunSupervisor", () => {
     session.stop();
   });
 
+  // M10: a sun trip (or a park in flight) on a latched head faults as estop,
+  // not as park_unreachable after 50 refused retries.
+  it("a sun park on a latched head faults with reason estop and sends no park goto", async () => {
+    const nowMs = Date.UTC(2026, 6, 17, 19, 30);
+    const { cfg, store } = await harness(25, nowMs);
+    const { sched } = manualScheduler();
+    mock!.setPosition(175, 77);
+    mock!.model.estop = true;
+    await new Promise((r) => setTimeout(r, 200));
+    expect(dev!.getState().estop).toBe(true);
+    const session = new TrackingSession(dev!, cfg, store);
+    const sup = new SunSupervisor(dev!, cfg, store, session, () => nowMs, sched);
+    sup.start();
+    sup.tickForTest();   // trip -> fault estop, on the first tick
+    expect(sup.status()).toMatchObject({ state: "fault", reason: "estop", locked: true });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(mock!.calls.filter((c) => c.path === "/api/goto")).toEqual([]);
+  });
+
   it("escalates a persistently-rejected park to fault after PARK_MAX_RETRIES, commanding no successful motion", async () => {
     // Same trip fixture as the direct-park test (high sun -> single-waypoint
     // tilt-down park), but force every /api/goto to 409 so the waypoint can

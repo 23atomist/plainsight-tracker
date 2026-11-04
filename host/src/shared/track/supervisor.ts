@@ -325,6 +325,10 @@ export class SunSupervisor {
     // motion) / confirms the frame, or disables the guard to move manually.
     const block = automationBlock(this.device.getState(), this.store, this.limitsProvider());
     if (block) { this.enterFault(block); return; }
+    // A latched head refuses every park goto, so the park can never land:
+    // say why now instead of retrying PARK_MAX_RETRIES times into a
+    // misleading park_unreachable. The latch itself has stopped the rig.
+    if (this.device.getState().estop) { this.enterFault("estop"); return; }
     if (this.parkInFlight) return;
     const wp = plan.waypoints[this.parkStep];
     const gen = this.parkGen;

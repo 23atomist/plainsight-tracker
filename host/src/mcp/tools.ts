@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { Device } from "../shared/device.js";
+import { Device, type ReferenceChange } from "../shared/device.js";
 import { Config } from "../shared/config.js";
 import { applySign } from "../shared/angles.js";
 import { moveToUserAngle } from "./move.js";
@@ -17,6 +17,39 @@ import { text, errText, SUN_LOCKED_MSG, ESTOP_LATCHED_MSG } from "./tool-helpers
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
+}
+
+// How long set_position waits for the head's pan_reference event, which
+// arrives over the WebSocket independently of the HTTP answer.
+const REFERENCE_EVENT_WAIT_MS = 2000;
+
+// The next pan_reference event, or null if none arrives within `ms`.
+// Subscribed before the setpos is posted, so the event cannot be missed.
+function nextReferenceChange(device: Device, ms: number): Promise<ReferenceChange | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { off(); resolve(null); }, ms);
+    const off = device.onReferenceChanged((c) => { clearTimeout(timer); off(); resolve(c); });
+  });
+}
+
+// What set_position actually did to the host's pan-zero state (see
+// reference-shift.ts, which applies it), for the reply.
+function referenceOutcome(c: ReferenceChange | null, panSign: number): string {
+  if (c === null) {
+    return "the head's pan_reference event has not arrived yet; check get_calibration and get_taught_limits " +
+      "for whether the calibration and taught pan limits were shifted or flagged unverified";
+  }
+  if (c.pan === null) return "the head reported pan unreferenced instead; run reference_pan or set_position again";
+  if (c.previous === null) {
+    return "pan had no previous frame (e.g. after a Pico reboot), so its offset from the old frame is unknown: " +
+      "the calibration (and any taught pan limits) were flagged UNVERIFIED and automated motion is blocked — " +
+      "re-sight and solve_calibration / re-teach the pan limits, or confirm_pan_frame / confirm_taught_limits " +
+      "if the head was not moved";
+  }
+  const delta = Number(((c.pan - c.previous) * panSign).toFixed(3));
+  return delta === 0
+    ? "the pan value did not change; nothing was shifted"
+    : `the calibration and taught pan limits were shifted by ${delta}° (user frame); nothing was cleared`;
 }
 
 // Exported so callers other than registerTool below (the dashboard's
@@ -206,9 +239,10 @@ export function registerTools(
     {
       description:
         "Declare the head's CURRENT pose to be pan_deg/tilt_deg (user frame) without moving. A pan value " +
-        "re-references pan: the head emits a pan_reference event with the delta and the host shifts " +
-        "calibration, taught limits and the azimuth sector by it automatically (nothing is cleared, unlike the " +
-        "retired ESP32 home-zeroing tool). Refused while tracking or sun-locked.",
+        "re-references pan: the head emits a pan_reference event and the host shifts the calibration and " +
+        "taught pan limits by its delta, or, when pan had no previous frame (after a Pico reboot), flags them " +
+        "unverified. The azimuth sector is never shifted (its edges are true-north bearings). The reply states " +
+        "which happened. Refused while tracking, sun-locked or E-STOP latched.",
       inputSchema: {
         pan_deg: z.number().optional().describe("pan angle the current pose should read, degrees (user frame)"),
         tilt_deg: z.number().optional().describe("tilt angle the current pose should read, degrees (user frame)"),
@@ -225,13 +259,15 @@ export function registerTools(
         ...(pan_deg !== undefined ? { pan: applySign(pan_deg, cfg.panSign) } : {}),
         ...(tilt_deg !== undefined ? { tilt: applySign(tilt_deg, cfg.tiltSign) } : {}),
       };
+      const change = pan_deg !== undefined ? nextReferenceChange(device, REFERENCE_EVENT_WAIT_MS) : null;
       try {
         await device.setPos(pos);
-        return text(
-          "position declared — the head will emit a pan_reference event and the host shifts calibration, " +
-          "taught limits and the azimuth sector by the delta automatically (nothing was cleared)",
-        );
-      } catch (e) { return errText(`device rejected set_position: ${(e as Error).message}`); }
+      } catch (e) {
+        // A pending wait unsubscribes itself at its timeout.
+        return errText(`device rejected set_position: ${(e as Error).message}`);
+      }
+      if (change === null) return text("position declared (tilt only; pan's reference is unchanged)");
+      return text(`position declared — ${referenceOutcome(await change, cfg.panSign)}`);
     },
   );
 
@@ -275,8 +311,10 @@ export function registerTools(
       catch (e) { console.error(`[estop] could not persist agent disarm: ${(e as Error).message}`); }
       session.stop();
       try {
-        await device.estop();
-        return text("E-STOP latched; clear_estop to release");
+        const outcome = await device.estop();
+        return text(outcome.picoConfirmed
+          ? "E-STOP latched; clear_estop to release"
+          : `E-STOP latched; clear_estop to release. WARNING: ${outcome.warning}`);
       } catch (e) { return errText(`E-STOP post failed: ${(e as Error).message} — press the physical stop if the rig is moving`); }
     },
   );

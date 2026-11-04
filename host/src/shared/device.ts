@@ -7,6 +7,7 @@ import {
   HeadTick, HeadTickZ, HeadTrackCmd, PanReferenceDetailZ,
 } from "./head-types.js";
 import { Vec3, normalize } from "./geo/vec3.js";
+import { ESTOP_TIMEOUT_MS, LATCHED_UNCONFIRMED, latchedUnconfirmed, type EstopOutcome } from "./head-estop.js";
 
 const ARRIVAL_TOL_DEG = 0.25;
 const COMMAND_TIMEOUT_MS = 2000;
@@ -77,7 +78,9 @@ export type AxisConfig = Record<"pan" | "tilt", HeadAxisConfig>;
  * call sites are unaffected.
  */
 export class DeviceHttpError extends Error {
-  constructor(message: string, readonly status: number) {
+  // `fromHead`: the body was the head's own JSON answer, not something else
+  // (a proxy's error page) that happened to answer at its address.
+  constructor(message: string, readonly status: number, readonly fromHead = true) {
     super(message);
     this.name = "DeviceHttpError";
   }
@@ -225,8 +228,11 @@ export class Device {
   /** Every head event, as parsed against the event schema. */
   onEvent(cb: (e: HeadEvent) => void): void { this.eventListeners.push(cb); }
 
-  /** `pan_reference` events: the pan frame was renamed (or dropped: source "none"). */
-  onReferenceChanged(cb: (c: ReferenceChange) => void): void { this.referenceListeners.push(cb); }
+  /** `pan_reference` events: the pan frame was renamed (or dropped: source "none"). Returns an unsubscribe. */
+  onReferenceChanged(cb: (c: ReferenceChange) => void): () => void {
+    this.referenceListeners.push(cb);
+    return () => { this.referenceListeners = this.referenceListeners.filter((l) => l !== cb); };
+  }
 
   /**
    * Every tick's `ref` (with or without axes), flagged when it is the first
@@ -411,7 +417,7 @@ export class Device {
     try { json = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
     if (!r.ok) {
       const err = (json as { error?: unknown } | null)?.error;
-      throw new DeviceHttpError(typeof err === "string" ? err : `HTTP ${r.status}`, r.status);
+      throw new DeviceHttpError(typeof err === "string" ? err : `HTTP ${r.status}`, r.status, json !== null);
     }
     return json;
   }
@@ -503,8 +509,15 @@ export class Device {
    * `POST /api/estop`: latches the head; every motion route returns 423 until
    * cleared. Deliberately NOT queued behind the motion FIFO: an E-STOP must
    * never wait for a slow goto to be answered.
+   *
+   * Same answer semantics as the dashboard's HeadDirectClient (head-estop.ts):
+   * up to 6 s for the Pico, and a 400/502/503/504 from the head is latched
+   * but unconfirmed, not a failure. A genuine failure (head not reached, any
+   * other answer) posts a plain STOP before rejecting: the queue was just
+   * discarded, so without it nothing would stop the rig but the Pico's own
+   * track timeout and jog dead-man.
    */
-  async estop(): Promise<void> {
+  async estop(): Promise<EstopOutcome> {
     // Nothing would accept the keep-alive's frames now: stop pumping them, drop
     // any queued frame, and end an in-progress jog() (it rejects).
     this.abortJog();
@@ -515,7 +528,19 @@ export class Device {
     const discarded = this.motionQueue;
     this.motionQueue = [];
     for (const d of discarded) d.reject(new Error(`E-STOP: queued ${d.kind} discarded, not sent`));
-    await this.post("/api/estop");
+    try {
+      await this.request("POST", "/api/estop", undefined, ESTOP_TIMEOUT_MS);
+      return { picoConfirmed: true };
+    } catch (e) {
+      if (e instanceof DeviceHttpError && e.fromHead && LATCHED_UNCONFIRMED.has(e.status)) {
+        return latchedUnconfirmed(e.status, e.message);
+      }
+      const stopNote = await this.stop().then(
+        () => "a plain STOP was sent instead",
+        (s: unknown) => `the fallback STOP failed too (${s instanceof Error ? s.message : String(s)})`,
+      );
+      throw new Error(`${e instanceof Error ? e.message : String(e)}; ${stopNote}`, { cause: e });
+    }
   }
 
   // Not queued: clearing the latch is not motion, and must not wait behind it.

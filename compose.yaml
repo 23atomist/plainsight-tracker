@@ -35,6 +35,13 @@ services:
       # /recordings/keep (src/shared/recordings/keep.ts), and a hardlink needs
       # a writable mount on the same filesystem. Delete is guarded to keep/.
       - "${PLAINSIGHT_DATA}/recordings:/recordings"
+    # Container paths and the camera device, pinned here rather than left to
+    # config.json: the code defaults are not these mount points, and a config
+    # not derived from config.example.json would break recordings silently.
+    environment:
+      - TB3_CAPTURE_RECORDINGS_DIR=/recordings/tb3
+      - TB3_CAPTURE_KEEP_DIR=/recordings/keep
+      - TB3_CAMERA_V4L2_DEVICE=${CAMERA_DEVICE}
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://127.0.0.1:${TB3_MCP_PORT:-8770}/healthz"]
       interval: 10s
@@ -59,6 +66,11 @@ services:
       - "${PLAINSIGHT_DATA}/state:/data/state"
       - "${PLAINSIGHT_DATA}/snapshots:/data/snapshots"
       - "${PLAINSIGHT_DATA}/recordings:/recordings"
+    # As for mcp: the mounts and the device passed through below.
+    environment:
+      - TB3_CAPTURE_RECORDINGS_DIR=/recordings/tb3
+      - TB3_CAPTURE_KEEP_DIR=/recordings/keep
+      - TB3_CAMERA_V4L2_DEVICE=${CAMERA_DEVICE}
     devices:
       - "${CAMERA_DEVICE}:${CAMERA_DEVICE}"
       - "/dev/dri/renderD128:/dev/dri/renderD128"

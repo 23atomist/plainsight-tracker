@@ -101,7 +101,7 @@
 // not committed anywhere, so it protects nothing going forward. If you add
 // coverage for any of the above, delete the corresponding bullet here.
 //
-// HOW TO RUN (from tb3-mcp/):
+// HOW TO RUN (from host/):
 //   node scripts/dashboard-smoke.mjs
 //
 // Playwright is NOT a project dependency -- "no new npm dependencies" is a

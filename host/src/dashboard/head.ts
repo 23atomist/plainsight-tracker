@@ -1,23 +1,12 @@
 import { HeadDirect, parseHeadState } from "./parse.js";
+import { ESTOP_TIMEOUT_MS, LATCHED_UNCONFIRMED, latchedUnconfirmed, type EstopOutcome } from "../shared/head-estop.js";
 
 // The state poll runs every dashboard tick, so it gets a short budget.
 const STATE_TIMEOUT_MS = 2000;
-// The head answers stop/estop only after the Pico replies, and gives the Pico
-// 5 s for those (docs/HEAD-API.md, "Common error statuses"). A shorter budget
-// here would report a failure for an E-STOP the head is still confirming.
-const COMMAND_TIMEOUT_MS = 6000;
+// The head answers stop/estop only after the Pico replies (head-estop.ts).
+const COMMAND_TIMEOUT_MS = ESTOP_TIMEOUT_MS;
 
-// The statuses the head answers /api/estop with when its latch is set but
-// the Pico round trip failed (docs/HEAD-API.md "POST /api/estop": the latch
-// is set BEFORE the round trip and stays set if the send fails).
-const LATCHED_UNCONFIRMED = new Set([400, 502, 503, 504]);
-
-export interface EstopOutcome {
-  // false: the head's latch IS set (every motion route refuses), but the
-  // Pico did not confirm the stop -- check the head.
-  picoConfirmed: boolean;
-  warning?: string;
-}
+export type { EstopOutcome };
 
 /**
  * The dashboard's own line to the head controller, independent of the MCP
@@ -66,14 +55,9 @@ export class HeadDirectClient {
       throw new Error(`E-STOP not confirmed: HTTP ${r.status} from ${this.base} was not a head answer (not JSON)`);
     }
     if (r.ok) return { picoConfirmed: true };
-    const err = typeof body?.error === "string" ? ` ${body.error}` : "";
-    if (LATCHED_UNCONFIRMED.has(r.status)) {
-      return {
-        picoConfirmed: false,
-        warning: `head E-STOP latched, but the Pico did not confirm the stop (HTTP ${r.status}${err}) -- check the head`,
-      };
-    }
-    throw new Error(`E-STOP not confirmed: HTTP ${r.status}${err}`);
+    const headError = typeof body?.error === "string" ? body.error : null;
+    if (LATCHED_UNCONFIRMED.has(r.status)) return latchedUnconfirmed(r.status, headError);
+    throw new Error(`E-STOP not confirmed: HTTP ${r.status}${headError ? ` ${headError}` : ""}`);
   }
 
   /** Release the latch. Safe when not latched. */

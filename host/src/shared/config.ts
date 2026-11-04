@@ -19,8 +19,8 @@ const ConfigSchema = z
     // The manual-jog ceiling (deg/s, per axis): the jog tool clamps each
     // axis to it, and tracking clamps its TRACK feed-forward to it while the
     // head's own vmax (GET /api/config) is still unknown. 19 deg/s is the
-    // plateau measured on the ESP32 rig (jog-probe.mjs, 2026-07-16), kept as
-    // the operator-facing number the dashboard's jog controls scale to.
+    // operator-facing number the dashboard's jog controls scale to, carried
+    // over from the previous rig; the head's Pico vmax caps real motion.
     maxJogDps: z.number().positive().default(19),
     panSign: sign.default(1),
     // Pan handedness INTO the geo mount kinematics (separate from panSign, which
@@ -141,10 +141,10 @@ const ConfigSchema = z
     cameraV4l2Framerate: z.number().int().positive().default(30),
     // --- MediaMTX/WebRTC source (read only when cameraSource === "mediamtx") ---
     // The camera has no native H.264 mode, so this path always transcodes.
-    // "nvenc" is the default: jellyfin-ffmpeg8 on the host provides
-    // h264_nvenc, and NVENC is far better exercised in WebRTC pipelines than
-    // Vulkan encode. "vulkan" is a verified fallback on this hardware. All
-    // values are validated against `ffmpeg -encoders` at startup.
+    // "vaapi" is the default: the app host's Intel iGPU encodes h264_vaapi
+    // through cameraVaapiDevice (the host has no NVIDIA GPU). "nvenc" and
+    // "vulkan" stay selectable for other hardware; "x264" is the CPU
+    // fallback. All values are validated against `ffmpeg -encoders` at startup.
     cameraEncoder: z.enum(["vaapi", "nvenc", "vulkan", "x264", "copy"]).default("vaapi"),
     cameraVaapiDevice: z.string().min(1).default("/dev/dri/renderD128"),
     cameraVideoBitrate: z.string().min(1).default("6M"),

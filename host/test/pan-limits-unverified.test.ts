@@ -38,6 +38,7 @@ let session: TrackingSession | null = null;
 
 afterEach(async () => {
   session?.stop();
+  await sleep(100);   // let the session's STOP be answered before the Device closes
   device?.close();
   if (head) await head.stop();
   head = null; device = null; session = null;

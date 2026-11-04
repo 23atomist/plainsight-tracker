@@ -1,4 +1,4 @@
-// tb3-mcp/scripts/sun-guard-probe.mjs
+// host/scripts/sun-guard-probe.mjs
 //
 // Shadow test: measure the combined calibration + clock error against the sun,
 // which is the number that sizes the sun-guard exclusion cone.
@@ -6,7 +6,7 @@
 // Requires a build first (the probe imports the compiled solar-position code so
 // the math is never duplicated):   npm run build
 //
-// Usage (from tb3-mcp/):  node scripts/sun-guard-probe.mjs <LAT> <LON> [HEIGHT_M=0]
+// Usage (from host/):  node scripts/sun-guard-probe.mjs <LAT> <LON> [HEIGHT_M=0]
 //   e.g. node scripts/sun-guard-probe.mjs 33.4484 -112.074
 //
 // RUN WITH THE CAMERA REMOVED. The rig points AT the sun; a lens there burns.
