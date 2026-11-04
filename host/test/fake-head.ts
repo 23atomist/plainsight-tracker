@@ -132,6 +132,12 @@ export class FakeHead {
   gotoCount = 0;
   /** Delay every HTTP response by this much (a slow head). */
   responseDelayMs = 0;
+  /**
+   * Slew gotos at each axis's configured `vmax` (as the real head does)
+   * instead of the fast SIM_DPS. Off by default: at the Pico's default 5 deg/s
+   * every goto in the suite would take seconds of real time.
+   */
+  gotoAtVmax = false;
   private failures = new Map<string, { status: number; times: number }>();
 
   private http: Server | null = null;
@@ -296,15 +302,20 @@ export class FakeHead {
       const a = this.model.axes[name];
       if (a.mode === "P") {
         const d = a.tgt - a.pos;
-        const step = SIM_DPS * dt;
+        const speed = this.gotoSpeed(name);
+        const step = speed * dt;
         if (Math.abs(d) <= step) this.model.axes[name] = { ...a, pos: a.tgt, vel: 0, mode: "I" };
-        else this.model.axes[name] = { ...a, pos: a.pos + Math.sign(d) * step, vel: Math.sign(d) * SIM_DPS };
+        else this.model.axes[name] = { ...a, pos: a.pos + Math.sign(d) * step, vel: Math.sign(d) * speed };
       } else if (a.mode === "V") {
         this.model.axes[name] = { ...a, pos: a.pos + a.vel * dt };
       } else if (a.mode === "T" && (name === "pan" || name === "tilt")) {
         this.advanceTrack(name, ms);
       }
     }
+  }
+
+  private gotoSpeed(name: HeadAxisName): number {
+    return this.gotoAtVmax ? (this.config[name]?.vmax ?? SIM_DPS) : SIM_DPS;
   }
 
   // The Pico extrapolates the TRACK setpoint at the commanded rate and servos
@@ -420,7 +431,7 @@ export class FakeHead {
         const d = tgt - a.pos;
         this.model.axes[name] = d === 0
           ? { ...a, tgt, vel: 0, mode: "I" }
-          : { ...a, tgt, vel: Math.sign(d) * SIM_DPS, mode: "P" };
+          : { ...a, tgt, vel: Math.sign(d) * this.gotoSpeed(name), mode: "P" };
       }
       ok(res, 202);
     });

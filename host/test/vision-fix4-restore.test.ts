@@ -56,6 +56,7 @@ async function runStubbedCalibration(failWaitNumber: number) {
       connected: true, panDeg, tiltDeg, zoomDeg: 0, focusDeg: 0,
       moving: false, enabled: true, estop: false, lastUpdateMs: Date.now(),
     }),
+    getAxisConfig: () => null,
     gotoAngle: async (p: number, t: number) => { gotos.push({ pan: p, tilt: t }); panDeg = p; tiltDeg = t; },
     waitForArrival: async () => {
       waits++;
@@ -148,6 +149,7 @@ describe("a step accepted then failing to arrive still restores the rig", () => 
         connected: true, panDeg, tiltDeg, zoomDeg: 0, focusDeg: 0,
         moving: false, enabled: true, estop: false, lastUpdateMs: Date.now(),
       }),
+      getAxisConfig: () => null,
       gotoAngle: async (p: number, t: number) => { panDeg = p; tiltDeg = t; },
       waitForArrival: async () => {
         waits++;
@@ -240,6 +242,7 @@ describe("a step accepted then failing to arrive still restores the rig", () => 
         connected: true, panDeg, tiltDeg, zoomDeg: 0, focusDeg: 0,
         moving: false, enabled: true, estop: false, lastUpdateMs: Date.now(),
       }),
+      getAxisConfig: () => null,
       gotoAngle: async (p: number, t: number) => { panDeg = p; tiltDeg = t; },
       waitForArrival: async () => {
         waits++;

@@ -27,7 +27,7 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 | mcpToken | (unset) | if set, clients must send `Authorization: Bearer <token>` |
 | panMin/panMax | `-180/180` | pan soft limits (degrees) |
 | tiltMin/tiltMax | `-90/90` | tilt soft limits (degrees) |
-| maxSpeedDps | `22` | max goto speed (°/s); the firmware caps point-to-point moves at ~22.5°/s (10000 steps/s) |
+| maxSpeedDps | `22` | upper bound (°/s) on a goto's optional `speed_dps` argument. The head ignores a goto's speed and moves each axis at the Pico's own `vmax` (`GET /api/config`); the goto arrival timeout is sized from that `vmax`/`amax`, and from this value (with `trackFallbackAmaxDps2`) only until the head's config has been read |
 | maxJogDps | `19` | the manual-jog ceiling (°/s, per axis): `jog` clamps each axis to it, and tracking caps its TRACK feed-forward to it until the head's own `vmax` (`GET /api/config`) has been read (env `TB3_MAX_JOG_DPS`) |
 | panSign/tiltSign | `1` | per-axis sign flip (`1` or `-1`) |
 | calibrationFile | `~/.tb3-mcp/calibration.json` | where the calibration profile is persisted (env `TB3_CALIBRATION_FILE`) |

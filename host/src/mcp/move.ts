@@ -1,7 +1,36 @@
-import { Device } from "../shared/device.js";
+import { AxisConfig, Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
 import { applySign, checkPanTilt, checkSpeed, Limits } from "../shared/angles.js";
+import { usableOr } from "../shared/track/control.js";
 import { ESTOP_LATCHED_MSG } from "./tool-helpers.js";
+
+// The arrival budget's slack over the head's own trapezoid time: for a slow
+// link, a late first tick, the Pico's settle.
+const ARRIVAL_MARGIN = 1.5;
+const ARRIVAL_SLACK_MS = 3000;
+const ARRIVAL_FLOOR_MS = 5000;
+
+/**
+ * How long a goto of `distDeg` per axis (device frame) may take to arrive.
+ * The head ignores a goto's speed and moves each axis at the Pico's own
+ * `vmax`, ramping at `amax` (docs/HEAD-API.md), so the budget comes from
+ * those: per axis `d/vmax + vmax/amax` (a trapezoid's time, an upper bound
+ * for the short triangular moves too), the slower axis, times a margin.
+ * cfg.maxSpeedDps and cfg.trackFallbackAmaxDps2 stand in only until the
+ * head's config has been read. Sizing it from cfg.maxSpeedDps alone (the
+ * ESP32 model) timed out every goto over ~30 deg at the Pico's 5 deg/s.
+ */
+export function gotoArrivalBudgetMs(
+  distDeg: Record<"pan" | "tilt", number>, axisCfg: AxisConfig | null, cfg: Config,
+): number {
+  const axisSec = (axis: "pan" | "tilt"): number => {
+    const vmax = usableOr(axisCfg?.[axis].vmax, cfg.maxSpeedDps);
+    const amax = usableOr(axisCfg?.[axis].amax, cfg.trackFallbackAmaxDps2);
+    return distDeg[axis] / vmax + vmax / amax;
+  };
+  const sec = Math.max(axisSec("pan"), axisSec("tilt"));
+  return Math.max(ARRIVAL_FLOOR_MS, sec * 1000 * ARRIVAL_MARGIN + ARRIVAL_SLACK_MS);
+}
 
 export interface MoveResult {
   arrived: boolean;
@@ -54,12 +83,10 @@ export async function moveToUserAngle(
   }
 
   const cur = device.getState();
-  const distDeg = Math.max(
-    Math.abs(devPan - cur.panDeg),
-    Math.abs(devTilt - cur.tiltDeg),
+  const timeoutMs = gotoArrivalBudgetMs(
+    { pan: Math.abs(devPan - cur.panDeg), tilt: Math.abs(devTilt - cur.tiltDeg) },
+    device.getAxisConfig(), cfg,
   );
-  const effSpeed = speedDps ?? cfg.maxSpeedDps;
-  const timeoutMs = Math.max(5000, (distDeg / effSpeed) * 1000 * 3 + 3000);
 
   const final = await device.waitForArrival(devPan, devTilt, timeoutMs, signal);
   return {

@@ -81,6 +81,7 @@ class FakeDevice {
       lastUpdateMs: this.lastUpdateMs,
     };
   }
+  getAxisConfig() { return null; }
   async track(cmd: HeadTrackCmd) { this.tracks.push(cmd); }
   async gotoAngle(pan: number, tilt: number) {
     this.gotos.push({ pan, tilt });
