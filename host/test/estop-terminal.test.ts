@@ -140,4 +140,27 @@ describe("E-STOP latched on the head while the agent is armed and tracking", () 
     await waitFor(() => !agent.get().armed, "the second disarm");
     expect(logs).toHaveLength(2);
   }, 15000);
+
+  it("runs the onLatched hook once per latch, armed or not, and again after a clear", async () => {
+    head = new FakeHead();
+    await head.start();
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: head.url });
+    device = new Device(cfg);
+    const agent = armedAgent();
+    agent.set(false);   // disarmed: the hook must still run
+    let hookRuns = 0;
+    wireEstopDisarm({ device, agent, log: () => {}, onLatched: () => { hookRuns += 1; } });
+    device.start();
+    await waitFor(() => device.getState().lastUpdateMs > 0, "first tick");
+
+    latchFromHead(head);
+    await waitFor(() => hookRuns === 1, "the hook");
+    await sleep(300);   // latched ticks keep coming: still once
+    expect(hookRuns).toBe(1);
+
+    clearFromHead(head);
+    await waitFor(() => !device.getState().estop, "the clear");
+    latchFromHead(head);
+    await waitFor(() => hookRuns === 2, "the hook on the second latch");
+  }, 15000);
 });

@@ -16,12 +16,22 @@ export interface EstopDisarmDeps {
   readonly device: Pick<Device, "onEvent" | "onRefTick" | "getState">;
   readonly agent: { get(): AgentArmed; set(armed: boolean): void };
   readonly log: (msg: string) => void;
+  /** Runs on every latch the daemon sees, armed or not: side effects that
+   *  must not survive an E-STOP (e.g. an ADS-B follower bound before the
+   *  latch, which would otherwise call session.start() on Clear). */
+  readonly onLatched?: () => void;
 }
 
-export function wireEstopDisarm({ device, agent, log }: EstopDisarmDeps): void {
+export function wireEstopDisarm({ device, agent, log, onLatched: extra }: EstopDisarmDeps): void {
   // One log line per latch, however many ticks repeat it.
   let loggedThisLatch = false;
+  let extraRanThisLatch = false;
   const onLatched = (seenBy: string): void => {
+    if (!extraRanThisLatch) {
+      extraRanThisLatch = true;
+      try { extra?.(); }
+      catch (e) { log(`[estop] onLatched hook failed: ${e instanceof Error ? e.message : String(e)}`); }
+    }
     if (!agent.get().armed) return;
     let failure = "";
     // AgentStore.set(false) flips memory before it writes the file, so a
@@ -35,12 +45,12 @@ export function wireEstopDisarm({ device, agent, log }: EstopDisarmDeps): void {
   };
   device.onEvent((e) => {
     if (e.name === "estop") onLatched("event");
-    else if (e.name === "estop_cleared") loggedThisLatch = false;
+    else if (e.name === "estop_cleared") { loggedThisLatch = false; extraRanThisLatch = false; }
   });
   // onRefTick fires for every tick, with or without axes, after the Device
   // has applied the tick's `estop` to its state.
   device.onRefTick(() => {
     if (device.getState().estop) onLatched("tick");
-    else loggedThisLatch = false;
+    else { loggedThisLatch = false; extraRanThisLatch = false; }
   });
 }

@@ -563,7 +563,13 @@ export async function main(): Promise<MainHandle> {
   });
   // Any head E-STOP disarms the agent, whoever latched it (estop-disarm.ts).
   // Before the first await, like the reference wiring below.
-  wireEstopDisarm({ device, agent: agentStore, log: (m) => console.error(m) });
+  // The follower is created below; a latch also unbinds it so a follower
+  // bound before the latch cannot restart the session on Clear.
+  let followerForEstop: AdsbFollower | null = null;
+  wireEstopDisarm({
+    device, agent: agentStore, log: (m) => console.error(m),
+    onLatched: () => followerForEstop?.unbind(),
+  });
   const session = new TrackingSession(
     device, cfg, store, Date.now, realScheduler, () => sectorStore.get(), () => limitsStore.get(),
     () => aimTrimStore.get(), () => floorStore.get(), () => device.getAxisConfig(),
@@ -603,6 +609,7 @@ export async function main(): Promise<MainHandle> {
     catch (e) { console.error(`[reference] head-ref watch failed (${headRefFile}): ${e instanceof Error ? e.message : String(e)}`); }
   });
   const follower = new AdsbFollower(session, cfg.adsbAltSource, cfg.adsbLostSec * 1000);
+  followerForEstop = follower;
   const source = new AdsbSource(cfg, { onSnapshot: (s) => follower.onSnapshot(s) });
   if (cfg.adsbEnabled) {
     source.start();
