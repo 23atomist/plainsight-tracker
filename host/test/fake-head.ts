@@ -143,6 +143,7 @@ export class FakeHead {
   private http: Server | null = null;
   private wss: WebSocketServer | null = null;
   private tickTimer: NodeJS.Timeout | null = null;
+  private tickMs = 0;
   private seq = 0;
   private port = 0;
   private savedImu: HeadImu = okImu();
@@ -232,11 +233,23 @@ export class FakeHead {
     });
     const addr = this.http.address();
     this.port = typeof addr === "object" && addr ? addr.port : 0;
-    const tickMs = opts.tickMs ?? 50;
-    if (tickMs > 0) {
-      this.tickTimer = setInterval(() => { this.advance(tickMs); this.tick(); }, tickMs);
-    }
+    this.tickMs = opts.tickMs ?? 50;
+    this.resumeTicks();
     return this.port;
+  }
+
+  /**
+   * Stops the periodic ticks but keeps every socket open: what a host sees
+   * when the head is power-cycled (no FIN ever arrives) or its process hangs.
+   */
+  pauseTicks(): void {
+    if (this.tickTimer) { clearInterval(this.tickTimer); this.tickTimer = null; }
+  }
+
+  resumeTicks(): void {
+    if (this.tickTimer || this.tickMs <= 0) return;
+    const ms = this.tickMs;
+    this.tickTimer = setInterval(() => { this.advance(ms); this.tick(); }, ms);
   }
 
   async stop(): Promise<void> {

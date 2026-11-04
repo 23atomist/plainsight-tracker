@@ -578,6 +578,29 @@ describe("Device (head API)", () => {
     await waitFor(() => h.calls.filter((c) => c.path === "/api/config").length === 2);
   });
 
+  it("drops a socket that goes silent without closing (power-cycled head) and reconnects", async () => {
+    const h = await startHead(50);
+    const cfg = loadConfig(undefined, { TB3_HEAD_URL: h.url });
+    dev = new Device(cfg, Date.now, fetch, undefined, { tickSilenceMs: 600 });
+    const d = dev;
+    d.start();
+    await waitFor(() => d.getState().connected && d.getState().lastUpdateMs > 0);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      h.pauseTicks();                          // the TCP socket stays ESTABLISHED
+      const silentSince = Date.now();
+      await waitFor(() => !d.getState().connected, 3000);
+      expect(Date.now() - silentSince).toBeGreaterThanOrEqual(550);
+      expect(warn.mock.calls.some((c) => /no telemetry for .* dropping the socket/.test(String(c[0])))).toBe(true);
+      h.resumeTicks();
+      await waitFor(() => d.getState().connected, 3000);
+      const t0 = d.getState().lastUpdateMs;
+      await waitFor(() => d.getState().lastUpdateMs > t0, 2000);   // telemetry flows again
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("close() while a reconnect backoff is pending leaves the device restartable", async () => {
     const h = await startHead();
     const d = await startDevice(h);

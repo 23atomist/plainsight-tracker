@@ -15,6 +15,14 @@ const COMMAND_TIMEOUT_MS = 2000;
 // for a slow link. characterize_imu handles retries per rig position.
 const IMU_TIMEOUT_MS = 20000;
 const RECONNECT_MS = 1000;
+// The head streams at 10 Hz (2 Hz IMU-only while its Pico link is down), so
+// a socket that has carried nothing for this long is dead, whatever TCP
+// says. A head that is power-cycled sends no FIN: the old socket stays
+// ESTABLISHED on this side for hours (seen 2026-11-04: 95 min of frozen
+// telemetry after the Pi went onto a stand) and `close` never fires. The
+// watchdog terminates such a socket so the normal reconnect path runs.
+const TICK_SILENCE_MS = 3000;
+const SILENCE_CHECK_MS = 500;
 const JOG_KEEPALIVE_MS = 100;
 const CONFIG_RETRY_MS = 2000;
 // At most one console warning per kind of rejected message per window: a head
@@ -157,13 +165,18 @@ export class Device {
   // connection (see onRefTick).
   private firstTickPending = false;
   private configListeners: ((c: AxisConfig) => void)[] = [];
+  private lastMessageMs = 0;
+  private silenceTimer: NodeJS.Timeout | null = null;
+  private readonly tickSilenceMs: number;
 
   constructor(
     cfg: Config,
     private readonly now: () => number = Date.now,
     private readonly fetchFn: FetchFn = fetch,
     private readonly wsFactory: WsFactory = (url) => new WebSocket(url),
+    opts: { tickSilenceMs?: number } = {},
   ) {
+    this.tickSilenceMs = opts.tickSilenceMs ?? TICK_SILENCE_MS;
     const base = new URL(cfg.headUrl);
     this.httpBase = base.origin;
     this.wsUrl = `${base.protocol === "https:" ? "wss:" : "ws:"}//${base.host}/ws`;
@@ -178,6 +191,7 @@ export class Device {
     this.closed = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     if (this.configRetryTimer) { clearTimeout(this.configRetryTimer); this.configRetryTimer = null; }
+    this.stopSilenceWatch();
     this.abortJog();
     // A closed Device sends nothing more: queued motion is refused, not sent
     // late to whatever answers at that address next.
@@ -263,15 +277,40 @@ export class Device {
     ws.on("open", () => {
       this.state.connected = true;
       this.firstTickPending = true;
+      this.lastMessageMs = this.now();
+      this.startSilenceWatch(ws);
       void this.refreshConfig();
     });
-    ws.on("message", (buf) => this.onMessage(buf.toString()));
+    ws.on("message", (buf) => {
+      this.lastMessageMs = this.now();
+      this.onMessage(buf.toString());
+    });
     ws.on("close", () => {
       if (this.ws !== ws) return;
+      this.stopSilenceWatch();
       this.state.connected = false;
       this.scheduleReconnect();
     });
     ws.on("error", () => { /* close will follow */ });
+  }
+
+  private startSilenceWatch(ws: WebSocket): void {
+    this.stopSilenceWatch();
+    this.silenceTimer = setInterval(() => {
+      if (this.ws !== ws) { this.stopSilenceWatch(); return; }
+      const quiet = this.now() - this.lastMessageMs;
+      if (quiet < this.tickSilenceMs) return;
+      console.warn(`head: no telemetry for ${Math.round(quiet / 1000)} s; dropping the socket to reconnect`);
+      this.stopSilenceWatch();
+      // terminate() destroys the TCP socket at once and emits `close`, which
+      // runs the reconnect path above. close() would wait for a close frame
+      // the dead peer will never send.
+      ws.terminate();
+    }, SILENCE_CHECK_MS);
+  }
+
+  private stopSilenceWatch(): void {
+    if (this.silenceTimer) { clearInterval(this.silenceTimer); this.silenceTimer = null; }
   }
 
   private scheduleReconnect(): void {
