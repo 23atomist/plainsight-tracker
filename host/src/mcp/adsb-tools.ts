@@ -12,7 +12,7 @@ import { enrichAircraft, limitsOf, type PanTiltLimits } from "../shared/adsb/enr
 import { effectiveLimits, type TaughtEdges } from "../shared/limits-store.js";
 import { AdsbSnapshot, EnrichedAircraft } from "../shared/adsb/types.js";
 import { aircraftAltitudeM } from "../shared/adsb/convert.js";
-import { text, errText, SUN_LOCKED_MSG, automationBlockMsg } from "./tool-helpers.js";
+import { text, errText, SUN_LOCKED_MSG, ESTOP_LATCHED_MSG, automationBlockMsg } from "./tool-helpers.js";
 import { TrackSector, DISABLED_SECTOR } from "../shared/track/sector.js";
 import { SectorStore } from "../shared/sector-store.js";
 import { evaluate, DEFAULT_RULESET, type Ruleset } from "../shared/policy/rules.js";
@@ -263,6 +263,9 @@ export function registerAdsbTools(
       inputSchema: { hex: z.string().min(1).describe("ICAO 24-bit hex, e.g. a1b2c3") },
     },
     async ({ hex }) => {
+      // Before bind(): a follower bound during the latch would start the
+      // session on its first fix after the latch is cleared.
+      if (session.estopLatched()) return errText(ESTOP_LATCHED_MSG);
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const block = session.automationBlock();
       if (block) return errText(automationBlockMsg(block));

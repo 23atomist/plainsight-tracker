@@ -16,6 +16,7 @@ import { TrackSector, DISABLED_SECTOR, inArc } from "./sector.js";
 import { TrackFloor, DISABLED_FLOOR, aboveFloor, enuElevationDeg } from "./floor.js";
 import { AimOffset, NudgeResult, ZERO_OFFSET, applyOffset, nudgeOffset as nudgeOffsetValue } from "./offset.js";
 import { TaughtEdges, effectiveLimits } from "../limits-store.js";
+import { ESTOP_LATCHED_MSG } from "../../mcp/tool-helpers.js";
 
 export type TrackState = "stopped" | "acquiring" | "tracking" | "waiting";
 export type WaitReason =
@@ -227,6 +228,9 @@ export class TrackingSession {
     const rig = this.rigLocation();
     if (!rig) return "not calibrated — set_rig_location, sight two landmarks, then solve_calibration first";
     if (!this.store.getOrientation()) return "not calibrated — run solve_calibration first";
+    // An E-STOP is terminal for automation: a session created during the
+    // latch would start slewing the moment it is cleared.
+    if (this.estopLatched()) return ESTOP_LATCHED_MSG;
 
     // No stop: the acquire goto below retargets the head (an accepted goto
     // replaces whatever the axis was doing), so a STOP would only add a halt.
@@ -274,9 +278,11 @@ export class TrackingSession {
     return this.now() - age * 1000;
   }
 
-  stop(): void {
+  // `reason` says why the session ended when that is not an operator's
+  // stop_tracking: "estop" (the head's latch ended it -- see tick()).
+  stop(reason: WaitReason | null = null): void {
     this.setState("stopped");
-    this.reason = null;
+    this.reason = reason;
     this.timer?.cancel();
     this.timer = null;
     this.stopMotion();
@@ -303,6 +309,11 @@ export class TrackingSession {
   /** False while the head reports pan's origin unknown (spec 6.8 rule 2). */
   panReferenced(): boolean {
     return !isPanUnreferenced(this.device.getState());
+  }
+
+  /** True while the head's E-STOP latch is set (from any source). */
+  estopLatched(): boolean {
+    return this.device.getState().estop;
   }
 
   /** False while the calibration's pan frame is unverified (CalibrationStore.frameUnverified). */
@@ -484,9 +495,13 @@ export class TrackingSession {
     if (t - this.lastActivityMs > this.cfg.trackDeadmanMs) { this.stop(); return; }
 
     const dev = this.device.getState();
+    // Terminal, not a wait: a waiting session re-acquires on its own once the
+    // gate lifts, and for an E-STOP that would mean clearing the latch
+    // restarts autonomous slewing. The operator clears E-STOP to regain
+    // manual control; a new pass needs a new start.
+    if (dev.estop) { this.stop("estop"); return; }
     const R = this.store.getOrientation();
     if (!R) { this.wait("not_calibrated"); return; }
-    if (dev.estop) { this.wait("estop"); return; }
     if (dev.lastUpdateMs === 0 || t - dev.lastUpdateMs > this.cfg.trackStaleTelemetryMs) {
       this.wait("telemetry_stale"); return;
     }

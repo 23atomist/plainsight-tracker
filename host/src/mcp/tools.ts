@@ -13,7 +13,7 @@ import { LimitsStore, effectiveLimits, CeilingLimits } from "../shared/limits-st
 import { limitGuard, GuardHorizon, usableOr } from "../shared/track/control.js";
 import { currentUserPanTilt } from "./geo-tools.js";
 import { AgentStore } from "../shared/agent-store.js";
-import { text, errText, SUN_LOCKED_MSG } from "./tool-helpers.js";
+import { text, errText, SUN_LOCKED_MSG, ESTOP_LATCHED_MSG } from "./tool-helpers.js";
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
@@ -55,6 +55,15 @@ export function registerTools(
   // teach_limit/clear_taught_limits between two jog/goto_angle calls must
   // take effect on the very next one, not require a daemon restart.
   const effLimits = (): CeilingLimits => effectiveLimits(cfgCeiling, limitsStore.get());
+
+  // Shared by every tool that moves the head or rewrites its frame. NOT used by
+  // stop/estop/clear_estop: stopping must always be allowed.
+  const motionRefusal = (): ReturnType<typeof errText> | null => {
+    if (device.getState().estop) return errText(ESTOP_LATCHED_MSG);
+    if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
+    if (session.isActive()) return errText("tracking active; stop_tracking first");
+    return null;
+  };
 
   server.registerTool(
     "get_status",
@@ -102,10 +111,8 @@ export function registerTools(
       },
     },
     async ({ pan_deg, tilt_deg, speed_dps }) => {
-      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
-      if (session.isActive()) {
-        return errText("tracking active; stop_tracking first");
-      }
+      const refused = motionRefusal();
+      if (refused) return refused;
       try {
         const result = await moveToUserAngle(device, cfg, pan_deg, tilt_deg, speed_dps, effLimits());
         return text(JSON.stringify(result));
@@ -122,10 +129,8 @@ export function registerTools(
       inputSchema: jogArgsShape,
     },
     async ({ pan_dps, tilt_dps, duration_ms }) => {
-      if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
-      if (session.isActive()) {
-        return errText("tracking active; stop_tracking first");
-      }
+      const refused = motionRefusal();
+      if (refused) return refused;
       // SAFETY: rate jog is the one motion path with no endstop and no other
       // gate between "commanded rate" and the hardware — goto_angle checks
       // limits before ever moving, and tracking has its own limitGuard
@@ -178,14 +183,6 @@ export function registerTools(
     // refreshed by the keep-alive and resume the axis right after the stop.
     async () => { session.stop(); device.clearJog(); await device.stop(); return text("stopped"); },
   );
-
-  // Shared by every tool that moves the head or rewrites its frame. NOT used by
-  // estop/clear_estop: an E-STOP must always be allowed.
-  const motionRefusal = (): ReturnType<typeof errText> | null => {
-    if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
-    if (session.isActive()) return errText("tracking active; stop_tracking first");
-    return null;
-  };
 
   server.registerTool(
     "home",

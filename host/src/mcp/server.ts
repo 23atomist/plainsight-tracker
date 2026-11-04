@@ -52,6 +52,7 @@ import {
   toVisionScale,
 } from "./vision-tools.js";
 import { VisionScaleStore } from "../shared/vision-scale-store.js";
+import { wireEstopDisarm } from "./estop-disarm.js";
 
 // Auto capture's deps are hard-wired to MediaMTX: an RTSP snapshot pull
 // (capture/snapshot.ts), the /v3/config/paths/patch record valve, and the
@@ -549,6 +550,9 @@ export async function main(): Promise<MainHandle> {
   const agentStore = new AgentStore(agentFile);
   agentStore.load();
   console.error(`agent armed file: ${agentFile} (armed: ${agentStore.get().armed})`);
+  // Any head E-STOP disarms the agent, whoever latched it (estop-disarm.ts).
+  // Before the first await, like the reference wiring below.
+  wireEstopDisarm({ device, agent: agentStore, log: (m) => console.error(m) });
   const session = new TrackingSession(
     device, cfg, store, Date.now, realScheduler, () => sectorStore.get(), () => limitsStore.get(),
     () => aimTrimStore.get(), () => floorStore.get(), () => device.getAxisConfig(),

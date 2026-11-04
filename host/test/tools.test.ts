@@ -552,6 +552,30 @@ describe("head tools (home / set_position / reference_pan / estop / head config)
     expect(agentStore.get().armed).toBe(false);
   });
 
+  // I1: an E-STOP latched on the head (by anyone) refuses every motion tool
+  // up front; stop/estop/clear_estop stay open.
+  it("every motion tool refuses with estop_latched while the head is latched, and sends nothing", async () => {
+    const { client } = await harness();
+    mock!.model.estop = true;
+    const t0 = Date.now();
+    while (!dev!.getState().estop && Date.now() - t0 < 2000) await new Promise((r) => setTimeout(r, 20));
+    const before = mock!.calls.length;
+    for (const [name, args] of [
+      ["goto_angle", { pan_deg: 10, tilt_deg: 10 }],
+      ["jog", { pan_dps: 2, tilt_dps: 0, duration_ms: 200 }],
+      ["home", {}],
+      ["set_position", { pan_deg: 1 }],
+      ["reference_pan", {}],
+    ] as const) {
+      const res: any = await client.callTool({ name, arguments: args });
+      expect(res.isError, name).toBe(true);
+      expect(textOf(res), name).toMatch(/^estop_latched/);
+    }
+    expect(mock!.calls.slice(before)).toEqual([]);
+    const stop: any = await client.callTool({ name: "stop", arguments: {} });
+    expect(stop.isError ?? false).toBe(false);
+  });
+
   it("get_head_config returns the head's config; set_head_config posts scope/key/value with save and force", async () => {
     const { client } = await harness();
     const cfgRes = JSON.parse(textOf(await client.callTool({ name: "get_head_config", arguments: {} })));

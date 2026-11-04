@@ -15,7 +15,7 @@ import { residualRmsBoundDeg, MAX_CHEAD_OFF_AXIS_DEG, DEFAULT_SIGHTING_SIGMA_DEG
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession, isPanUnreferenced } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
-import { text, errText, SUN_LOCKED_MSG, PAN_UNREFERENCED_MSG } from "./tool-helpers.js";
+import { text, errText, SUN_LOCKED_MSG, PAN_UNREFERENCED_MSG, ESTOP_LATCHED_MSG } from "./tool-helpers.js";
 import { AdsbSource } from "../shared/adsb/source.js";
 import { extrapolateSightingPosition } from "../shared/adsb/extrapolate.js";
 import { LimitsStore, effectiveLimits, CeilingLimits } from "../shared/limits-store.js";
@@ -601,6 +601,7 @@ export function registerGeoTools(
       },
     },
     async ({ lat, lon, height_m, speed_dps }) => {
+      if (device.getState().estop) return errText(ESTOP_LATCHED_MSG);
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       // Geo-pointing aims by the calibration, i.e. by pan's zero: unknown zero,
       // unknown aim. goto_angle/jog stay open for re-referencing.
@@ -648,6 +649,7 @@ export function registerGeoTools(
       },
     },
     async ({ azimuth_deg, elevation_deg, speed_dps }) => {
+      if (device.getState().estop) return errText(ESTOP_LATCHED_MSG);
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       // As point_at.
       if (isPanUnreferenced(device.getState())) return errText(PAN_UNREFERENCED_MSG);

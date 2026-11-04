@@ -5,7 +5,7 @@ import { TrackingSession } from "../shared/track/session.js";
 import { velocityFromSpeedHeading } from "../shared/track/estimator.js";
 import { heightSchema } from "./geo-tools.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
-import { text, errText, SUN_LOCKED_MSG, automationBlockMsg } from "./tool-helpers.js";
+import { text, errText, SUN_LOCKED_MSG, ESTOP_LATCHED_MSG, automationBlockMsg } from "./tool-helpers.js";
 import { AimTrimStore } from "../shared/aim-trim-store.js";
 
 const latSchema = z.number().finite().min(-90).max(90).describe("target latitude, degrees");
@@ -50,6 +50,7 @@ export function registerTrackTools(
       },
     },
     async ({ lat, lon, height_m, speed_mps, heading_deg, climb_mps, label }) => {
+      if (session.estopLatched()) return errText(ESTOP_LATCHED_MSG);
       if (supervisor.isSunLocked()) return errText(SUN_LOCKED_MSG);
       const block = session.automationBlock();
       if (block) return errText(automationBlockMsg(block));
@@ -100,7 +101,8 @@ export function registerTrackTools(
         "Point the rig up to the idle park position when there is nothing to track, so it does not sit " +
         "wherever the last pass ended -- often the horizon, and the neighbours' windows. The move is routed " +
         "through the same sun-avoidance path check the sun guard's own park uses; refuses (reports why, does " +
-        "not move) while sun-locked (the sun park always wins), while a tracking session is active, on stale " +
+        "not move) while the E-STOP is latched (estop_latched), while sun-locked (the sun park always wins), " +
+        "while a tracking session is active, on stale " +
         "telemetry, when uncalibrated, or when no sun-safe path exists. Idempotent: reports already_parked " +
         "instead of re-moving once already at the idle tilt, so it is safe to call on every idle tick. " +
         "Returns { parked, reason } -- always check it, a refusal is NOT an error result.",
@@ -272,7 +274,8 @@ function statusBody(session: TrackingSession) {
     coasting: s.coasting,
     offset_pan_deg: round(s.offsetPanDeg, 3),
     offset_tilt_deg: round(s.offsetTiltDeg, 3),
-    // The agent reads this to stand down without consulting its model.
+    // The agent reads these to stand down without consulting its model.
+    estop: session.estopLatched(),
     pan_referenced: session.panReferenced(),
     calibration_verified: session.calibrationVerified(),
   };

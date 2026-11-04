@@ -164,6 +164,23 @@ describe("track tools", () => {
     expect(mock.gotoCount).toBe(0);
   });
 
+  it("start_tracking and park_idle refuse with estop_latched while the head is latched; status reports estop", async () => {
+    const session = await harness();
+    let body = JSON.parse(textOf(await client.callTool({ name: "get_tracking_status", arguments: {} })));
+    expect(body.estop).toBe(false);
+    mock.model.estop = true;
+    await sleep(200);
+    body = JSON.parse(textOf(await client.callTool({ name: "get_tracking_status", arguments: {} })));
+    expect(body.estop).toBe(true);
+    const r: any = await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toMatch(/^estop_latched/);
+    expect(session.isActive()).toBe(false);
+    const park = JSON.parse(textOf(await client.callTool({ name: "park_idle", arguments: {} })));
+    expect(park).toEqual({ parked: false, reason: "estop_latched" });
+    expect(mock.gotoCount).toBe(0);
+  });
+
   it("stop_tracking ends the session", async () => {
     const session = await harness();
     await client.callTool({ name: "start_tracking", arguments: { lat: NORTH.lat, lon: NORTH.lon, height_m: 0 } });

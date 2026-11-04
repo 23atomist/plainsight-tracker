@@ -1,6 +1,7 @@
 import { Device } from "../shared/device.js";
 import { Config } from "../shared/config.js";
 import { applySign, checkPanTilt, checkSpeed, Limits } from "../shared/angles.js";
+import { ESTOP_LATCHED_MSG } from "./tool-helpers.js";
 
 export interface MoveResult {
   arrived: boolean;
@@ -31,6 +32,10 @@ export async function moveToUserAngle(
   },
   signal?: AbortSignal,
 ): Promise<MoveResult> {
+  // Every absolute move (goto_angle, point_at*, the IMU and vision sweeps,
+  // the parks, a tracking acquire) comes through here: refuse while latched
+  // rather than send a goto the head can only 423.
+  if (device.getState().estop) throw new Error(ESTOP_LATCHED_MSG);
   const lim = checkPanTilt(panDeg, tiltDeg, limits);
   if (!lim.ok) throw new Error(lim.error!);
   const spd = checkSpeed(speedDps, cfg.maxSpeedDps);

@@ -256,7 +256,7 @@ describe("TrackingSession servo: the head's TRACK", () => {
 
   it("no TRACK is sent while waiting", () => {
     const { s } = trackingAt(NORTH, [0, 0, 0]);
-    dev.estop = true;
+    dev.refPan = "none";
     for (let i = 0; i < 5; i++) sched.fire();
     expect(s.status().state).toBe("waiting");
     expect(dev.tracks).toHaveLength(0);
@@ -335,14 +335,23 @@ describe("TrackingSession safety gates", () => {
     expect(dev.stopCalls).toBe(1);
   });
 
-  it("head estop puts the session in waiting with reason estop", () => {
+  it("a head estop ENDS the session (reason estop) and stops the head once", () => {
     const s = tracking();
     dev.estop = true;
     sched.fire();
-    expect(s.status().state).toBe("waiting");
+    expect(s.status().state).toBe("stopped");
     expect(s.status().reason).toBe("estop");
+    expect(s.isActive()).toBe(false);
     expect(dev.tracks).toHaveLength(0);
     expect(dev.stopCalls).toBe(1);
+  });
+
+  it("start() is refused while the head's E-STOP is latched", () => {
+    const s = newSession();
+    dev.estop = true;
+    expect(s.start(NORTH, [0, 0, 0], null)).toMatch(/^estop_latched/);
+    expect(s.isActive()).toBe(false);
+    expect(dev.gotos).toHaveLength(0);
   });
 
   it("waits when the target is below the tilt limit", () => {
@@ -367,13 +376,33 @@ describe("TrackingSession safety gates", () => {
     expect(dev.stopCalls).toBe(1);
   });
 
-  it("auto-reacquires when a waiting target becomes reachable again", () => {
+  // Inherited from the ESP32 program_engaged path, where an E-STOP only made
+  // the session wait and clearing it re-acquired on its own. On the head an
+  // E-STOP is terminal: clearing the latch must not restart slewing.
+  it("does not move after an estop clears: the session has ended", () => {
     const s = tracking();
     dev.estop = true;
     sched.fire();
-    expect(s.status().state).toBe("waiting");
+    expect(s.status().state).toBe("stopped");
 
     dev.estop = false;
+    dev.lastUpdateMs = clockMs;
+    expect(s.updateTarget(NORTH, null)).toMatch(/not tracking/);
+    const gotos = dev.gotos.length;
+    for (let i = 0; i < 5; i++) sched.fire();
+    expect(s.status().state).toBe("stopped");
+    expect(s.status().reason).toBe("estop");
+    expect(dev.gotos).toHaveLength(gotos);
+    expect(dev.tracks).toHaveLength(0);
+  });
+
+  it("auto-reacquires when a waiting target becomes reachable again", () => {
+    const s = tracking();
+    dev.refPan = "none";
+    sched.fire();
+    expect(s.status().state).toBe("waiting");
+
+    dev.refPan = "imu";
     dev.lastUpdateMs = clockMs;
     s.updateTarget(NORTH, null);   // refresh the fix
     const before = dev.gotos.length;
@@ -444,11 +473,11 @@ describe("TrackingSession goto cancellation (generation stamp)", () => {
     expect(s.status().state).toBe("acquiring");
     expect(dev.stopCalls).toBe(0);
 
-    dev.estop = true;
+    dev.refPan = "none";
     sched.fire();
 
     expect(s.status().state).toBe("waiting");
-    expect(s.status().reason).toBe("estop");
+    expect(s.status().reason).toBe("pan_unreferenced");
     expect(dev.stopCalls).toBe(1);
 
     // Edge-triggered: further waiting ticks send nothing.
@@ -467,7 +496,7 @@ describe("TrackingSession goto cancellation (generation stamp)", () => {
     expect(dev.tracks).toHaveLength(1);
     await flush();
 
-    dev.estop = true;
+    dev.refPan = "none";
     sched.fire();
     expect(s.status().state).toBe("waiting");
     expect(dev.stopCalls).toBe(1);

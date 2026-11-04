@@ -26,11 +26,11 @@ describe("resultText", () => {
 });
 
 describe("parseTrackingStatus", () => {
-  const body = { state: "waiting", reason: "pan_unreferenced", label: null, pointing_error_deg: null };
+  const body = { state: "waiting", reason: "pan_unreferenced", label: null, pointing_error_deg: null, estop: false };
 
   it("reads pan_referenced into panReferenced", () => {
     expect(parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: false, calibration_verified: true })))
-      .toEqual({ state: "waiting", label: null, pointingErrorDeg: null, panReferenced: false, calibrationVerified: true });
+      .toEqual({ state: "waiting", label: null, pointingErrorDeg: null, estop: false, panReferenced: false, calibrationVerified: true });
     expect(parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: true, calibration_verified: false })))
       .toMatchObject({ panReferenced: true, calibrationVerified: false });
   });
@@ -40,6 +40,13 @@ describe("parseTrackingStatus", () => {
   it("rejects a status without pan_referenced or calibration_verified", () => {
     expect(() => parseTrackingStatus(JSON.stringify({ ...body, calibration_verified: true }))).toThrow();
     expect(() => parseTrackingStatus(JSON.stringify({ ...body, pan_referenced: true }))).toThrow();
+  });
+
+  it("reads estop, and rejects a status that does not carry it", () => {
+    const ok = { ...body, pan_referenced: true, calibration_verified: true };
+    expect(parseTrackingStatus(JSON.stringify({ ...ok, estop: true }))).toMatchObject({ estop: true });
+    const { estop: _omit, ...noEstop } = ok;
+    expect(() => parseTrackingStatus(JSON.stringify(noEstop))).toThrow();
   });
 });
 

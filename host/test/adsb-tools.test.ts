@@ -321,7 +321,7 @@ describe("track_aircraft while pan is unreferenced", () => {
       { getSnapshot: () => ({ nowSec: NIGHT / 1000, aircraft: [] }) } as never,
       { bind: (h: string) => { bound.push(h); }, onSnapshot: () => {}, status: () => ({ hex: null, lostMs: null, lastError: null }) } as never,
       store, cfg,
-      { automationBlock: () => "calibration_unverified", isActive: () => false } as never,
+      { automationBlock: () => "calibration_unverified", isActive: () => false, estopLatched: () => false } as never,
       { isSunLocked: () => false } as never,
       { get: () => ({ enabled: false, startDeg: 0, endDeg: 360 }) } as never,
     );
@@ -346,7 +346,7 @@ describe("track_aircraft while pan is unreferenced", () => {
       { getSnapshot: () => ({ nowSec: NIGHT / 1000, aircraft: [] }) } as never,
       { bind: (h: string) => { bound.push(h); }, onSnapshot: () => {}, status: () => ({ hex: null, lostMs: null, lastError: null }) } as never,
       store, cfg,
-      { automationBlock: () => "pan_unreferenced", isActive: () => false } as never,
+      { automationBlock: () => "pan_unreferenced", isActive: () => false, estopLatched: () => false } as never,
       { isSunLocked: () => false } as never,
       { get: () => ({ enabled: false, startDeg: 0, endDeg: 360 }) } as never,
     );
@@ -356,6 +356,33 @@ describe("track_aircraft while pan is unreferenced", () => {
     const r: any = await client.callTool({ name: "track_aircraft", arguments: { hex: "a1b2c3" } });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toBe("pan unreferenced — run reference_pan or set_position");
+    expect(bound).toEqual([]);
+    await client.close();
+  });
+
+  // I1: a follower bound during the latch would start the session on its
+  // first fix after the latch is cleared.
+  it("refuses with estop_latched while the head is latched, and never binds the follower", async () => {
+    const store = new CalibrationStore(join(mkdtempSync(join(tmpdir(), "tb3-adsb-")), "cal.json"));
+    store.setRigLocation(RIG.lat, RIG.lon, RIG.height);
+    store.setOrientation(I, new Date(0).toISOString());
+    const bound: string[] = [];
+    const server = new McpServer({ name: "t", version: "0" });
+    registerAdsbTools(
+      server,
+      { getSnapshot: () => ({ nowSec: NIGHT / 1000, aircraft: [] }) } as never,
+      { bind: (h: string) => { bound.push(h); }, onSnapshot: () => {}, status: () => ({ hex: null, lostMs: null, lastError: null }) } as never,
+      store, cfg,
+      { automationBlock: () => null, isActive: () => false, estopLatched: () => true } as never,
+      { isSunLocked: () => false } as never,
+      { get: () => ({ enabled: false, startDeg: 0, endDeg: 360 }) } as never,
+    );
+    const client = new Client({ name: "c", version: "0" });
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(b), client.connect(a)]);
+    const r: any = await client.callTool({ name: "track_aircraft", arguments: { hex: "a1b2c3" } });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/^estop_latched/);
     expect(bound).toEqual([]);
     await client.close();
   });

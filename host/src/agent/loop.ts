@@ -14,6 +14,9 @@ export interface RigStatus {
   readonly state: string;
   readonly label: string | null;
   readonly pointingErrorDeg: number | null;
+  // The head's E-STOP latch. The daemon disarms the agent on any latch, but
+  // the armed flag is read first and a latch can land between the two calls.
+  readonly estop: boolean;
   readonly panReferenced: boolean;
   // False while the calibration's pan frame is unverified (a reference of
   // unknown offset from the solve's frame); the daemon refuses automation.
@@ -91,6 +94,9 @@ export async function runOnce(deps: LoopDeps, state: LoopState): Promise<{ actio
   // refuses tracking and idle park anyway, so there is nothing to decide --
   // and a stop would only churn the follower binding the session is holding
   // for when the reference comes back.
+  if (status.estop) {
+    return { action: { kind: "keep", reason: "estop_latched" }, state };
+  }
   if (!status.panReferenced) {
     return { action: { kind: "keep", reason: "pan_unreferenced" }, state };
   }

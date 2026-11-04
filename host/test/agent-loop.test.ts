@@ -18,7 +18,7 @@ function client(over: Partial<RigMcpClient> = {}): { c: RigMcpClient; calls: str
     getAgentArmed: async () => true,
     scanAircraft: async () => [brief("aaa"), brief("bbb")],
     getTracked: async () => ({ hex: null }),
-    getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: true, calibrationVerified: true }),
+    getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, estop: false, panReferenced: true, calibrationVerified: true }),
     track: async (h) => { calls.push(`track:${h}`); },
     stop: async () => { calls.push("stop"); },
     parkIdle: async () => { calls.push("parkIdle"); return { parked: true, reason: "parked" }; },
@@ -90,7 +90,7 @@ describe("runOnce", () => {
   it("keeps without asking the LLM when the rig's pan is unreferenced", async () => {
     const { c, calls } = client({
       getTracked: async () => ({ hex: "aaa" }),
-      getStatus: async () => ({ state: "waiting", label: "x", pointingErrorDeg: null, panReferenced: false, calibrationVerified: true }),
+      getStatus: async () => ({ state: "waiting", label: "x", pointingErrorDeg: null, estop: false, panReferenced: false, calibrationVerified: true }),
     });
     const choose = vi.fn(async () => ({ action: "track" as const, hex: "bbb", reason: "" }));
     const out = await runOnce(deps(c, choose), { lastSwitchMs: 5 });
@@ -100,10 +100,24 @@ describe("runOnce", () => {
     expect(out.state.lastSwitchMs).toBe(5);
   });
 
+  // The daemon disarms the agent on any latch, but a latch can land between
+  // the armed read and the status read: the status gate covers that window.
+  it("keeps without asking the LLM (no track, stop or idle park) while the E-STOP is latched", async () => {
+    const { c, calls } = client({
+      getTracked: async () => ({ hex: "aaa" }),
+      getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, estop: true, panReferenced: true, calibrationVerified: true }),
+    });
+    const choose = vi.fn(async () => ({ action: "track" as const, hex: "bbb", reason: "" }));
+    const out = await runOnce(deps(c, choose), { lastSwitchMs: 5 });
+    expect(choose).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    expect(out.action).toEqual({ kind: "keep", reason: "estop_latched" });
+  });
+
   it("keeps without asking the LLM while the calibration frame is unverified", async () => {
     const { c, calls } = client({
       scanAircraft: async () => [],
-      getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: true, calibrationVerified: false }),
+      getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, estop: false, panReferenced: true, calibrationVerified: false }),
     });
     const choose = vi.fn(async () => ({ action: "keep" as const, reason: "" }));
     const out = await runOnce(deps(c, choose), { lastSwitchMs: 0 });
@@ -115,7 +129,7 @@ describe("runOnce", () => {
   it("does not idle-park an unreferenced rig even with nothing to track", async () => {
     const { c, calls } = client({
       scanAircraft: async () => [],
-      getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, panReferenced: false, calibrationVerified: true }),
+      getStatus: async () => ({ state: "stopped", label: null, pointingErrorDeg: null, estop: false, panReferenced: false, calibrationVerified: true }),
     });
     const out = await runOnce(deps(c, async () => ({ action: "keep", reason: "" })), { lastSwitchMs: 0 });
     expect(calls).toEqual([]);

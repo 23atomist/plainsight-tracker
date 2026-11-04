@@ -17,6 +17,11 @@ export const SUN_LOCKED_MSG = "sun guard active; blocked to protect the camera �
 // ENABLE 0), so automated motion is refused. Manual jog/goto stay available;
 // these two tools are how the operator gives pan a zero again.
 export const PAN_UNREFERENCED_MSG = "pan unreferenced — run reference_pan or set_position";
+// The head's E-STOP latch is set (from any source: the MCP estop tool, the
+// dashboard, the head API directly). An E-STOP is terminal for host
+// automation: nothing that starts motion is accepted while it is latched, so
+// nothing can be queued up to move the head the moment it is cleared.
+export const ESTOP_LATCHED_MSG = "estop_latched — the head's E-STOP is latched; clear_estop first (nothing resumes on its own)";
 // The pan reference changed with no known offset from the calibration's frame
 // (see CalibrationStore.frameUnverified).
 export const CALIBRATION_UNVERIFIED_MSG =

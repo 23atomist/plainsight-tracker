@@ -7,6 +7,8 @@ describe("moveToUserAngle", () => {
   it("prefixes device rejections with 'device rejected goto:'", async () => {
     const cfg = loadConfig(undefined, {});
     const fakeDevice = {
+      getState: () => ({ estop: false }),
+      getAxisConfig: () => null,
       gotoAngle: async () => {
         throw new Error("busy - program engaged");
       },

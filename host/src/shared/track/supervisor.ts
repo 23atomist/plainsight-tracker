@@ -24,7 +24,7 @@ export interface SunStatus {
   readonly locked: boolean;
 }
 
-type IdleParkAbort = "estop" | "pan_unreferenced" | "calibration_unverified" | "sun_locked" | "tracking_active";
+type IdleParkAbort = "estop_latched" | "pan_unreferenced" | "calibration_unverified" | "sun_locked" | "tracking_active";
 
 interface Boresight { readonly panDeg: number; readonly tiltDeg: number; readonly enu: Vec3 }
 
@@ -357,7 +357,7 @@ export class SunSupervisor {
     // snapshot, not a live read of the device -- that is exactly why
     // parkIdle()'s own staleness check exists, rather than trusting this
     // snapshot no matter how old it is.
-    if (this.device.getState().estop) return "estop";
+    if (this.device.getState().estop) return "estop_latched";
     // Spec 6.8 rule 2: no automated motion without a pan origin, or with one
     // of unknown offset from the calibration's frame -- the park's own
     // sun-path check would be computed from a pan that means nothing. Also
