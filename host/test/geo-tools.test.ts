@@ -417,6 +417,8 @@ describe("geo tools — sign-frame round trip (regression)", () => {
   });
 });
 
+const PERTURB_DEG = 60;
+
 describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
   const samples = field.sweep.map((s: { pan: number; tilt: number; ax: number; ay: number; az: number }) => ({
     panDeg: s.pan, tiltDeg: s.tilt, gravity: normalize([s.ax, s.ay, s.az] as Vec3),
@@ -576,31 +578,91 @@ describe("geo tools — gravity-anchored solve + offset-aware pointing", () => {
     expect(store.getLastFit()!.residualsDeg).toHaveLength(2);
   });
 
-  // The preview the gate judges must be the fresh-only fit too: an old-frame
-  // sighting next to a single fresh one contradicts it, and gating on the
-  // mixed fit would refuse the very solve that verifies the frame.
-  it("gravity path: the residual gate judges the fresh-only fit, not the old frame mixed in", async () => {
-    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+  // Shared setup for the flagged gravity cases: two consistent old-frame
+  // sightings (heading 12), an IMU mounting, the flag set.
+  async function flaggedGravity(client: any, store: CalibrationStore, oldSigmaDeg?: number) {
     const { rS } = solveImuMounting(samples, -1);
     const anchor = anchorAtSweep(rS, 0);
-    await sightAll(client, synthSightings(anchor, 12, 0, [{ azDeg: 41, elDeg: 30, rangeM: 6000, label: "old" }]));
+    const old = synthSightings(anchor, 12, 2.5, [
+      { azDeg: 154, elDeg: 8, rangeM: 18000, label: "old_low_far" },
+      { azDeg: 41, elDeg: 54, rangeM: 6000, label: "old_high_near" },
+      { azDeg: 250, elDeg: 20, rangeM: 9000, label: "old_west" },
+    ]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: field.rig.lat, lon: field.rig.lon, height_m: field.rig.height } });
+    for (const x of old) store.addSighting({ ...x, ...(oldSigmaDeg !== undefined ? { sigmaDeg: oldSigmaDeg } : {}) });
     store.setImuMounting(rS, anchor);
+    store.setBaseDown(anchor);   // a solved old-frame orientation to protect
     store.markFrameUnverified("test");
-    const [x] = synthSightings(anchor, 47, 0, [{ azDeg: 154, elDeg: 8, rangeM: 18000, label: "fresh" }]);
-    mock!.setPosition(x.panDeg, x.tiltDeg);
-    await new Promise((r) => setTimeout(r, 200));
-    await client.callTool({ name: "sight_landmark", arguments: { lat: x.lat, lon: x.lon, height_m: x.height, label: x.label } });
+    return { anchor };
+  }
+  async function sightFresh(client: any, xs: { lat: number; lon: number; height: number; panDeg: number; tiltDeg: number; label: string }[]) {
+    for (const x of xs) {
+      mock!.setPosition(x.panDeg, x.tiltDeg);
+      await new Promise((r) => setTimeout(r, 200));
+      await client.callTool({ name: "sight_landmark", arguments: { lat: x.lat, lon: x.lon, height_m: x.height, label: x.label } });
+    }
+  }
+  function snapshot(store: CalibrationStore) {
+    const p = store.get();
+    return { orientation: p.orientation, sightings: p.sightings.map((x) => x.id), flag: store.isFrameUnverified() };
+  }
 
-    // Control: the two together really are inconsistent.
-    expect(store.previewFit()!.rmsDeg).toBeGreaterThan(5);
+  // Round 4: one fresh sighting always fits with ~zero residual, so it proves
+  // nothing -- and verifying from it would prune every old sighting.
+  it("gravity path: one fresh sighting does not verify -- nothing changes, not even a gravity read", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    const { anchor } = await flaggedGravity(client, store);
+    await sightFresh(client, synthSightings(anchor, 47, 2.5, [{ azDeg: 154, elDeg: 8, rangeM: 18000, label: "fresh" }]));
+    const before = snapshot(store);
+    const grav = vi.spyOn(dev!, "getGravity");
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/1 fresh sighting.*take one more to verify the pan frame.*confirm_pan_frame/);
+    expect(snapshot(store)).toEqual(before);
+    expect(grav).not.toHaveBeenCalled();
+  });
 
+  it("gravity path: a gate-rejected solve while flagged leaves the sightings, the orientation and the flag untouched", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    await flaggedGravity(client, store);
+    // The fixture's own pair: mutually inconsistent (see the refusal test below).
+    await sightFresh(client, field.sightings);
+    const before = snapshot(store);
     const { g, ready } = stubGravityAt(0);
     await ready;
     vi.spyOn(dev!, "getGravity").mockResolvedValue(normalize([g.ax, g.ay, g.az] as Vec3));
     const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
-    if (res.isError) throw new Error(`solve failed: ${textOf(res)}`);
-    expect(store.isFrameUnverified()).toBe(false);
-    expect(store.get().sightings.map((s) => s.label)).toEqual(["fresh"]);
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("mutually inconsistent");
+    expect(snapshot(store)).toEqual(before);
+  });
+
+  // Round 4: the gate's noise bound comes from the sightings actually being
+  // solved. Here the old-frame sightings declare a huge sigma (20 deg); had
+  // they counted, the bound would be 80 deg and the inconsistent fresh pair
+  // would have verified the frame and pruned the old set.
+  it("gravity path: the noise bound comes from the solve set, not the old-frame sightings' sigmas", async () => {
+    const { client, store } = await harness({ TB3_GEO_PAN_SIGN: "-1" });
+    const { anchor } = await flaggedGravity(client, store, 20);
+    const fresh = synthSightings(anchor, 47, 2.5, [
+      { azDeg: 154, elDeg: 8, rangeM: 18000, label: "fresh_low_far" },
+      { azDeg: 41, elDeg: 54, rangeM: 6000, label: "fresh_high_near" },
+    ]);
+    fresh[1] = { ...fresh[1], panDeg: fresh[1].panDeg + PERTURB_DEG };   // mis-aimed
+    await sightFresh(client, fresh);
+    // Control: the fresh pair alone misses by ~23 deg (heading-only), over the
+    // 15 deg heading-only bound but well under the 80 deg the old sigmas imply.
+    const fit = store.previewFit(undefined, store.freshSightings())!;
+    expect(fit.rmsDeg).toBeGreaterThan(15);
+    expect(fit.rmsDeg).toBeLessThan(80);
+    const before = snapshot(store);
+    const { g, ready } = stubGravityAt(0);
+    await ready;
+    vi.spyOn(dev!, "getGravity").mockResolvedValue(normalize([g.ax, g.ay, g.az] as Vec3));
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain("mutually inconsistent");
+    expect(snapshot(store)).toEqual(before);
   });
 
   // The checked-in fixture, used as what it actually is: mutually
@@ -970,13 +1032,14 @@ describe("calibration frame verification (fix round E1)", () => {
     const rOld = store.getOrientation()!;
     store.markFrameUnverified("test");
 
-    // One fresh sighting is not enough for TRIAD: solved on the old pair, flag stays.
+    // One fresh sighting is not enough: refused, nothing changes.
     await sight(45, 1, 45.7, 10.99, "NE");
     let res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
-    expect(res.isError).toBeFalsy();
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/1 fresh sighting.*take one more to verify the pan frame.*confirm_pan_frame/);
     expect(store.isFrameUnverified()).toBe(true);
-    expect(textOf(res)).toMatch(/needs 2 sighting\(s\) taken since the pan re-reference and has 1/);
     expect(store.get().sightings).toHaveLength(3);
+    expect(store.getOrientation()).toEqual(rOld);
 
     // Two fresh: verified from them, the old two pruned in the same write.
     await sight(80, 1, 45, 11.4, "E");
@@ -996,6 +1059,36 @@ describe("calibration frame verification (fix round E1)", () => {
     for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) expect(rAfter[i][j]).toBeCloseTo(rNew[i][j], 9);
     // ...and it is genuinely not the old-frame answer (pan was renamed by 30 deg).
     expect(Math.abs(rNew[0][0] - rOld[0][0]) + Math.abs(rNew[0][1] - rOld[0][1])).toBeGreaterThan(0.1);
+  });
+
+  it("TRIAD: a separation-refused solve while flagged leaves the sightings, the orientation and the flag untouched", async () => {
+    const { client, store } = await harness();
+    const sight = async (pan: number, tilt: number, lat: number, lon: number, label: string) => {
+      mock!.setPosition(pan, tilt);
+      await new Promise((r) => setTimeout(r, 200));
+      await client.callTool({ name: "sight_landmark", arguments: { lat, lon, height_m: 100, label } });
+    };
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    await sight(0, 2, 46, 10, "N_old");
+    await sight(80, 1, 45, 11.4, "E_old");
+    await client.callTool({ name: "solve_calibration", arguments: {} });
+    store.markFrameUnverified("test");
+    // Two fresh sightings of practically the same direction: TRIAD refuses.
+    await sight(1, 2, 46, 10.01, "N1");
+    await sight(1.5, 2, 46, 10.02, "N2");
+    const before = { o: store.getOrientation(), ids: store.get().sightings.map((x) => x.id) };
+    const res: any = await client.callTool({ name: "solve_calibration", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/refusing to solve/);
+    expect(store.isFrameUnverified()).toBe(true);
+    expect({ o: store.getOrientation(), ids: store.get().sightings.map((x) => x.id) }).toEqual(before);
+  });
+
+  it("confirm_pan_frame's description states the trade-off: it keeps the old-frame sightings", async () => {
+    const { client } = await harness();
+    const { tools } = await client.listTools();
+    const d = tools.find((t: any) => t.name === "confirm_pan_frame")!.description!;
+    expect(d).toMatch(/keeps every sighting.*old frame/i);
   });
 
   it("confirm_pan_frame keeps every sighting", async () => {

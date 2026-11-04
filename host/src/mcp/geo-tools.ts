@@ -11,7 +11,7 @@ import { Vec3, Mat3, deg2rad, rad2deg, sub, norm } from "../shared/geo/vec3.js";
 import {
   dBaseFromGravity, enuToPanTiltOffset,
 } from "../shared/geo/imu-orientation.js";
-import { residualRmsBoundDeg, MAX_CHEAD_OFF_AXIS_DEG } from "../shared/geo/calibration-fit.js";
+import { residualRmsBoundDeg, MAX_CHEAD_OFF_AXIS_DEG, DEFAULT_SIGHTING_SIGMA_DEG } from "../shared/geo/calibration-fit.js";
 import { moveToUserAngle } from "./move.js";
 import { TrackingSession, isPanUnreferenced } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
@@ -120,7 +120,8 @@ export function registerGeoTools(
     {
       description:
         "declare that the current pan reference is the same frame the calibration was solved in — use after a Pico reboot when the head was not moved. " +
-        "A tracking session held for calibration_unverified resumes on its next tick.",
+        "A tracking session held for calibration_unverified resumes on its next tick. Trade-off: this keeps every sighting, including those taken " +
+        "in the old frame; re-sighting twice and solve_calibration instead drops the old-frame sightings, which is the safe path if pan may have been renamed.",
       inputSchema: {},
     },
     async () => {
@@ -384,6 +385,15 @@ export function registerGeoTools(
       const p = store.get();
       if (p.rig === undefined) return errText("set the rig location first (set_rig_location)");
       if (p.sightings.length < 1) return errText("need at least one sighting to solve");
+      // A frame-verifying solve needs TWO fresh sightings: one always fits
+      // with ~zero residual, so a single mis-aimed one would "verify" the
+      // frame and prune every old sighting. With exactly one, change nothing.
+      if (store.freshSightings().length === 1) {
+        return errText(
+          "pan frame unverified and only 1 fresh sighting (taken since the pan re-reference); take one more to verify the pan frame, " +
+          "or confirm_pan_frame only if you are sure pan was not renamed. Nothing was changed.",
+        );
+      }
 
       const rig: Geodetic = p.rig;
       // Checked across EVERY sighting, not just the first two: the fit uses
@@ -449,7 +459,7 @@ export function registerGeoTools(
         // fit module's own residual rule (residualRmsBoundDeg), not a second
         // copy of it, so the two cannot drift apart.
         const fresh = store.freshSightings();   // [] while the frame is verified
-        const verifying = fresh.length > 0;
+        const verifying = fresh.length >= 2;     // exactly 1 was refused above
         const solveSet = verifying ? fresh : p.sightings;
         const candidate = store.previewFit(dBase, verifying ? fresh : undefined);
         if (!candidate) return errText("solve failed: no usable sightings for the fit");
@@ -462,7 +472,9 @@ export function registerGeoTools(
         // unidentified camera offset could explain; past that the data is bad
         // rather than merely under-modelled. A full fit had the freedom to
         // absorb a real offset, so it gets the tight bound.
-        const noiseBoundDeg = residualRmsBoundDeg(store.sightingSigmasDeg());
+        // From the sightings being SOLVED: old-frame sightings left out of a
+        // verifying fit must not loosen (or tighten) the bound it is judged by.
+        const noiseBoundDeg = residualRmsBoundDeg(solveSet.map((x) => x.sigmaDeg ?? DEFAULT_SIGHTING_SIGMA_DEG));
         const rmsBoundDeg = candidate.stage === "full"
           ? noiseBoundDeg
           : Math.max(noiseBoundDeg, MAX_CHEAD_OFF_AXIS_DEG);
@@ -494,7 +506,7 @@ export function registerGeoTools(
         if (!fit) return errText("solve failed: no usable sightings for the fit");
         const frameNote = verifying
           ? frameVerifiedNote(fresh.length, p.sightings.length - fresh.length)
-          : store.isFrameUnverified() ? frameStillUnverifiedNote(1, 0) : "";
+          : store.isFrameUnverified() ? frameStillUnverifiedNote(2, fresh.length) : "";
 
         const imuNote = imuDisagreeDeg > 2
           ? ` WARNING: the live gravity read disagrees with the stored IMU characterization by ${imuDisagreeDeg.toFixed(1)}° — that should be ~0° regardless of posture, so R_s is stale (the IMU moved, or characterize_imu was run on a different setup). Re-run characterize_imu.`
