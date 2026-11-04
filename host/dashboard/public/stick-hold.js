@@ -8,7 +8,7 @@
 //
 // The rig-side contract is unchanged and is the load-bearing safety property:
 // /api/control/jog is device.ts's setJogVector dead-man (the rig halts on its
-// own once refreshes stop, jogVectorTtlMs), and every nudge is a bounded
+// own once refreshes stop, holdTtlMs), and every nudge is a bounded
 // setpoint shift. This loop re-posts on a steady cadence comfortably inside
 // that TTL while the finger is down, exactly like JogHold did; release posts
 // an explicit zero vector (duration 0 = "stop now", see jog tool schema).
@@ -55,15 +55,15 @@ export const JOG_SENSITIVITY = {
 // converging number, not chasing a live rate. (nudge-hold.js's own value.)
 const TRIM_INTERVAL_MS = 200;
 
-// ~3 posts/sec against the default 500ms jogVectorTtlMs -- comfortably inside
+// ~3 posts/sec against the default 500ms holdTtlMs -- comfortably inside
 // it, which is the whole point: the browser half of device.ts's setJogVector
 // dead-man contract must refresh strictly faster than the TTL expires.
 // Derived from the TTL rather than hardcoded so a config change moves this
 // with it. (Inherited verbatim from jog-hold.js, which this loop replaces.)
 const JOG_HOLD_INTERVAL_FRACTION = 2 / 3;
 
-export function holdIntervalMs(jogVectorTtlMs) {
-  return Math.max(1, Math.floor(jogVectorTtlMs * JOG_HOLD_INTERVAL_FRACTION));
+export function holdIntervalMs(holdTtlMs) {
+  return Math.max(1, Math.floor(holdTtlMs * JOG_HOLD_INTERVAL_FRACTION));
 }
 
 export class StickHold {
@@ -74,7 +74,7 @@ export class StickHold {
     // postTrim(dPanDeg, dTiltDeg) => boolean -- wraps
     // postControl("nudge-aim-offset", ...), same contract.
     postJog, postTrim,
-    jogVectorTtlMs,
+    holdTtlMs,
     maxJogDps,
     // () => boolean, consulted before EVERY post: an E-STOP/sun-lock landing
     // mid-push must stop the next tick from posting, exactly like the
@@ -92,7 +92,7 @@ export class StickHold {
 
     this.sensitivity = DEFAULT_TRIM_SENSITIVITY;
 
-    this._jogIntervalMs = holdIntervalMs(jogVectorTtlMs);
+    this._jogIntervalMs = holdIntervalMs(holdTtlMs);
     this._timer = null;
     // Non-null while the finger is down: { mode: "jog"|"trim", fx, fy } --
     // fx/fy are ALREADY input-shaped fractional deflections (-1..1) from the

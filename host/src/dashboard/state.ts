@@ -1,4 +1,4 @@
-import { HeadDirect, ServiceState } from "./parse.js";
+import { HeadDirect } from "./parse.js";
 import type { HeadImu, HeadLink, HeadRef } from "../shared/head-types.js";
 import type { CameraStatus } from "./camera/index.js";
 import type { Config } from "../shared/config.js";
@@ -16,7 +16,21 @@ export type DashboardCameraStatus = CameraStatus & { source?: Config["cameraSour
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
-export interface ServicesState { readsb: ServiceState; tb3mcp: ServiceState; tb3agent: ServiceState; llama: ServiceState; }
+export type UpDown = "up" | "down";
+
+// Reachability of the processes the dashboard depends on. No service manager
+// is involved: every field is a direct probe (see dashboard/server.ts's
+// collect()). `agentArmed` is the agent's armed flag (get_agent_armed, spec
+// 6.4), not a process state -- the agent container always runs and idles
+// while disarmed. It is null when the MCP server is down (unknown, which is
+// different from disarmed).
+export interface ServicesState {
+  mcp: UpDown;
+  agentArmed: boolean | null;
+  mediamtx: UpDown;
+  adsb: UpDown;
+  head: UpDown;
+}
 
 // The fields of the MCP get_status tool this dashboard consumes (user frame).
 export interface DeviceStatus {
@@ -36,6 +50,11 @@ export interface TrackingRaw {
   // Riding the estimator's prediction (dropout coasting). Optional so an
   // older daemon's payload still parses.
   coasting?: boolean;
+  // Automation gates from get_tracking_status (spec 6.8). Optional per this
+  // interface's tolerate-older-daemon convention; the dashboard only DISPLAYS
+  // them (the daemon is what enforces them).
+  pan_referenced?: boolean;
+  calibration_verified?: boolean;
   // The standing drift-calibration aim-offset (see track/offset.ts) -- always
   // a number (defaults to 0), never null: an idle/stopped session still has
   // a well-defined (zero) offset.
@@ -175,6 +194,9 @@ export interface DashboardState {
     pointingErrorDeg: number | null; panLimited: boolean; tiltLimited: boolean;
     coasting: boolean;
     offsetPanDeg: number; offsetTiltDeg: number;
+    // False while the calibration's pan frame is unverified (the daemon then
+    // refuses automation); null when not polled / the daemon is down.
+    calibrationVerified: boolean | null;
   };
   calibration: {
     calibrated: boolean; rig: Geo | null; sightings: unknown[]; solvedAt: string | null; provisional: boolean;
@@ -318,7 +340,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
   const policy = s.policy?.ok ? s.policy.value : null;
 
   const trackingState = trk?.state ?? "unknown";
-  const mode: Mode = s.services.tb3agent === "active" ? "autonomous"
+  const mode: Mode = s.services.agentArmed === true ? "autonomous"
     : (trk && trk.state !== "stopped" && trk.state !== "unknown") ? "manual"
     : "idle";
 
@@ -355,6 +377,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
       coasting: trk?.coasting ?? false,
       offsetPanDeg: trk?.offset_pan_deg ?? 0,
       offsetTiltDeg: trk?.offset_tilt_deg ?? 0,
+      calibrationVerified: trk?.calibration_verified ?? null,
     },
     calibration: {
       calibrated: cal?.calibrated ?? false,

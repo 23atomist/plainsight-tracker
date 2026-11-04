@@ -18,6 +18,19 @@
 // than holding its own copy, so there is exactly one place this can ever be
 // true.
 //
+// Two latches meet here, deliberately kept apart:
+//   - this page's own client-side latch (set the instant E-STOP is clicked,
+//     before any network round trip), and
+//   - the HEAD's latch (POST /api/estop; every motion route refuses with 423
+//     until POST /api/estop/clear), reported back on every SSE tick as
+//     state.rig.estop.
+// syncFromHead() folds the head's latch INTO the client latch (so an E-STOP
+// from the MCP estop tool or another browser locks this page too), but never
+// the other way: the client latch clears only on an explicit operator Clear,
+// and Clear posts clear_estop to release the head's latch as well. The field
+// lesson behind all of it: E-STOP is the reliable stop -- the server side
+// latches the head DIRECTLY, so this works with the MCP server down.
+//
 // deps:
 //   el                 -- needs el.estopBanner, el.estopBannerDetail.
 //   toast               -- (message, ok) => void (app.js's own toast()).
@@ -26,8 +39,16 @@
 //   refreshCockpitLock  -- () => void; forces an immediate cockpit
 //     re-render with the just-changed latch folded in, so the AIM block
 //     doesn't wait up to ~1s for the next SSE tick.
-export function createEstop({ el, toast, applyMotionGate, refreshCockpitLock }) {
+// After a successful Clear, a tick that was already in flight can still
+// carry the old estop:true. Ignore the head's latch for this long so that
+// stale tick does not re-raise the banner the operator just cleared. The
+// head itself refuses motion while latched regardless of what this shows.
+export const CLEAR_GRACE_MS = 2500;
+
+export function createEstop({ el, toast, applyMotionGate, refreshCockpitLock, now = () => Date.now() }) {
   let latched = false;
+  let clearedAt = -Infinity;
+  let clearing = false;
 
   function isLatched() {
     return latched;
@@ -46,7 +67,7 @@ export function createEstop({ el, toast, applyMotionGate, refreshCockpitLock }) 
     refreshCockpitLock();
   }
 
-  function clear() {
+  function unlatch() {
     latched = false;
     el.estopBanner.classList.remove("show");
     el.estopBannerDetail.textContent = "";
@@ -54,22 +75,36 @@ export function createEstop({ el, toast, applyMotionGate, refreshCockpitLock }) 
     refreshCockpitLock();
   }
 
+  // Called with state.rig.estop on every SSE tick. Latches only; never clears.
+  function syncFromHead(headLatched) {
+    if (headLatched !== true || latched) return;
+    if (now() - clearedAt < CLEAR_GRACE_MS) return;
+    latch();
+    el.estopBannerDetail.textContent = "the head reports its E-STOP latch is set";
+  }
+
   function renderResult(result) {
     if (!result || typeof result !== "object") {
       el.estopBannerDetail.textContent = "no response from server";
+      toast("E-STOP: no response from server — remaining latched", false);
       return;
     }
-    const legs = ["firmware", "tracking", "agent"];
+    // head first: it is the leg that actually stops the rig.
+    const legs = ["head", "tracking", "agent"];
     const parts = legs.map((leg) => {
       const r = result[leg];
       if (!r) return `${leg}: —`;
       return `${leg}: ${r.ok ? "ok" : "FAIL"} (${r.message})`;
     });
     el.estopBannerDetail.textContent = parts.join(" · ");
-    toast(result.allOk ? "E-STOP: all legs stopped" : "E-STOP: one or more legs failed", !!result.allOk);
+    if (result.allOk) toast("E-STOP: head latched, tracking stopped, agent disarmed", true);
+    else if (result.head && result.head.ok) toast("E-STOP: head latched (a daemon leg failed — see banner)", false);
+    else toast("E-STOP: the HEAD did not confirm — use the physical stop if the rig is moving", false);
   }
 
   // The #estop button's click handler: latches synchronously, then posts.
+  // The response body carries every leg's result even on a 502 (head leg
+  // failed), so it is always rendered rather than branching on the status.
   async function trigger() {
     latch();
     try {
@@ -83,5 +118,35 @@ export function createEstop({ el, toast, applyMotionGate, refreshCockpitLock }) 
     }
   }
 
-  return { isLatched, trigger, clear };
+  // The Clear E-STOP control: releases the HEAD's latch (POST clear_estop),
+  // and only then this page's. A failed clear leaves both latched -- the
+  // operator must never be shown "resumed" while the head still refuses.
+  // Does not re-arm the agent; that is the Auto toggle's job.
+  async function clear() {
+    if (clearing) return;
+    clearing = true;
+    try {
+      const res = await fetch("/api/control/clear_estop", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      const data = await res.json();
+      if (data && data.ok === true) {
+        clearedAt = now();
+        unlatch();
+        toast(typeof data.message === "string" ? data.message : "E-STOP cleared", true);
+      } else {
+        const why = data && typeof data.message === "string" ? data.message : "no response from server";
+        el.estopBannerDetail.textContent = `clear failed: ${why}`;
+        toast("E-STOP NOT cleared — remaining latched", false);
+      }
+    } catch (e) {
+      el.estopBannerDetail.textContent =
+        `clear request failed: ${e instanceof Error ? e.message : String(e)}`;
+      toast("E-STOP NOT cleared — remaining latched", false);
+    } finally {
+      clearing = false;
+    }
+  }
+
+  return { isLatched, trigger, clear, syncFromHead };
 }

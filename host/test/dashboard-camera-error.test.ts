@@ -64,7 +64,12 @@ describe("dashboard startup survives an unusable cameraFfmpegBin", () => {
     expect(state.errors.some((e) => e.includes("cameraFfmpegBin"))).toBe(true);
 
     // The control surface this whole item exists to protect is still live.
+    // Nothing listens at TB3_HEAD_URL here, so the route answers -- with the
+    // head leg honestly reported failed (502), not a crash or a hang.
     const estopRes = await fetch("http://127.0.0.1:8940/api/control/estop", { method: "POST" });
-    expect(estopRes.status).toBe(200);
+    expect(estopRes.status).toBe(502);
+    const estopBody = (await estopRes.json()) as { head: { ok: boolean }; error: string };
+    expect(estopBody.head.ok).toBe(false);
+    expect(estopBody.error).toMatch(/head unreachable/);
   });
 });

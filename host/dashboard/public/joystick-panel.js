@@ -240,10 +240,10 @@ export function wireJoystickDelegates(root, joystickHold) {
 //     comment on why they are conceptually distinct gates that happen to
 //     agree today.
 //   getMaxJogDps     -- () => number, the live jogHold.maxJogDps value.
-//   jogVectorTtlMs   -- the shared dead-man TTL constant.
+//   holdTtlMs   -- the shared dead-man TTL constant.
 export function initJoystickPanel({
   root, joystickToggleEl, postJogVector, postNudgeVector, sightTrackedAircraft, doEstop,
-  isTrimActive, isGated, isSightGated, getMaxJogDps, jogVectorTtlMs,
+  isTrimActive, isGated, isSightGated, getMaxJogDps, holdTtlMs,
 }) {
   const joystickHold = new JoystickHold({
     getGamepads: () => (typeof navigator !== "undefined" && navigator.getGamepads ? navigator.getGamepads() : []),
@@ -255,7 +255,7 @@ export function initJoystickPanel({
     isGated,
     isSightGated,
     getMaxJogDps,
-    jogVectorTtlMs,
+    holdTtlMs,
     // SENSITIVITY_DEFAULT explicitly, NOT left to JoystickHold's own
     // constructor default (SENSITIVITY_MAX) -- see joystick-math.js's own
     // doc on why the two differ on purpose. This is the one production

@@ -56,7 +56,13 @@ const TrackingRawZ = z.object({
   offset_tilt_deg: z.number().optional(),
   // Absent on an older daemon (pre-predictive-coasting estimator).
   coasting: z.boolean().optional(),
+  // Automation gates (spec 6.8): displayed as chips; optional per this file's
+  // non-strict convention.
+  pan_referenced: z.boolean().optional(),
+  calibration_verified: z.boolean().optional(),
 });
+
+const AgentArmedZ = z.object({ armed: z.boolean() });
 
 const TrackedRawZ = z.object({
   hex: z.string().nullable(),
@@ -190,6 +196,10 @@ const CaptureStatusZ = z.object({
   lastSkipReason: z.string().nullable(),
 });
 
+function isNotConnected(e: unknown): boolean {
+  return e instanceof Error && /^Not connected$/.test(e.message);
+}
+
 export class McpDashboardClient {
   private client: Client;
   constructor(private readonly url: string, private readonly token?: string) {
@@ -214,12 +224,24 @@ export class McpDashboardClient {
     await this.connect();
   }
 
+  // One reconnect at a time: collect() fires a dozen calls per tick, and each
+  // would otherwise race its own fresh Client against the others.
+  private reconnecting: Promise<void> | null = null;
+
+  private reconnectOnce(): Promise<void> {
+    this.reconnecting ??= this.reconnect().finally(() => { this.reconnecting = null; });
+    return this.reconnecting;
+  }
+
   private async call(name: string, args: Record<string, unknown>): Promise<string> {
     try {
       return resultText(name, await this.client.callTool({ name, arguments: args }));
     } catch (e) {
-      if (!isSessionError(e)) throw e;
-      await this.reconnect();
+      // "Not connected": the startup connect failed (the dashboard started
+      // before the MCP server). Without this the dashboard would stay
+      // degraded until restarted, even after the MCP server came up.
+      if (!isSessionError(e) && !isNotConnected(e)) throw e;
+      await this.reconnectOnce();
       return resultText(name, await this.client.callTool({ name, arguments: args }));
     }
   }
@@ -288,6 +310,30 @@ export class McpDashboardClient {
     const body = ScanBodyZ.parse(JSON.parse(await this.call("scan_aircraft", { only_trackable: true, limit: 20 })));
     return body.aircraft.map((r) => this.rowToAircraft(r));
   }
+
+  // The agent's armed flag (spec 6.4): the Auto toggle and the E-STOP agent
+  // leg. Replaces starting/stopping the agent process.
+  async getAgentArmed(): Promise<boolean> {
+    return AgentArmedZ.parse(JSON.parse(await this.call("get_agent_armed", {}))).armed;
+  }
+  async setAgentArmed(armed: boolean): Promise<void> { await this.call("set_agent_armed", { armed }); }
+
+  // The MCP-side E-STOP tools. The dashboard's own E-STOP button latches the
+  // head DIRECTLY (head.ts) so it works with this daemon down; these are the
+  // best-effort daemon legs alongside it.
+  async estop(): Promise<void> { await this.call("estop", {}); }
+  async clearEstop(): Promise<void> { await this.call("clear_estop", {}); }
+
+  // Head reference procedures (Setup drawer). Each relays the tool's own
+  // message text; a refusal (tracking active, sun lock, E-STOP) throws.
+  async home(): Promise<string> { return this.call("home", { axes: ["tilt"] }); }
+  async setPosition(panDeg?: number, tiltDeg?: number): Promise<string> {
+    const args: Record<string, number> = {};
+    if (panDeg !== undefined) args.pan_deg = panDeg;
+    if (tiltDeg !== undefined) args.tilt_deg = tiltDeg;
+    return this.call("set_position", args);
+  }
+  async referencePan(): Promise<string> { return this.call("reference_pan", {}); }
 
   async track(hex: string): Promise<void> { await this.call("track_aircraft", { hex }); }
   async stopTracking(): Promise<void> { await this.call("stop_tracking", {}); }

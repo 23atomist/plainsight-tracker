@@ -30,7 +30,7 @@
 //   1. app.js's render() pipeline actually reached the bottom of the file
 //      (not just the top) -- #rig-connected reflects the scripted SSE tick.
 //   2. All five Setup-drawer nav entries (calibration, travel-limits,
-//      set-home, track-sector, joystick) are real-clickable and each
+//      home-reference, track-sector, joystick) are real-clickable and each
 //      becomes the active nav item -- opened FIRST, before E-STOP, so the
 //      very next check exercises E-STOP/Clear-Resume with the drawer
 //      already open (see check 3's own note).
@@ -154,8 +154,8 @@ function scriptedState() {
   scriptTick += 1;
   return {
     ts: Date.now(),
-    services: { readsb: "active", tb3mcp: "active", tb3agent: "inactive", llama: "active" },
-    rig: { connected: true, panDeg: 12.3, tiltDeg: 4.5, moving: false, batteryV: 12.1, telemetryAgeMs: 120, imu: null },
+    services: { mcp: "up", agentArmed: false, mediamtx: "up", adsb: "up", head: "up" },
+    rig: { connected: true, panDeg: 12.3, tiltDeg: 4.5, moving: false, telemetryAgeMs: 120, estop: false, panRef: "imu", tiltDisagreeDeg: null, link: { pico: true, imu: true }, imu: null },
     mode: "manual",
     tracking: {
       state: "stopped", hex: null, callsign: null, targetAzDeg: null, targetElDeg: null,
@@ -232,9 +232,9 @@ function startServer() {
       if (url.pathname === "/api/control/estop" && req.method === "POST") {
         res.writeHead(200, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({
-          firmware: { ok: true, message: "stopped" },
-          tracking: { ok: true, message: "stopped" },
-          agent: { ok: true, message: "stopped" },
+          agent: { ok: true, message: "agent disarmed" },
+          tracking: { ok: true, message: "tracking stopped" },
+          head: { ok: true, message: "head E-STOP latched" },
           allOk: true,
         }));
       }
@@ -404,7 +404,7 @@ async function main() {
     // doc (review fix, finding I-1) for why this ordering is load-bearing.
     await page.click("#drawer-open");
     await page.waitForTimeout(150);
-    for (const entryId of ["calibration", "travel-limits", "set-home", "track-sector", "joystick"]) {
+    for (const entryId of ["calibration", "travel-limits", "home-reference", "track-sector", "joystick"]) {
       await page.click(`[data-entry="${entryId}"]`, { timeout: 10000 });
       await page.waitForTimeout(80);
       const active = await page.locator(`.drawer-nav-item.drawer-nav-active[data-entry="${entryId}"]`).count();
@@ -494,7 +494,7 @@ async function main() {
           !scrolledClearTimedOut && (await p.locator("#estop-banner.show").count()) === 0,
         );
 
-        for (const entryId of ["calibration", "travel-limits", "set-home", "track-sector", "joystick"]) {
+        for (const entryId of ["calibration", "travel-limits", "home-reference", "track-sector", "joystick"]) {
           check(`[${width}px] viewport: drawer nav entry "${entryId}" is reachable`, await isReachable(p, `[data-entry="${entryId}"]`));
         }
 

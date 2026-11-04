@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { getAdsb } from "../src/dashboard/server.js";
-import type { McpDashboardClient } from "../src/dashboard/client.js";
+import { getAdsb, peekAdsb, probeHttp, deriveServices, mediamtxProbeUrl } from "../src/dashboard/server.js";
 import type { Config } from "../src/shared/config.js";
+import type { McpDashboardClient } from "../src/dashboard/client.js";
 import type { AircraftRow } from "../src/dashboard/state.js";
 
 const AIRCRAFT_ROW: AircraftRow = {
@@ -10,11 +10,8 @@ const AIRCRAFT_ROW: AircraftRow = {
   reachable: true, sunSafe: true, slewOk: true, inSector: true, trackable: true,
 };
 
-// getAdsb only reads cfg.adsbUrl (for the best-effort rawCount peek).
-// Deliberately invalid so fetch() rejects synchronously -- no network, no
-// timers -- keeping every test below fast and independent of
-// ADSB_FETCH_TIMEOUT_MS.
-const CFG = { adsbUrl: "not-a-valid-url" } as Config;
+// getAdsb takes the raw count from peekAdsb (tested below); null here.
+const RAW_COUNT: number | null = null;
 
 function fakeClient(over: {
   scanTrackable?: () => Promise<AircraftRow[]>;
@@ -46,7 +43,7 @@ describe("getAdsb", () => {
         scanAircraft: async () => [AIRCRAFT_ROW],
       });
 
-      const result = await getAdsb(client, CFG);
+      const result = await getAdsb(client, RAW_COUNT);
 
       expect(result.ok).toBe(true);
       if (result.ok) {
@@ -68,7 +65,7 @@ describe("getAdsb", () => {
         scanAircraft: async () => { throw new Error("boom"); },
       });
 
-      const result = await getAdsb(client, CFG);
+      const result = await getAdsb(client, RAW_COUNT);
 
       expect(result.ok).toBe(true);
       if (result.ok) {
@@ -89,7 +86,7 @@ describe("getAdsb", () => {
         scanAircraft: async () => { throw new Error("aircraft-down"); },
       });
 
-      const result = await getAdsb(client, CFG);
+      const result = await getAdsb(client, RAW_COUNT);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -111,7 +108,7 @@ describe("getAdsb", () => {
       scanAircraft: async () => [aircraftRow],
     });
 
-    const result = await getAdsb(client, CFG);
+    const result = await getAdsb(client, RAW_COUNT);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -130,7 +127,7 @@ describe("getAdsb", () => {
         scanAircraft: async () => [AIRCRAFT_ROW],
       });
 
-      const pending = getAdsb(client, CFG);
+      const pending = getAdsb(client, RAW_COUNT);
       await vi.advanceTimersByTimeAsync(4001); // > COLLECT_CALL_TIMEOUT_MS (4000ms in server.ts)
       const result = await pending;
 
@@ -143,5 +140,45 @@ describe("getAdsb", () => {
     } finally {
       errSpy.mockRestore();
     }
+  });
+});
+
+describe("services probes (no service manager: direct observation)", () => {
+  const reply = (r: { ok: boolean; body?: unknown } | Error) => {
+    const urls: string[] = [];
+    const fn = (async (url: string) => {
+      urls.push(url);
+      if (r instanceof Error) throw r;
+      return { ok: r.ok, status: r.ok ? 200 : 500, json: async () => r.body };
+    }) as unknown as typeof fetch;
+    return { fn, urls };
+  };
+
+  it("peekAdsb: one read answers both the raw count and up/down", async () => {
+    const { fn, urls } = reply({ ok: true, body: { aircraft: [{}, {}, {}] } });
+    expect(await peekAdsb("http://adsb/data/aircraft.json", fn)).toEqual({ up: "up", rawCount: 3 });
+    expect(urls).toEqual(["http://adsb/data/aircraft.json"]);
+    expect(await peekAdsb("x", reply({ ok: true, body: { nope: 1 } }).fn)).toEqual({ up: "up", rawCount: null });
+    expect(await peekAdsb("x", reply({ ok: false }).fn)).toEqual({ up: "down", rawCount: null });
+    expect(await peekAdsb("x", reply(new Error("ECONNREFUSED")).fn)).toEqual({ up: "down", rawCount: null });
+  });
+
+  it("probeHttp: 2xx is up, anything else (status or throw) is down", async () => {
+    expect(await probeHttp("x", reply({ ok: true }).fn)).toBe("up");
+    expect(await probeHttp("x", reply({ ok: false }).fn)).toBe("down");
+    expect(await probeHttp("x", reply(new Error("timeout")).fn)).toBe("down");
+  });
+
+  it("mediamtxProbeUrl is the control API's paths list", () => {
+    expect(mediamtxProbeUrl({ cameraMediamtxControlUrl: "http://127.0.0.1:9997/" } as Config))
+      .toBe("http://127.0.0.1:9997/v3/paths/list");
+  });
+
+  it("deriveServices: mcp + agentArmed from get_agent_armed (null when MCP is down), head from the direct read", () => {
+    expect(deriveServices({ ok: true, value: true }, "up", "down", { ok: true, value: { connected: true } }))
+      .toEqual({ mcp: "up", agentArmed: true, mediamtx: "up", adsb: "down", head: "up" });
+    expect(deriveServices({ ok: false, error: "fetch failed" }, "down", "up", { ok: true, value: { connected: false } }))
+      .toEqual({ mcp: "down", agentArmed: null, mediamtx: "down", adsb: "up", head: "down" });
+    expect(deriveServices({ ok: true, value: false }, "up", "up", { ok: false, error: "x" }).head).toBe("down");
   });
 });

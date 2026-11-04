@@ -17,6 +17,7 @@
 // arrow keys drive the same vector from app.js.
 import { aimMode, calibrationBadge } from "./ui-mode.js";
 import { renderVisionStatus } from "./vision-status.js";
+import { headChipsHtml, serviceLed, servicesHealthClass } from "./head-chips.js";
 
 function fmt(v, digits) {
   if (v === null || v === undefined) return "—"; // em dash for unavailable
@@ -228,10 +229,10 @@ export class Cockpit {
   //     class has no business touching (estop, estopBanner, estopClear,
   //     camera*, cal*, sector*, joystick*, ...). Those are never read or
   //     written anywhere below -- this class only ever reaches into:
-  //     mode, svc: { readsb, tb3mcp, tb3agent, llama },
-  //     calBadge, health,
-  //     rigConnected, rigPanTilt, rigMoving, rigBattery, rigTelemetryAge,
-  //       rigImuPitchRoll, rigImuTP,
+  //     mode, svc: { mcp, agentArmed, mediamtx, adsb, head },
+  //     calBadge, health, headChips,
+  //     rigConnected, rigPanTilt, rigMoving, rigTelemetryAge,
+  //       rigImuPitchRoll, rigImuTemp,
   //     trkState, trkTarget, trkAzEl, trkRange, trkError, trkLimits, trkOffset,
   //     visionStatus,
   //     adsbCount, adsbList,
@@ -283,6 +284,7 @@ export class Cockpit {
     this._renderAdsb(s);
     this._renderBadge(s);
     this._renderHealth(s);
+    this._renderHeadChips(s);
     this._renderAim(s);
   }
 
@@ -300,10 +302,16 @@ export class Cockpit {
     for (const key of Object.keys(svc)) {
       const dot = svc[key];
       if (!dot) continue;
-      const state = s[key] ?? "unknown";
-      dot.className = "led led-" + state;
-      dot.title = `${key}: ${state}`;
+      const { cls, label } = serviceLed(key, s[key]);
+      dot.className = "led " + cls;
+      dot.title = `${key}: ${label}`;
     }
+  }
+
+  // E-STOP / pan-reference / calibration-frame / link chips (head-chips.js).
+  _renderHeadChips(state) {
+    if (!this.el.headChips) return;
+    this.el.headChips.innerHTML = headChipsHtml(state);
   }
 
   _renderRig(rig) {
@@ -315,10 +323,6 @@ export class Cockpit {
     }
     if (el.rigPanTilt) el.rigPanTilt.textContent = fmtPair(r.panDeg, r.tiltDeg, "°");
     if (el.rigMoving) el.rigMoving.textContent = fmtBool(r.moving);
-    if (el.rigBattery) {
-      el.rigBattery.textContent = r.batteryV === null || r.batteryV === undefined
-        ? "—" : `${fmt(r.batteryV, 2)} V`;
-    }
     if (el.rigTelemetryAge) {
       el.rigTelemetryAge.textContent = r.telemetryAgeMs === null || r.telemetryAgeMs === undefined
         ? "—" : `${r.telemetryAgeMs} ms`;
@@ -327,14 +331,12 @@ export class Cockpit {
     const imu = r.imu;
     if (imu && imu.ok) {
       if (el.rigImuPitchRoll) el.rigImuPitchRoll.textContent = fmtPair(imu.pitch, imu.roll, "°");
-      if (el.rigImuTP) {
-        const temp = imu.tempC === null || imu.tempC === undefined ? "—" : `${fmt(imu.tempC)}°C`;
-        const press = imu.pressHpa === null || imu.pressHpa === undefined ? "—" : `${fmt(imu.pressHpa, 0)} hPa`;
-        el.rigImuTP.textContent = `${temp} / ${press}`;
+      if (el.rigImuTemp) {
+        el.rigImuTemp.textContent = imu.tempC === null || imu.tempC === undefined ? "—" : `${fmt(imu.tempC)}°C`;
       }
     } else {
       if (el.rigImuPitchRoll) el.rigImuPitchRoll.textContent = "—";
-      if (el.rigImuTP) el.rigImuTP.textContent = "—";
+      if (el.rigImuTemp) el.rigImuTemp.textContent = "—";
     }
   }
 
@@ -542,25 +544,15 @@ export class Cockpit {
 
     const rigCls = rig.connected ? "led-active" : "led-failed";
 
-    // "inactive" is NOT a fault -- tb3agent reads "inactive" whenever
-    // Autonomous mode is simply off, which is the default, entirely healthy
-    // state during ordinary manual tracking (ServiceState, state.ts). A dot
-    // that reads the same for "off on purpose" and "actually failed" trains
-    // the operator to ignore it -- this project has already shipped that
-    // exact mistake twice (a permanently-amber "capture skipped" chip, a
-    // permanently-red "capture ERROR"), and both were treated as real
-    // defects. So: any genuine "failed" always wins: red. Otherwise any
-    // genuinely "unknown" (not yet polled, daemon unreachable) reads as
-    // unknown -- distinct from both healthy and failed. Everything else
-    // (all active, or a mix of active/deliberately-inactive) is healthy.
-    const svcStates = Object.values(services);
-    const svcCls = svcStates.length === 0
-      ? "led-unknown"
-      : svcStates.some((v) => v === "failed")
-        ? "led-failed"
-        : svcStates.some((v) => v === "unknown")
-          ? "led-unknown"
-          : "led-active";
+    // A disarmed agent is NOT a fault -- it is the default, entirely healthy
+    // state during ordinary manual tracking. A dot that reads the same for
+    // "off on purpose" and "actually failed" trains the operator to ignore
+    // it -- this project has already shipped that exact mistake twice (a
+    // permanently-amber "capture skipped" chip, a permanently-red "capture
+    // ERROR"), and both were treated as real defects. So the dot reflects
+    // reachability only: any "down" is red, anything not yet known is
+    // unknown, otherwise healthy (servicesHealthClass, head-chips.js).
+    const svcCls = servicesHealthClass(services);
 
     const sunCls = sunGuard.state === "unknown" || sunGuard.state === undefined
       ? "led-unknown"

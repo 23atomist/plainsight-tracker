@@ -37,8 +37,8 @@ export class MediaMtxPublisher {
     // reader-count poll (see dashboard/server.ts) only calls
     // setReaderCount(), never sync()/retry(). Unlike CameraStreamer, whose
     // budget resets for free on last-viewer-detach (mjpeg-streamer.ts's
-    // stopPipeline), this publisher is viewer-independent, so a
-    // `systemctl restart mediamtx`, a MediaMTX crash-loop, or this rig's
+    // stopPipeline), this publisher is viewer-independent, so
+    // a MediaMTX container restart, a MediaMTX crash-loop, or this rig's
     // documented suspend/resume instability all leave ingest permanently
     // "gave up" with the tile stuck reading enabled+not-streaming forever
     // -- the exact "Camera: STARTING..." forever symptom this whole

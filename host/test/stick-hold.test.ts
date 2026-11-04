@@ -20,7 +20,7 @@ function makeHold(overrides: Record<string, unknown> = {}) {
       trimPosts.push({ dPan, dTilt });
       return !gated;
     }),
-    jogVectorTtlMs: 500,
+    holdTtlMs: 500,
     maxJogDps: 19,
     isGated: () => gated,
     now,
@@ -215,7 +215,7 @@ describe("StickHold gating and failure handling", () => {
     const hold = new StickHold({
       postJog: failingPost as unknown as (p: number, t: number, d: number) => Promise<boolean>,
       postTrim: vi.fn(async () => true),
-      jogVectorTtlMs: 500,
+      holdTtlMs: 500,
       maxJogDps: 19,
       isGated: () => false,
       now,

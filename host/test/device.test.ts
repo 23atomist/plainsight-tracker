@@ -379,7 +379,7 @@ describe("Device (head API)", () => {
     expect(h.stopCount).toBe(2);
   });
 
-  it("estop/clearEstop/home/setPos/reference hit their routes", async () => {
+  it("estop, clearEstop, home, setPos and reference hit their routes", async () => {
     const h = await startHead();
     const d = await startDevice(h);
     const events: HeadEvent[] = [];

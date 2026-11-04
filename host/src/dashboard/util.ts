@@ -7,7 +7,7 @@
 // freeze an `Aggregator.poll()` tick for up to 60s (stalling SSE via the
 // `running` guard in server.ts) or lag an E-STOP leg's result by as much.
 // Used to wrap the per-call `client.get*()` legs in collect() and the
-// stopTracking/agentStop legs in ControlDeps.
+// best-effort MCP legs of the E-STOP (controls.ts) and stopTracking in ControlDeps.
 //
 // The wrapped promise is left to settle on its own after the timeout fires
 // (this only races it, it does not cancel/abort it) — callers only see the

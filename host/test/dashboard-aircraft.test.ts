@@ -43,7 +43,7 @@ describe("mergeState carries adsb.aircraft + adsb.trackable independently", () =
       deviceStatus: { ok: false, error: "x" }, rigDirect: { ok: false, error: "x" },
       tracking: { ok: false, error: "x" }, tracked: { ok: false, error: "x" },
       calibration: { ok: false, error: "x" }, sun: { ok: false, error: "x" }, capture: { ok: false, error: "x" },
-      services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
+      services: { mcp: "down", agentArmed: null, mediamtx: "down", adsb: "down", head: "down" },
       adsb: { ok: true, value: { rawCount: 5, aircraft: [untrackableRow, trackableRow], trackable: [trackableRow] } },
       camera: { enabled: false, streaming: false, viewers: 0 },
     } as unknown as SourceInputs;

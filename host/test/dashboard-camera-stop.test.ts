@@ -6,7 +6,7 @@ import { buildControlDeps } from "../src/dashboard/server.js";
 // via Parameters<> instead of duplicating/importing the interface.
 type Sources = Parameters<typeof buildControlDeps>[0];
 
-// buildControlDeps dereferences s.client.*/s.rig.*/s.sc.* immediately (most
+// buildControlDeps dereferences s.client.*/s.head.* immediately (most
 // are .bind()'d at construction time), so every method it touches needs to
 // exist as a real function even though cameraStop -- the only thing these
 // tests exercise -- never calls them. None of these are asserted on.
@@ -40,12 +40,16 @@ function fakeSources(over: { mtx?: Sources["mtx"]; camera?: Sources["camera"] })
     startRecording: async () => "unused",
     stopRecording: async () => "unused",
     setCaptureMode: async () => "unused",
+    setAgentArmed: asyncNoop,
+    clearEstop: asyncNoop,
+    home: async () => "unused",
+    setPosition: async () => "unused",
+    referencePan: async () => "unused",
   };
-  const rig = { stop: asyncNoop };
-  const sc = { stop: asyncNoop, start: asyncNoop };
+  const head = { estop: asyncNoop, clearEstop: asyncNoop };
   const camera = over.camera ?? { enable: () => {}, disable: () => {}, status: () => ({ enabled: false, streaming: false, viewers: 0 }) };
   return {
-    client, rig, sc, camera,
+    client, head, camera,
     cfg: {} as Sources["cfg"],
     mtx: over.mtx ?? null,
   } as unknown as Sources;

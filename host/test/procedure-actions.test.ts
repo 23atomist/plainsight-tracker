@@ -51,11 +51,11 @@ function setup(over: Partial<Parameters<typeof initProcedureActions>[0]> = {}) {
 }
 
 describe("initProcedureActions", () => {
-  it("registers a renderer for calibration, travel-limits, and set-home", () => {
+  it("registers a renderer for calibration, travel-limits, and home-reference", () => {
     const { drawer } = setup();
     expect(drawer._renderers.has("calibration")).toBe(true);
     expect(drawer._renderers.has("travel-limits")).toBe(true);
-    expect(drawer._renderers.has("set-home")).toBe(true);
+    expect(drawer._renderers.has("home-reference")).toBe(true);
   });
 
   // [Teach] captures the edge on the FIRST click. It used to collapse the
@@ -115,22 +115,46 @@ describe("initProcedureActions", () => {
     expect(drawer.updateStrip).not.toHaveBeenCalled();
   });
 
-  // The verb->handler map dispatch: "home:set" must fire setHomeActions.setHome,
-  // but any OTHER id paired with the "home" verb must NOT -- home/set's
-  // confirmation must never fire from an unrelated data-act value that
-  // happens to share the verb.
-  it("dispatches home:set to setHome, but not home:<anything-else>", async () => {
-    vi.stubGlobal("window", { confirm: vi.fn(() => true) });
+  // The verb->handler map dispatch: each of the three headref ids posts its
+  // own head route; an unrelated id sharing the verb must post nothing.
+  it("dispatches headref:home / headref:reference-pan, but not headref:<anything-else>", async () => {
     const { drawerBody, posts } = setup();
-    drawerBody.fireClick({ dataset: { act: "home:set" } });
+    drawerBody.fireClick({ dataset: { act: "headref:home" } });
+    drawerBody.fireClick({ dataset: { act: "headref:reference-pan" } });
+    drawerBody.fireClick({ dataset: { act: "headref:toString" } });
+    drawerBody.fireClick({ dataset: { act: "headref:cancel" } });
     await Promise.resolve();
-    expect(posts.some(([path]) => path === "home/set")).toBe(true);
+    expect(posts).toEqual([["head/home", {}], ["head/reference-pan", {}]]);
+  });
 
-    posts.length = 0;
-    drawerBody.fireClick({ dataset: { act: "home:cancel" } });
+  it("headref:set-position reads the two inputs and posts only the filled axes", async () => {
+    const { drawerBody, posts } = setup();
+    const inputs: Record<string, { value: string }> = { "#setpos-pan": { value: "12.5" }, "#setpos-tilt": { value: "" } };
+    (drawerBody as unknown as { querySelector: (sel: string) => unknown }).querySelector = (sel) => inputs[sel] ?? null;
+    drawerBody.fireClick({ dataset: { act: "headref:set-position" } });
     await Promise.resolve();
-    expect(posts.some(([path]) => path === "home/set")).toBe(false);
-    vi.unstubAllGlobals();
+    expect(posts).toEqual([["head/set-position", { pan_deg: 12.5 }]]);
+  });
+
+  it("headref:set-position with both inputs blank toasts and posts nothing", async () => {
+    const { drawerBody, posts, toasts } = setup();
+    (drawerBody as unknown as { querySelector: () => unknown }).querySelector = () => ({ value: "" });
+    drawerBody.fireClick({ dataset: { act: "headref:set-position" } });
+    await Promise.resolve();
+    expect(posts).toEqual([]);
+    expect(toasts.some(([m, ok]) => !ok && /pan and\/or tilt/.test(m))).toBe(true);
+  });
+
+  it("every procedure is refused under E-STOP, a sun lock, or while tracking", async () => {
+    const r0 = setup({ isEstopLatched: () => true });
+    r0.drawerBody.fireClick({ dataset: { act: "headref:home" } });
+    expect(r0.toasts.some(([m]) => /E-STOP/.test(m))).toBe(true);
+    for (const over of [{ isEstopLatched: () => true }, { isSunLocked: () => true }, { isTrimActive: () => true }]) {
+      const r = setup(over);
+      (r.drawerBody as unknown as { querySelector: () => unknown }).querySelector = () => ({ value: "1" });
+      for (const id of ["home", "reference-pan", "set-position"]) r.drawerBody.fireClick({ dataset: { act: `headref:${id}` } });
+      expect(r.posts).toEqual([]);
+    }
   });
 
   it("dispatches clear-limits to the confirm-gated clearLimits action", async () => {

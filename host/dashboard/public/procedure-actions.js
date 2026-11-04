@@ -1,5 +1,6 @@
 // The Setup drawer's guided-procedure ACTIONS: the impure glue between
-// procedures.js's pure renderers (calibration, travel limits, set home) and
+// procedures.js's pure renderers (calibration, travel limits, home &
+// reference) and
 // the daemon (postControl) / the browser (window.prompt/window.confirm).
 // procedures.js renders step-gate.js's ordered steps and hands a clicked
 // step's id back to stepHandler, which dispatches into the actions built
@@ -9,13 +10,13 @@
 //
 // Split out of app.js (2026-07-28 dashboard redesign, task 10) purely to
 // keep that file under this project's 800-line ceiling -- no behaviour
-// change from what app.js's own "guided calibration/travel-limits/set-home
+// change from what app.js's own "guided calibration/travel-limits
 // procedure" sections already did. app.js's mutable latches (estopLatched,
 // sunLocked, lastState) are threaded through as accessor functions rather
 // than closed-over module vars, since they now live in a different file.
 import {
   renderCalibration, stepHandler, sightingStripHtml, formatTrackedAircraft, formatTrimOffset,
-  renderTravelLimits, formatCurrentPanTilt, renderSetHome, destructiveConfirm,
+  renderTravelLimits, formatCurrentPanTilt, renderHomeReference, parseSetPosition, destructiveConfirm,
 } from "./procedures.js";
 
 // deps:
@@ -303,8 +304,6 @@ export function initProcedureActions({
     ));
   }
 
-  // set_home (src/tools.ts) silently clears BOTH the calibration and the
-  // taught travel limits (they were measured relative to the OLD zero).
   // confirmDestructive wraps destructiveConfirm (procedures.js, pure) with
   // the one browser-side effect it deliberately doesn't own itself:
   // actually showing the confirmation.
@@ -314,31 +313,49 @@ export function initProcedureActions({
     return window.confirm(message);
   }
 
-  const setHomeActions = {
-    // set_home also refuses server-side under a sun lock AND while tracking
-    // is active (src/tools.ts: "tracking active; stop_tracking first") --
-    // both checked here too, for an immediate reason instead of a doomed
-    // round trip AND before ever showing the destructive confirmation.
-    setHome: () => {
-      if (isSunLocked()) { toast("sun guard locked — set home is refused while parked", false); return; }
-      if (isTrimActive()) { toast("tracking active — stop tracking before setting home", false); return; }
-      if (!confirmDestructive("set_home")) return;
-      postControl("home/set", {});
+  // Home & reference (MCP home / reference_pan / set_position). All three are
+  // refused server-side under a sun lock and while tracking, and by the head
+  // under E-STOP (423 on home, setpos and reference alike). Checked here too
+  // for an immediate reason instead of a doomed round trip -- defence in
+  // depth behind renderHomeReference's structural gating.
+  function headRefGateOk() {
+    if (isEstopLatched()) { toast("E-STOP latched — clear it first", false); return false; }
+    if (isSunLocked()) { toast("sun guard locked — refused while parked", false); return false; }
+    if (isTrimActive()) { toast("tracking active — stop tracking first", false); return false; }
+    return true;
+  }
+
+  // The two Set position inputs live in #drawer-body's rendered markup.
+  function readInput(id) {
+    const node = drawerBody && typeof drawerBody.querySelector === "function"
+      ? drawerBody.querySelector(`#${id}`) : null;
+    return node && typeof node.value === "string" ? node.value : "";
+  }
+
+  const headRefActions = {
+    home: () => { if (headRefGateOk()) postControl("head/home", {}); },
+    "reference-pan": () => { if (headRefGateOk()) postControl("head/reference-pan", {}); },
+    "set-position": () => {
+      if (!headRefGateOk()) return;
+      const parsed = parseSetPosition(readInput("setpos-pan"), readInput("setpos-tilt"));
+      if (!parsed.ok) { toast(parsed.message, false); return; }
+      postControl("head/set-position", parsed.body);
     },
   };
 
   if (drawer) {
-    // sunLocked folded in (see the travel-limits registration above for the
-    // same convention) so renderSetHome can gate [Set home] structurally --
-    // no control at all, a visible reason instead, when the daemon would
-    // refuse it anyway.
-    drawer.setEntryRenderer("set-home", () => renderSetHome({ ...getLastState(), sunLocked: isSunLocked() }, setHomeActions));
+    // Gates folded in (not part of the raw SSE payload), same convention as
+    // the travel-limits registration above, so renderHomeReference can
+    // replace each control with a visible reason when it would be refused.
+    drawer.setEntryRenderer("home-reference", () => renderHomeReference({
+      ...getLastState(), sunLocked: isSunLocked(), estopLatched: isEstopLatched(), trimActive: isTrimActive(),
+    }, headRefActions));
   }
 
   // Delegated (not per-button) click handling for every drawer body's action
   // controls -- calibration's [run]/[redo]/[reset]/[start]/[use a landmark
-  // instead], travel-limits' [Teach <edge>]/[clear taught limits], and Set
-  // home's [Set home]. drawer.js only rewrites #drawer-body's innerHTML when
+  // instead], travel-limits' [Teach <edge>]/[clear taught limits], and Home &
+  // reference's three buttons. drawer.js only rewrites #drawer-body's innerHTML when
   // its content actually changes, but a rewrite can still happen at any time
   // and would silently drop a listener attached directly to one of those
   // buttons -- a single listener on the stable #drawer-body container
@@ -354,7 +371,7 @@ export function initProcedureActions({
   // fix) discards the OLDEST recorded sighting on any third call, no matter
   // which slot's [redo] was clicked, and -- once both slots are filled --
   // also silently clears an already-completed solve. Gated the same way
-  // set_home/clear_taught_limits already are: confirmDestructive names
+  // clear_taught_limits already is: confirmDestructive names
   // exactly what's lost before the write ever fires.
   function redoStep(id, drawerRef) {
     if (id !== "sight-1" && id !== "sight-2") {
@@ -377,7 +394,9 @@ export function initProcedureActions({
     redo: (id, drawerRef) => redoStep(id, drawerRef),
     teach: (id, drawerRef) => travelLimitsActions.startTeach(id, drawerRef),
     "clear-limits": () => travelLimitsActions.clearLimits(),
-    home: (id) => { if (id === "set") setHomeActions.setHome(); },
+    // Only the three known ids dispatch: an unrelated id sharing the verb
+    // must never fire a head command.
+    headref: (id) => { if (Object.hasOwn(headRefActions, id)) headRefActions[id](); },
   };
 
   if (drawerBody) {
@@ -392,7 +411,7 @@ export function initProcedureActions({
   }
 
   // Refreshes whichever Setup-drawer entry is open (calibration, travel
-  // limits, or set home -- drawer.refresh() re-renders whatever's currently
+  // limits, or home & reference -- drawer.refresh() re-renders whatever's currently
   // active, not just calibration) or the currently-collapsed strip's live
   // readouts, once per SSE tick. updateStrip() silently skips any named
   // region absent from whichever strip is currently showing, so pushing all

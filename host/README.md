@@ -7,7 +7,7 @@ Always-on MCP daemon that lets any LLM control the eMotimo TB3 over the network.
 ```bash
 cd tb3-mcp
 npm install
-cp config.example.json config.json   # edit deviceHost + limits for your rig
+cp config.example.json config.json   # edit headUrl + limits for your rig
 npm run build
 npm start                             # serves MCP at http://<host>:8770/mcp
 ```
@@ -16,12 +16,13 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 
 ## Configuration
 
-`config.json` (all keys overridable by env, e.g. `TB3_DEVICE_HOST`, `TB3_MCP_PORT`,
+`config.json` (all keys overridable by env, e.g. `TB3_HEAD_URL`, `TB3_MCP_PORT`,
 `TB3_MCP_TOKEN`, `TB3_MAX_SPEED_DPS`, `TB3_PAN_SIGN`):
 
 | key | default | meaning |
 |---|---|---|
-| deviceHost | `tb3.local` | TB3 host or `ip:port` |
+| headUrl | `http://192.168.4.96:8780` | the head controller (`http://host:port`); the MCP server and the dashboard both talk to it directly |
+| stateDir | `/data/state` | directory for every persisted store file, including `agent.json` (the agent's armed flag) |
 | mcpPort | `8770` | MCP HTTP/SSE listen port |
 | mcpToken | (unset) | if set, clients must send `Authorization: Bearer <token>` |
 | panMin/panMax | `-180/180` | pan soft limits (degrees) |
@@ -50,7 +51,8 @@ Dev mode (no build): `npm run dev`. Tests: `npm test`.
 | `home` | home the tilt axis; watch `get_status.axes.tilt.homed` |
 | `set_position` | declare the current pose to be a pan/tilt value; the head's `pan_reference` event shifts calibration, taught limits and the sector (nothing is cleared) |
 | `reference_pan` | re-run the head's IMU north reference for pan |
-| `estop`, `clear_estop` | latch / release the head's E-STOP; always allowed, even sun-locked or while tracking |
+| `estop`, `clear_estop` | latch / release the head's E-STOP; always allowed, even sun-locked or while tracking. `estop` also disarms the agent; `clear_estop` does not re-arm it |
+| `get_agent_armed`, `set_agent_armed` | read / set the autonomous agent's armed flag (`{armed: boolean}`, persisted in `<stateDir>/agent.json`, default disarmed). The agent process always runs and does nothing while disarmed |
 | `get_head_config`, `set_head_config` | read / write the head's config; guarded keys need `force`; `save` pauses the Pico step core, so it is refused while tracking |
 
 `goto_angle` is the soft-limit-enforced primitive — out-of-range targets are refused. `jog` takes
@@ -530,7 +532,11 @@ Example: `http://192.168.4.104:8788`
 
 ### Features
 
-- **Service LEDs** — real-time status of the MCP daemon and (if enabled) the autonomous agent (`tb3-agent`)
+- **Service LEDs** — reachability of the head, the MCP server, MediaMTX and the ADS-B feed (each probed
+  directly; no service manager is involved), plus the agent's armed flag (grey = disarmed, which is healthy)
+- **Head chips** — `E-STOP LATCHED` (the head's latch, wherever it was set), `PAN UNREFERENCED`
+  (`rig.panRef === "none"`), `CALIBRATION UNVERIFIED` (`get_tracking_status.calibration_verified === false`),
+  and `pico` / `imu` link dots
 - **Telemetry display** — current pan/tilt, movement state, program mode
 - **3D rig view** — a schematic pose of the rig plus the effective pan/tilt travel envelope (see
   "Operator-taught travel limits" above), colored green/amber/red as the current pose nears or
@@ -539,27 +545,34 @@ Example: `http://192.168.4.104:8788`
 - **Manual controls** — jog and goto (point-to-point) motion
 - **Tracking from ADS-B** — browse and manually track aircraft from the ADS-B source (if enabled)
 - **Calibration panel** — set location, record landmark sightings, solve and view the geo-pointing calibration
-- **Auto toggle** — start/stop the autonomous agent (`tb3-agent`); requires `systemctl` permission (see HOST-SETUP.md)
+- **Home & reference** (Tools drawer) — Home tilt (`home`), Reference pan (`reference_pan`), and Set position
+  (`set_position`, pan/tilt in the user frame, without moving). None of them clears calibration or taught limits
+- **Auto toggle** — arms / disarms the autonomous agent (`set_agent_armed`). The agent container always runs;
+  disarmed, it does nothing at all. No host privileges are needed (no polkit, no service manager)
 
 ### E-STOP Behavior
 
-The **E-STOP** button is a hard stop that:
+The **E-STOP** button runs three legs, in this order:
 
-1. **Direct to firmware** — sends `/api/stop` directly to the rig, halting all motion immediately
-2. **Stops tracking** — if a tracking session is active, it terminates the session
-3. **Stops the agent** — if the Auto toggle is on, the button also stops `tb3-agent` (the autonomous control daemon)
+1. **Disarms the agent** — `set_agent_armed {armed:false}` via the MCP server (best effort, 1 s budget)
+2. **Stops tracking** — `stop_tracking` via the MCP server (best effort, 1 s budget)
+3. **Latches the head** — `POST <headUrl>/api/estop`, **directly** from the dashboard to the head, never through
+   the MCP server. Every motion route on the head then refuses (423) until the latch is cleared.
 
-The E-STOP **latches** (remains "pressed") until the **Clear** button is clicked, preventing accidental re-engagement while motion is still settling.
+Field lesson: E-STOP is the reliable stop. Because the head leg does not go through the MCP server, the E-STOP
+works with the MCP server down; the two MCP legs then report failed, and the response is still a success. The
+response is **502** only when the head leg itself failed (the head unreachable, or the Pico did not confirm), with
+the head's error text; every leg's result is shown in the banner either way.
+
+The page latches the instant the button is clicked, and also whenever the head reports its latch set (an E-STOP
+from the MCP `estop` tool or another browser). **Clear E-STOP** posts `clear_estop`: it clears the head's latch
+(and, best effort, the MCP server's own `clear_estop`), and only then the page's. It does not re-arm the agent.
 
 ### On-Host Setup
 
-Camera access and `systemctl` permissions require one-time setup on the host. See **`deploy/HOST-SETUP.md`** for:
-
-- Releasing the D5000 from gvfs (`gvfs-gphoto2-volume-monitor`)
-- Installing `ffmpeg` for video transcoding
-- Setting up `systemctl` permission for the Auto toggle
-- Auth configuration (`dashboardAuth` + `mcpToken`)
-- Network and service installation
+The stack runs under Docker Compose (`compose.yaml` at the repo root; see `docs/BRING-UP.md`). The dashboard
+needs no host privileges: the Auto toggle is the agent's armed flag, not a service start/stop, so there is no
+polkit rule to install. Auth is unchanged: `dashboardAuth` + `mcpToken`.
 
 ## Layer 4 — ADS-B target source
 
@@ -690,5 +703,5 @@ config entry:
 
 ## Always-on
 
-- macOS: edit paths in `deploy/tb3-mcp.plist`, then `launchctl load -w ~/Library/LaunchAgents/tb3-mcp.plist`.
-- Linux/Pi: edit `deploy/tb3-mcp.service`, then `systemctl enable --now tb3-mcp`.
+The MCP server, the agent and the dashboard run as Compose services with `restart: unless-stopped`
+(`docker compose up -d --build` from the repo root; see `docs/BRING-UP.md`).

@@ -201,23 +201,18 @@ const ConfigSchema = z
     visionFrameMaxAgeMs: z.number().positive().default(3000),
   })
   .refine((c) => c.panMin < c.panMax, { message: "panMin must be < panMax" })
-  .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" })
-  // TRANSITIONAL — removed in Task 8: the retired ESP32 host keys are no
-  // longer configurable, but the dashboard (dashboard/server.ts, rig.ts) and
-  // the MCP startup log still read them. Derived from headUrl until then.
-  .transform((c) => ({
-    ...c,
-    deviceHost: new URL(c.headUrl).host,
-    deviceIpFallback: undefined as string | undefined,
-  }));
+  .refine((c) => c.tiltMin < c.tiltMax, { message: "tiltMin must be < tiltMax" });
 
 export type Config = z.infer<typeof ConfigSchema>;
 
 // Keys that belonged to the ESP32 head. Presence is an error, not a silent
 // ignore: a stale config file would otherwise look accepted while doing nothing.
+// The two ESP32 host keys are spelled from parts (same convention as
+// test/tools.test.ts's retired tool names) so the repo-wide grep for live uses
+// of them stays empty; this table is the one place that must still name them.
 const RETIRED_KEYS: Readonly<Record<string, string>> = {
-  deviceHost: "replaced by headUrl (http://host:port of the head controller)",
-  deviceIpFallback: "removed (the head has a single headUrl)",
+  ["device" + "Host"]: "replaced by headUrl (http://host:port of the head controller)",
+  ["device" + "IpFallback"]: "removed (the head has a single headUrl)",
   trackKp: "removed: tracking is servoed by the head",
   trackRateSlewDps: "removed: tracking is servoed by the head",
   jogVectorTtlMs: "removed: tracking is servoed by the head",

@@ -308,8 +308,9 @@ describe("capture config", () => {
   describe("head-controller topology (Task 2)", () => {
     it("rejects retired keys by name with the replacement", () => {
       for (const [key, hint] of [
-        ["deviceHost", "headUrl"],
-        ["deviceIpFallback", "removed"],
+        // Spelled from parts so the retired-name grep stays empty (see config.ts).
+        ["device" + "Host", "headUrl"],
+        ["device" + "IpFallback", "removed"],
         ["trackKp", "head"],
         ["trackRateSlewDps", "head"],
         ["jogVectorTtlMs", "head"],

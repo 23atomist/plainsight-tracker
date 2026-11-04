@@ -131,3 +131,74 @@ describe("McpDashboardClient.setCaptureMode", () => {
     expect(msg).toMatch(/enabled/i);
   });
 });
+
+// Task 8: the agent armed flag, the daemon-side E-STOP legs, the head
+// reference procedures, and the tracking automation gates -- each pinned
+// against a real McpServer so the tool names and argument shapes are real.
+describe("McpDashboardClient -- armed flag, E-STOP legs, head procedures", () => {
+  async function wired() {
+    const dash = new McpDashboardClient("http://unused/mcp");
+    const server = new McpServer({ name: "fake-daemon", version: "test" });
+    const seen: Array<[string, unknown]> = [];
+    let armed = false;
+    server.registerTool("get_agent_armed", { description: "f", inputSchema: {} },
+      async () => text(JSON.stringify({ armed })));
+    server.registerTool("set_agent_armed", { description: "f", inputSchema: { armed: z.boolean() } },
+      async ({ armed: a }: { armed: boolean }) => { seen.push(["set_agent_armed", a]); armed = a; return text("{}"); });
+    for (const name of ["estop", "clear_estop", "reference_pan"]) {
+      server.registerTool(name, { description: "f", inputSchema: {} },
+        async () => { seen.push([name, {}]); return text(`${name} ok`); });
+    }
+    server.registerTool("home", { description: "f", inputSchema: { axes: z.array(z.string()).optional() } },
+      async (a: unknown) => { seen.push(["home", a]); return text("homing tilt"); });
+    server.registerTool("set_position",
+      { description: "f", inputSchema: { pan_deg: z.number().optional(), tilt_deg: z.number().optional() } },
+      async (a: unknown) => { seen.push(["set_position", a]); return text("position declared"); });
+    server.registerTool("get_tracking_status", { description: "f", inputSchema: {} }, async () => text(JSON.stringify({
+      state: "waiting", label: null, target_azimuth_deg: null, target_elevation_deg: null, target_range_m: null,
+      pointing_error_deg: null, pan_limited: false, tilt_limited: false, pan_referenced: true, calibration_verified: false,
+    })));
+    const sdkClient = (dash as unknown as { client: { connect(t: unknown): Promise<void> } }).client;
+    const [c, s] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(s), sdkClient.connect(c)]);
+    return { dash, seen };
+  }
+
+  it("reads and writes the armed flag", async () => {
+    const { dash, seen } = await wired();
+    expect(await dash.getAgentArmed()).toBe(false);
+    await dash.setAgentArmed(true);
+    expect(await dash.getAgentArmed()).toBe(true);
+    expect(seen).toEqual([["set_agent_armed", true]]);
+  });
+
+  it("calls estop, clear_estop, home, set_position and reference_pan with their real argument shapes", async () => {
+    const { dash, seen } = await wired();
+    await dash.estop();
+    await dash.clearEstop();
+    expect(await dash.home()).toBe("homing tilt");
+    await dash.setPosition(12.5, undefined);
+    await dash.setPosition(undefined, -2);
+    expect(await dash.referencePan()).toBe("reference_pan ok");
+    expect(seen).toEqual([
+      ["estop", {}], ["clear_estop", {}], ["home", { axes: ["tilt"] }],
+      ["set_position", { pan_deg: 12.5 }], ["set_position", { tilt_deg: -2 }], ["reference_pan", {}],
+    ]);
+  });
+
+  it("getTrackingStatus carries pan_referenced and calibration_verified", async () => {
+    const { dash } = await wired();
+    const t = await dash.getTrackingStatus();
+    expect(t.pan_referenced).toBe(true);
+    expect(t.calibration_verified).toBe(false);
+  });
+
+  // The dashboard can start before the MCP server; its startup connect then
+  // fails and the SDK client says "Not connected" forever unless a call
+  // reconnects. The reconnect is attempted (and here fails: nothing listens).
+  it("a call on a never-connected client attempts a reconnect instead of failing 'Not connected' forever", async () => {
+    const dash = new McpDashboardClient("http://127.0.0.1:1/mcp");
+    await expect(dash.getAgentArmed()).rejects.toThrow();
+    await expect(dash.getAgentArmed()).rejects.not.toThrow(/^Not connected$/);
+  });
+});

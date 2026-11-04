@@ -8,7 +8,7 @@
 // snapshot to them.
 //
 // The always-visible cockpit render path lives in cockpit.js; the Setup
-// drawer shell in drawer.js; the guided calibration/travel-limits/set-home
+// drawer shell in drawer.js; the guided calibration/travel-limits/home-reference
 // procedures' daemon/browser glue in procedure-actions.js (pure rendering
 // stays in procedures.js); the Track Sector compass and joystick diagnostic
 // panel -- both relocated into the Setup drawer by this redesign's final
@@ -42,11 +42,13 @@ import { humanizeToolMessage } from "./tool-message.js";
 
 const el = {
   mode: document.getElementById("mode"),
+  // Keys match DashboardState.services (state.ts's ServicesState).
   svc: {
-    readsb: document.getElementById("svc-readsb"),
-    tb3mcp: document.getElementById("svc-tb3mcp"),
-    tb3agent: document.getElementById("svc-tb3agent"),
-    llama: document.getElementById("svc-llama"),
+    mcp: document.getElementById("svc-mcp"),
+    agentArmed: document.getElementById("svc-agent"),
+    mediamtx: document.getElementById("svc-mediamtx"),
+    adsb: document.getElementById("svc-adsb"),
+    head: document.getElementById("svc-head"),
   },
   estop: document.getElementById("estop"),
   drawerOpen: document.getElementById("drawer-open"),
@@ -64,6 +66,8 @@ const el = {
   // rig/sun-guard/services health glance. Both rendered by cockpit.js.
   calBadge: document.getElementById("cal-badge"),
   health: document.getElementById("health"),
+  // E-STOP / pan-reference / calibration-frame / link chips (head-chips.js).
+  headChips: document.getElementById("head-chips"),
 
   cameraVideo: document.getElementById("camera-video"),
   cameraImg: document.getElementById("camera-img"),
@@ -90,10 +94,9 @@ const el = {
   rigConnected: document.getElementById("rig-connected"),
   rigPanTilt: document.getElementById("rig-pantilt"),
   rigMoving: document.getElementById("rig-moving"),
-  rigBattery: document.getElementById("rig-battery"),
   rigTelemetryAge: document.getElementById("rig-telemetry-age"),
   rigImuPitchRoll: document.getElementById("rig-imu-pitchroll"),
-  rigImuTP: document.getElementById("rig-imu-tp"),
+  rigImuTemp: document.getElementById("rig-imu-temp"),
 
   trkState: document.getElementById("trk-state"),
   trkTarget: document.getElementById("trk-target"),
@@ -386,6 +389,11 @@ function render(state) {
   if (!state || typeof state !== "object") return;
   lastState = state;
 
+  // The head's own latch (from this page, the MCP estop tool, or another
+  // browser) locks this page too. Latch-only: see estop.js. Before
+  // cockpit.render() so the AIM block reads the folded-in latch below.
+  estop.syncFromHead(state.rig?.estop === true);
+
   // renderSunGuard must run before cockpit.render(): it's what sets
   // sunLocked/sunReason, which the AIM block's locked-reason text needs
   // folded into the state object handed to aimMode/cockpit.
@@ -534,7 +542,7 @@ const procedureActions = initProcedureActions({
 // stickMove/stickRelease by it. What's left here is plumbing: shared config,
 // the postControl adapters, and keyboard/blur/visibility delegation.
 //
-// jogVectorTtlMs is a hand-synced dead-man margin, not a feel parameter.
+// holdTtlMs is a hand-synced dead-man margin, not a feel parameter.
 // maxJogDps IS a feel parameter tuned against real hardware -- the daemon
 // pushes its current value on every SSE tick (DashboardState.jog), applied
 // to the running StickHold below; MAX_JOG_DPS here is only the pre-first-
@@ -576,7 +584,7 @@ async function postTrimVector(deltaPanDeg, deltaTiltDeg) {
 const stickHold = new StickHold({
   postJog: postJogVector,
   postTrim: postTrimVector,
-  jogVectorTtlMs: JOG_VECTOR_TTL_MS,
+  holdTtlMs: JOG_VECTOR_TTL_MS,
   maxJogDps: MAX_JOG_DPS,
   // Same combined gate as applyMotionGate's `disabled = estop.isLatched() ||
   // sunLocked`, but checked on every keep-alive tick (not just at push) --
@@ -915,7 +923,7 @@ const joystickHold = initJoystickPanel({
   // happen to agree today.
   isSightGated: () => estop.isLatched() || sunLocked,
   getMaxJogDps: () => stickHold.maxJogDps,
-  jogVectorTtlMs: JOG_VECTOR_TTL_MS,
+  holdTtlMs: JOG_VECTOR_TTL_MS,
 });
 
 // The cockpit chip now opens the drawer instead of toggling a floating
@@ -970,7 +978,9 @@ function connectStream() {
     el.reconnectBanner.hidden = true;
     try {
       const state = JSON.parse(e.data);
-      agentOnFromState = state?.services?.tb3agent === "active";
+      // The Auto toggle shows the agent's armed flag (spec 6.4); unknown
+      // (MCP server down) reads as OFF, never as armed.
+      agentOnFromState = state?.services?.agentArmed === true;
       el.autoToggle.textContent = "Auto: " + (agentOnFromState ? "ON" : "OFF");
       el.autoToggle.classList.toggle("toggle-on", agentOnFromState);
       render(state);
@@ -989,13 +999,17 @@ function connectStream() {
 // raw "undefined"/blank text before the first SSE tick arrives.
 render({
   ts: 0,
-  services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
-  rig: { connected: false, panDeg: null, tiltDeg: null, moving: false, batteryV: null, telemetryAgeMs: null, imu: null },
+  // null = not known yet (renders as unknown, not as down).
+  services: { mcp: null, agentArmed: null, mediamtx: null, adsb: null, head: null },
+  rig: {
+    connected: false, panDeg: null, tiltDeg: null, moving: false, telemetryAgeMs: null,
+    estop: false, panRef: null, tiltDisagreeDeg: null, link: null, imu: null,
+  },
   mode: "idle",
   tracking: {
     state: "unknown", hex: null, callsign: null, targetAzDeg: null, targetElDeg: null,
     targetRangeM: null, pointingErrorDeg: null, panLimited: false, tiltLimited: false,
-    coasting: false,
+    coasting: false, calibrationVerified: null,
   },
   calibration: { calibrated: false, rig: null, sightings: [], solvedAt: null },
   adsb: { rawCount: null, aircraft: [], trackable: [] },

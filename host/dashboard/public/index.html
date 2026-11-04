@@ -27,8 +27,10 @@
          the flex-growing (non-interactive) detail text -- a geometry fix
          instead of a z-index tug-of-war between overlapping fixed layers. -->
     <div id="estop-banner" class="banner banner-critical" hidden>
-      <span id="estop-banner-text">STOPPED &mdash; clear to resume</span>
-      <button id="estop-clear" type="button">Clear / Resume</button>
+      <span id="estop-banner-text">E-STOP LATCHED &mdash; the head refuses all motion until cleared</span>
+      <!-- Posts clear_estop: releases the HEAD's latch, then this page's
+           (estop.js). Does not re-arm the agent. -->
+      <button id="estop-clear" type="button">Clear E-STOP</button>
       <div id="estop-banner-detail"></div>
     </div>
   </div>
@@ -97,7 +99,7 @@
         <!-- SETUP DRAWER: the Drawer class (drawer.js) drives this unchanged;
              only its CSS home has moved from an off-canvas right sheet into
              this tab panel. All six entries have real bodies registered via
-             setEntryRenderer: Calibration/Travel limits/Set home
+             setEntryRenderer: Calibration/Travel limits/Home &amp; reference
              (procedures.js + procedure-actions.js), Track sector (sector.js),
              Policy (policy.js -- the agent's target-eligibility ruleset)
              and Joystick (joystick-panel.js). Per-aircraft Sight/Track still
@@ -142,12 +144,11 @@
                 <dt>Connected</dt><dd id="rig-connected">&mdash;</dd>
                 <dt>Pan / Tilt</dt><dd id="rig-pantilt">&mdash;</dd>
                 <dt>Moving</dt><dd id="rig-moving">&mdash;</dd>
-                <dt>Battery</dt><dd id="rig-battery">&mdash;</dd>
               </dl>
               <dl>
                 <dt>Telemetry age</dt><dd id="rig-telemetry-age">&mdash;</dd>
                 <dt>IMU pitch / roll</dt><dd id="rig-imu-pitchroll">&mdash;</dd>
-                <dt>IMU temp / press</dt><dd id="rig-imu-tp">&mdash;</dd>
+                <dt>IMU temp</dt><dd id="rig-imu-temp">&mdash;</dd>
               </dl>
             </div>
           </section>
@@ -182,11 +183,14 @@
             <!-- Recordings review: a separate page (playback.html/js), not a
                  cockpit tab -- see playback.js's module doc for why. -->
             <a id="playback-link" class="chip" href="/playback">Recordings</a>
+            <!-- Reachability of each process (direct probes, no service
+                 manager), plus the agent's armed flag: grey = disarmed. -->
             <div id="svc" class="svc-row">
-              <div class="svc-item"><span id="svc-readsb" class="led led-unknown"></span><label>readsb</label></div>
-              <div class="svc-item"><span id="svc-tb3mcp" class="led led-unknown"></span><label>daemon</label></div>
-              <div class="svc-item"><span id="svc-tb3agent" class="led led-unknown"></span><label>agent</label></div>
-              <div class="svc-item"><span id="svc-llama" class="led led-unknown"></span><label>llama</label></div>
+              <div class="svc-item"><span id="svc-head" class="led led-unknown"></span><label>head</label></div>
+              <div class="svc-item"><span id="svc-mcp" class="led led-unknown"></span><label>mcp</label></div>
+              <div class="svc-item"><span id="svc-agent" class="led led-unknown"></span><label>agent armed</label></div>
+              <div class="svc-item"><span id="svc-mediamtx" class="led led-unknown"></span><label>mediamtx</label></div>
+              <div class="svc-item"><span id="svc-adsb" class="led led-unknown"></span><label>adsb</label></div>
             </div>
           </section>
         </div>
@@ -248,6 +252,7 @@
       <span class="brand">TB3</span>
       <span id="cal-badge" class="badge"></span>
       <span id="health" class="health"></span>
+      <span id="head-chips" class="head-chips"></span>
       <button id="estop" type="button">E-STOP</button>
       <button id="drawer-open" type="button">Tools &#9652;</button>
     </div>

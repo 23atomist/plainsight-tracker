@@ -444,7 +444,7 @@ describe("JoystickHold", () => {
       }
     });
 
-    it("never posts a jog duration at or beyond the configured jogVectorTtlMs (dead-man margin preserved)", async () => {
+    it("never posts a jog duration at or beyond the configured holdTtlMs (dead-man margin preserved)", async () => {
       const TTL = 500;
       const { hold, gamepad, jog } = makeHold();
       gamepad.state.axes = [1, 0, 0, 0];
@@ -457,8 +457,8 @@ describe("JoystickHold", () => {
     });
   });
 
-  describe("decoupled post cadence vs. commanded duration (jogVectorTtlMs-derived)", () => {
-    it("pollIntervalMs/jogDurationMs are both pure functions of jogVectorTtlMs, and duration is always strictly greater than the interval", () => {
+  describe("decoupled post cadence vs. commanded duration (holdTtlMs-derived)", () => {
+    it("pollIntervalMs/jogDurationMs are both pure functions of holdTtlMs, and duration is always strictly greater than the interval", () => {
       for (const ttl of [200, 500, 900, 2000]) {
         const interval = pollIntervalMs(ttl);
         const duration = jogDurationMs(ttl);
@@ -467,7 +467,7 @@ describe("JoystickHold", () => {
       }
     });
 
-    it("changing jogVectorTtlMs moves BOTH the poll interval and the commanded duration", () => {
+    it("changing holdTtlMs moves BOTH the poll interval and the commanded duration", () => {
       const i1 = pollIntervalMs(500);
       const i2 = pollIntervalMs(900);
       const d1 = jogDurationMs(500);
@@ -479,7 +479,7 @@ describe("JoystickHold", () => {
     });
 
     // HEADLINE assertion: instantiate a real JoystickHold against a
-    // non-default jogVectorTtlMs and confirm BOTH the actual post cadence
+    // non-default holdTtlMs and confirm BOTH the actual post cadence
     // (call timing) and the actual commanded duration (the value sent to
     // postJog) track the derived functions above, not a hardcoded 100ms.
     it("an instantiated JoystickHold posts at pollIntervalMs(ttl) with duration jogDurationMs(ttl), for a changed TTL", async () => {
@@ -495,7 +495,7 @@ describe("JoystickHold", () => {
         isGated: () => false,
         isSightGated: () => false,
         getMaxJogDps: () => MAX_DPS,
-        jogVectorTtlMs: ttl,
+        holdTtlMs: ttl,
       });
       gamepad.state.axes = [1, 0, 0, 0];
       hold.start();

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseHeadState, parseServiceState } from "../src/dashboard/parse.js";
+import { parseHeadState } from "../src/dashboard/parse.js";
 
 // The GET /api/state body: the tick object (docs/HEAD-API.md, Telemetry).
 const TICK = {
@@ -69,16 +69,5 @@ describe("parseHeadState", () => {
     raw.imu.cal.mag = 0;
     expect(r.ref?.pan).toBe("imu");
     expect(r.imu?.cal?.mag).toBe(2);
-  });
-});
-
-describe("parseServiceState", () => {
-  it("maps systemctl is-active output", () => {
-    expect(parseServiceState("active\n")).toBe("active");
-    expect(parseServiceState("inactive")).toBe("inactive");
-    expect(parseServiceState("failed")).toBe("failed");
-    expect(parseServiceState("activating")).toBe("inactive");
-    expect(parseServiceState("")).toBe("unknown");
-    expect(parseServiceState("weird")).toBe("unknown");
   });
 });

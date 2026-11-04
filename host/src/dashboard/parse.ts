@@ -18,7 +18,6 @@ export interface HeadDirect {
   tiltDisagreeDeg: number | null;
   link: HeadLink | null;
 }
-export type ServiceState = "active" | "inactive" | "failed" | "unknown";
 
 const DISCONNECTED: HeadDirect = {
   connected: false, panDeg: null, tiltDeg: null, moving: null, estop: false,
@@ -41,12 +40,4 @@ export function parseHeadState(raw: unknown): HeadDirect {
     tiltDisagreeDeg: t.tiltDisagreeDeg,
     link: { ...t.link },
   };
-}
-
-export function parseServiceState(out: string): ServiceState {
-  const s = out.trim();
-  if (s === "active") return "active";
-  if (s === "inactive" || s === "activating" || s === "deactivating") return "inactive";
-  if (s === "failed") return "failed";
-  return "unknown";
 }

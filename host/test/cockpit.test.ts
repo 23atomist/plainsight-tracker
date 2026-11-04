@@ -22,7 +22,7 @@ function fakeClassList(initial: string[] = []) {
 }
 
 function fakeTextEl() {
-  return { textContent: "", className: "", classList: fakeClassList(), dataset: {} as Record<string, string> };
+  return { textContent: "", className: "", title: "", classList: fakeClassList(), dataset: {} as Record<string, string> };
 }
 
 function fakeButton() {
@@ -103,7 +103,7 @@ function fakeAdsbList() {
 }
 
 function fakeSvc() {
-  return { readsb: fakeTextEl(), tb3mcp: fakeTextEl(), tb3agent: fakeTextEl(), llama: fakeTextEl() };
+  return { mcp: fakeTextEl(), agentArmed: fakeTextEl(), mediamtx: fakeTextEl(), adsb: fakeTextEl(), head: fakeTextEl() };
 }
 
 // A fake StickHold: tracks setVector()/release() calls and `active`, the
@@ -132,13 +132,13 @@ function makeCockpit() {
     svc: fakeSvc(),
     calBadge: fakeTextEl(),
     health: { innerHTML: "" },
+    headChips: { innerHTML: "" },
     rigConnected: fakeTextEl(),
     rigPanTilt: fakeTextEl(),
     rigMoving: fakeTextEl(),
-    rigBattery: fakeTextEl(),
     rigTelemetryAge: fakeTextEl(),
     rigImuPitchRoll: fakeTextEl(),
-    rigImuTP: fakeTextEl(),
+    rigImuTemp: fakeTextEl(),
     trkState: fakeTextEl(),
     trkTarget: fakeTextEl(),
     trkAzEl: fakeTextEl(),
@@ -158,7 +158,7 @@ function makeCockpit() {
 
 const baseState = {
   mode: "idle",
-  services: { readsb: "active", tb3mcp: "active", tb3agent: "inactive", llama: "unknown" },
+  services: { mcp: "up", agentArmed: false, mediamtx: "up", adsb: "up", head: "up" },
   rig: { connected: true, panDeg: 12.5, tiltDeg: -3, moving: false, telemetryAgeMs: 40, estop: false, panRef: "imu", tiltDisagreeDeg: null, link: { pico: true, imu: true }, imu: null },
   tracking: { state: "stopped", hex: null, callsign: null, targetAzDeg: null, targetElDeg: null, targetRangeM: null, pointingErrorDeg: null, panLimited: false, tiltLimited: false },
   adsb: { rawCount: 3, aircraft: [] as unknown[] },
@@ -176,41 +176,95 @@ function svcDotClass(html: string): string | undefined {
 
 describe("Cockpit health glance -- service dot semantics", () => {
   // REGRESSION: this project has hit "permanently-amber/red indicator nobody
-  // trusts" twice already (capture-skipped, capture-error). tb3agent reads
-  // "inactive" whenever Autonomous mode is off -- the default, entirely
-  // healthy state during ordinary manual tracking -- and must never render
-  // the same as a real fault.
-  it("is healthy when every service is active", () => {
+  // trusts" twice already (capture-skipped, capture-error). A disarmed agent
+  // is the default, entirely healthy state during ordinary manual tracking --
+  // and must never render the same as a real fault.
+  it("is healthy when every service is up", () => {
     const { cockpit, el } = makeCockpit();
-    cockpit.render({ ...baseState, services: { readsb: "active", tb3mcp: "active", tb3agent: "active", llama: "active" } });
+    cockpit.render({ ...baseState, services: { mcp: "up", agentArmed: true, mediamtx: "up", adsb: "up", head: "up" } });
     expect(svcDotClass(el.health.innerHTML)).toBe("led-active");
   });
 
-  it("REGRESSION: tb3agent:\"inactive\" (Autonomous mode simply off) with everything else active is still healthy, not unknown -- inactive is a deliberate state, not a fault", () => {
+  it("REGRESSION: a disarmed agent with everything else up is still healthy -- disarmed is a deliberate state, not a fault", () => {
     const { cockpit, el } = makeCockpit();
-    cockpit.render({ ...baseState, services: { readsb: "active", tb3mcp: "active", tb3agent: "inactive", llama: "active" } });
+    cockpit.render({ ...baseState, services: { mcp: "up", agentArmed: false, mediamtx: "up", adsb: "up", head: "up" } });
     expect(svcDotClass(el.health.innerHTML)).toBe("led-active");
   });
 
-  it("is failed when any service has genuinely failed", () => {
+  it("is failed when any service is down", () => {
     const { cockpit, el } = makeCockpit();
-    cockpit.render({ ...baseState, services: { readsb: "active", tb3mcp: "failed", tb3agent: "inactive", llama: "active" } });
+    cockpit.render({ ...baseState, services: { mcp: "up", agentArmed: false, mediamtx: "down", adsb: "up", head: "up" } });
     expect(svcDotClass(el.health.innerHTML)).toBe("led-failed");
   });
 
-  it("is unknown (not yet polled / daemon unreachable) when a service is genuinely unknown, distinct from both healthy and failed", () => {
+  it("is unknown before the first tick (no services yet), distinct from both healthy and failed", () => {
     const { cockpit, el } = makeCockpit();
-    cockpit.render({ ...baseState, services: { readsb: "active", tb3mcp: "unknown", tb3agent: "active", llama: "active" } });
-    const cls = svcDotClass(el.health.innerHTML);
-    expect(cls).toBe("led-unknown");
-    expect(cls).not.toBe("led-active");
-    expect(cls).not.toBe("led-failed");
+    cockpit.render({ ...baseState, services: { mcp: null, agentArmed: null, mediamtx: null, adsb: null, head: null } });
+    expect(svcDotClass(el.health.innerHTML)).toBe("led-unknown");
   });
 
-  it("failed outranks unknown when both are present", () => {
+  it("down outranks unknown when both are present", () => {
     const { cockpit, el } = makeCockpit();
-    cockpit.render({ ...baseState, services: { readsb: "failed", tb3mcp: "unknown", tb3agent: "active", llama: "active" } });
+    cockpit.render({ ...baseState, services: { mcp: "down", agentArmed: null, mediamtx: null, adsb: "up", head: "up" } });
     expect(svcDotClass(el.health.innerHTML)).toBe("led-failed");
+  });
+});
+
+describe("Cockpit services row", () => {
+  it("maps up/down to active/failed and the armed flag to active/inactive/unknown", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, services: { mcp: "up", agentArmed: true, mediamtx: "down", adsb: "up", head: "up" } });
+    expect(el.svc.mcp.className).toBe("led led-active");
+    expect(el.svc.mediamtx.className).toBe("led led-failed");
+    expect(el.svc.agentArmed.className).toBe("led led-active");
+    expect(el.svc.agentArmed.title).toBe("agentArmed: armed");
+    cockpit.render({ ...baseState, services: { ...baseState.services, agentArmed: false } });
+    expect(el.svc.agentArmed.className).toBe("led led-inactive");
+    cockpit.render({ ...baseState, services: { ...baseState.services, mcp: "down", agentArmed: null } });
+    expect(el.svc.agentArmed.className).toBe("led led-unknown");
+  });
+});
+
+describe("Cockpit head chips", () => {
+  it("draws only the link chips when the head is healthy", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render(baseState);
+    const html = el.headChips.innerHTML;
+    expect(html).not.toMatch(/E-STOP|UNREFERENCED|UNVERIFIED/);
+    expect(html).toMatch(/led led-active"><\/span>pico/);
+    expect(html).toMatch(/led led-active"><\/span>imu/);
+  });
+
+  it("shows E-STOP LATCHED (prominent), PAN UNREFERENCED, CALIBRATION UNVERIFIED and dead links", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({
+      ...baseState,
+      rig: { ...baseState.rig, estop: true, panRef: "none", link: { pico: false, imu: true } },
+      tracking: { ...baseState.tracking, calibrationVerified: false },
+    });
+    const html = el.headChips.innerHTML;
+    expect(html).toMatch(/head-chip-critical"[^>]*>E-STOP LATCHED/);
+    expect(html).toContain("PAN UNREFERENCED");
+    expect(html).toContain("CALIBRATION UNVERIFIED");
+    expect(html).toMatch(/led led-failed"><\/span>pico/);
+  });
+
+  it("unknown links (head unreachable) and an unknown calibration frame draw no false alarm", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, rig: { ...baseState.rig, link: null, panRef: null },
+      tracking: { ...baseState.tracking, calibrationVerified: null } });
+    const html = el.headChips.innerHTML;
+    expect(html).not.toMatch(/UNREFERENCED|UNVERIFIED/);
+    expect(html).toMatch(/led led-unknown"><\/span>pico/);
+  });
+
+  it("renders no battery or pressure readout; IMU temperature only", () => {
+    const { cockpit, el } = makeCockpit();
+    cockpit.render({ ...baseState, rig: { ...baseState.rig,
+      imu: { ok: true, heading: 0, pitch: 1, roll: 2, cal: null, tempC: 24.5 } } });
+    expect(el.rigImuTemp.textContent).toBe("24.5°C");
+    expect("rigBattery" in el).toBe(false);
+    expect(JSON.stringify(el)).not.toMatch(/hPa| V"/);
   });
 });
 
@@ -221,7 +275,7 @@ describe("Cockpit telemetry render", () => {
     expect(el.rigConnected.textContent).toBe("yes");
     expect(el.rigPanTilt.textContent).toBe("12.5° / -3.0°");
     expect(el.trkState.textContent).toBe("stopped");
-    expect(el.svc.readsb.className).toBe("led led-active");
+    expect(el.svc.adsb.className).toBe("led led-active");
     expect(el.mode.dataset.mode).toBe("idle");
   });
 

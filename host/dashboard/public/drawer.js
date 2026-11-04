@@ -73,7 +73,7 @@ function escapeHtml(s) {
 const ENTRIES = [
   { id: "calibration", label: "Calibration" },
   { id: "travel-limits", label: "Travel limits" },
-  { id: "set-home", label: "Set home" },
+  { id: "home-reference", label: "Home & reference" },
   { id: "track-sector", label: "Track sector" },
   { id: "policy", label: "Policy" },
   { id: "joystick", label: "Joystick" },

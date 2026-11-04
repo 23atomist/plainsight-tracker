@@ -10,10 +10,11 @@ import {
 import { MediaMtxClient } from "../shared/mediamtx/client.js";
 import { emergencyStop, runAction, type ControlDeps } from "./controls.js";
 import { McpDashboardClient } from "./client.js";
-import { RigDirectClient } from "./rig.js";
-import { RealSystemctl, readServices } from "./services.js";
+import { HeadDirectClient } from "./head.js";
 import { registerRecordingsRoutes } from "./recordings-routes.js";
-import { mergeState, type AdsbRaw, type DashboardState, type Result, type SourceInputs } from "./state.js";
+import {
+  mergeState, type AdsbRaw, type DashboardState, type Result, type ServicesState, type SourceInputs, type UpDown,
+} from "./state.js";
 import { withTimeout } from "./util.js";
 
 // Either capture pipeline: both expose the same enable/disable/stop/status
@@ -21,13 +22,12 @@ import { withTimeout } from "./util.js";
 // CameraStreamer supports attach() (see the /camera/stream route below).
 export type CameraLike = CameraStreamer | MediaMtxPublisher;
 
-// The daemon (dashboard aggregator) and the ESP32/systemctl/readsb sources it
+// The MCP daemon, the head (direct), and the HTTP services the dashboard
 // polls. Bundled so collect()/buildControlDeps() don't have to prop-drill
-// four separate parameters.
+// separate parameters.
 interface Sources {
   client: McpDashboardClient;
-  rig: RigDirectClient;
-  sc: RealSystemctl;
+  head: HeadDirectClient;
   cfg: Config;
   camera: CameraLike;
   // Only set when cfg.cameraSource === "mediamtx" -- the control surface for
@@ -72,14 +72,16 @@ function readRawBody(req: Request): Promise<string> {
   });
 }
 
-const ADSB_FETCH_TIMEOUT_MS = 3000;
+// Reachability probes (ADS-B aircraft.json, MediaMTX's control API) for the
+// services row; a slow answer counts as down.
+const PROBE_TIMEOUT_MS = 2000;
 
 // Per-MCP-call budget for the poller's collect() (see util.ts for why: the
 // SDK's 60s default would otherwise let a wedged daemon freeze a poll tick).
 const COLLECT_CALL_TIMEOUT_MS = 4000;
-// Per-leg budget for the E-STOP fan-out's daemon-bound legs (stopTracking,
-// agentStop), so a wedged daemon/systemctl can't lag the E-STOP result.
-const ESTOP_LEG_TIMEOUT_MS = 5000;
+// Budget for the regular "Stop tracking" button's daemon call (the E-STOP's
+// own, shorter, budget for its daemon legs lives in controls.ts).
+const STOP_TRACKING_TIMEOUT_MS = 5000;
 
 function countAircraft(body: unknown): number | null {
   if (typeof body !== "object" || body === null) return null;
@@ -97,16 +99,17 @@ function countAircraft(body: unknown): number | null {
 // is the dedicated trackable-only scan (unchanged from before the mini-map
 // work) for the aircraft list; `aircraft` is the full seen-plane list, each
 // row carrying reachable/sunSafe/slewOk/inSector + a derived trackable flag,
-// for the mini-map. rawCount is a direct, best-effort peek at readsb so the
-// dashboard can show "N aircraft seen, M trackable" even if the daemon legs
-// fail. A failed rawCount fetch degrades to `null`, not a whole-adsb-entry
-// error. Nor does a single failing scanTrackable()/scanAircraft() leg any
+// for the mini-map. rawCount comes from peekAdsb() below -- a direct,
+// best-effort read of the ADS-B feed so the dashboard can show "N aircraft
+// seen, M trackable" even if the daemon legs fail -- and is passed in rather
+// than fetched here so the same read also answers services.adsb. A failed
+// peek degrades to `null`, not a whole-adsb-entry error. Nor does a single failing scanTrackable()/scanAircraft() leg any
 // more (see getAdsb's Promise.allSettled below) — each degrades to an empty
 // list on its own; only both legs failing together is a whole-adsb-entry
 // error.
 // Exported for test/dashboard-adsb.test.ts, which pins the pre-calibration
 // partial-failure behavior (one leg rejecting must not discard the other).
-export async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<Result<AdsbRaw>> {
+export async function getAdsb(client: McpDashboardClient, rawCount: number | null): Promise<Result<AdsbRaw>> {
   // Both scans are daemon MCP calls -- bounded the same as the client.get*()
   // calls below so a wedged daemon can't stall the poll through either leg.
   // Promise.allSettled (not Promise.all), deliberately: pre-calibration,
@@ -139,29 +142,76 @@ export async function getAdsb(client: McpDashboardClient, cfg: Config): Promise<
   }
   const trackable = trackableSettled.status === "fulfilled" ? trackableSettled.value : [];
   const aircraft = aircraftSettled.status === "fulfilled" ? aircraftSettled.value : [];
-
-  let rawCount: number | null = null;
-  try {
-    const r = await fetch(cfg.adsbUrl, { signal: AbortSignal.timeout(ADSB_FETCH_TIMEOUT_MS) });
-    rawCount = r.ok ? countAircraft(await r.json()) : null;
-  } catch { /* best-effort: raw readsb count stays null on failure */ }
   return { ok: true, value: { rawCount, aircraft, trackable } };
 }
 
+export interface AdsbPeek { up: UpDown; rawCount: number | null }
+
+// One GET of the ADS-B feed's aircraft.json per tick, answering both the raw
+// aircraft count and services.adsb. Never throws.
+export async function peekAdsb(url: string, fetchFn: typeof fetch = fetch): Promise<AdsbPeek> {
+  try {
+    const r = await fetchFn(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    if (!r.ok) return { up: "down", rawCount: null };
+    let rawCount: number | null = null;
+    try { rawCount = countAircraft(await r.json()); } catch { /* answered, but not JSON: count unknown */ }
+    return { up: "up", rawCount };
+  } catch {
+    return { up: "down", rawCount: null };
+  }
+}
+
+// A 2xx within PROBE_TIMEOUT_MS is "up"; anything else is "down". Never throws.
+export async function probeHttp(url: string, fetchFn: typeof fetch = fetch): Promise<UpDown> {
+  try {
+    const r = await fetchFn(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    return r.ok ? "up" : "down";
+  } catch {
+    return "down";
+  }
+}
+
+export function mediamtxProbeUrl(cfg: Config): string {
+  return `${cfg.cameraMediamtxControlUrl.replace(/\/+$/, "")}/v3/paths/list`;
+}
+
+// Exported for test/dashboard-services-probe.test.ts. The services row has no
+// service manager behind it: each field is a direct observation.
+//   mcp        -- whether get_agent_armed answered (the cheapest MCP call
+//                 there is; any answer at all means the daemon is reachable)
+//   agentArmed -- that call's answer; null when the daemon is down
+//   mediamtx   -- GET <cameraMediamtxControlUrl>/v3/paths/list
+//   adsb       -- the same aircraft.json read that supplies the raw count
+//   head       -- whether the head's own GET /api/state answered with a tick
+export function deriveServices(
+  armed: Result<boolean>, mediamtx: UpDown, adsb: UpDown, headDirect: Result<{ connected: boolean }>,
+): ServicesState {
+  return {
+    mcp: armed.ok ? "up" : "down",
+    agentArmed: armed.ok ? armed.value : null,
+    mediamtx,
+    adsb,
+    head: headDirect.ok && headDirect.value.connected ? "up" : "down",
+  };
+}
+
 async function collect(s: Sources): Promise<SourceInputs> {
+  // Started first and shared: getAdsb needs its rawCount, services.adsb its up/down.
+  const adsbPeek = peekAdsb(s.cfg.adsbUrl);
   const [
-    deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits, taughtLimits,
-    vision, policy,
+    deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, armed, mediamtx, limits,
+    taughtLimits, vision, policy,
   ] = await Promise.all([
     tryResult(() => withTimeout(s.client.getDeviceStatus(), COLLECT_CALL_TIMEOUT_MS, "getDeviceStatus")),
-    tryResult(() => s.rig.status()), // already bounded: rig.ts uses AbortSignal.timeout per host
+    tryResult(() => s.head.state()), // already bounded: head.ts uses AbortSignal.timeout
     tryResult(() => withTimeout(s.client.getTrackingStatus(), COLLECT_CALL_TIMEOUT_MS, "getTrackingStatus")),
     tryResult(() => withTimeout(s.client.getTracked(), COLLECT_CALL_TIMEOUT_MS, "getTracked")),
     tryResult(() => withTimeout(s.client.getCalibration(), COLLECT_CALL_TIMEOUT_MS, "getCalibration")),
     tryResult(() => withTimeout(s.client.getSun(), COLLECT_CALL_TIMEOUT_MS, "getSun")),
     tryResult(() => withTimeout(s.client.getCaptureStatus(), COLLECT_CALL_TIMEOUT_MS, "getCaptureStatus")),
-    getAdsb(s.client, s.cfg),
-    readServices(s.sc), // already bounded: services.ts passes { timeout: 5000 } to execFile
+    adsbPeek.then((p) => getAdsb(s.client, p.rawCount)),
+    tryResult(() => withTimeout(s.client.getAgentArmed(), COLLECT_CALL_TIMEOUT_MS, "getAgentArmed")),
+    probeHttp(mediamtxProbeUrl(s.cfg)), // already bounded: PROBE_TIMEOUT_MS
     // Re-polled every tick (not static like cameraSource/jog below): a
     // teach_limit/clear_taught_limits call must reach the 3D view's
     // envelope on the very next poll, not require a dashboard reload.
@@ -181,6 +231,7 @@ async function collect(s: Sources): Promise<SourceInputs> {
     // show up on the very next tick, not require a dashboard reload.
     tryResult(() => withTimeout(s.client.getPolicy(), COLLECT_CALL_TIMEOUT_MS, "getPolicy")),
   ]);
+  const services = deriveServices(armed, mediamtx, (await adsbPeek).up, rigDirect);
   // camera status is in-process + synchronous — no await, never fails.
   // source is tacked on from config (fixed at startup, never re-probed) so
   // the frontend can tell WebRTC (mediamtx) apart from the MJPEG sources.
@@ -204,11 +255,11 @@ async function collect(s: Sources): Promise<SourceInputs> {
 export function buildControlDeps(s: Sources): ControlDeps {
   return {
     track: s.client.track.bind(s.client),
-    // stopTracking/agentStop are the daemon/systemctl-bound legs of the
-    // E-STOP fan-out (see controls.ts's emergencyStop) as well as the
-    // regular "Stop tracking" button — bounded so a wedged daemon or
-    // systemctl can't leave either waiting on the SDK's 60s default.
-    stopTracking: () => withTimeout(s.client.stopTracking(), ESTOP_LEG_TIMEOUT_MS, "stopTracking"),
+    // The regular "Stop tracking" button, and a best-effort leg of the
+    // E-STOP (controls.ts's emergencyStop, which bounds it more tightly) --
+    // bounded here so a wedged daemon can't leave it waiting on the SDK's
+    // 60s default.
+    stopTracking: () => withTimeout(s.client.stopTracking(), STOP_TRACKING_TIMEOUT_MS, "stopTracking"),
     jog: s.client.jog.bind(s.client),
     nudgeAimOffset: s.client.nudgeAimOffset.bind(s.client),
     setRigLocation: s.client.setRigLocation.bind(s.client),
@@ -240,9 +291,19 @@ export function buildControlDeps(s: Sources): ControlDeps {
     setAimTrim: s.client.setAimTrim.bind(s.client),
     clearAimTrim: s.client.clearAimTrim.bind(s.client),
     setSunGuard: s.client.setSunGuard.bind(s.client),
-    firmwareStop: s.rig.stop.bind(s.rig), // already bounded: rig.ts uses AbortSignal.timeout
-    agentStop: () => withTimeout(s.sc.stop("tb3-agent"), ESTOP_LEG_TIMEOUT_MS, "agentStop"),
-    agentStart: () => s.sc.start("tb3-agent"),
+    // The Auto toggle and the E-STOP agent leg (spec 6.4). Bounded like the
+    // other daemon writes; emergencyStop bounds its own call more tightly.
+    setAgentArmed: (armed: boolean) =>
+      withTimeout(s.client.setAgentArmed(armed), STOP_TRACKING_TIMEOUT_MS, "setAgentArmed"),
+    // DIRECT to the head, never via the daemon (already bounded: head.ts
+    // uses AbortSignal.timeout). This is what keeps the E-STOP working with
+    // the MCP server down.
+    headEstop: () => s.head.estop(),
+    headClearEstop: () => s.head.clearEstop(),
+    mcpClearEstop: () => s.client.clearEstop(),
+    home: s.client.home.bind(s.client),
+    setPosition: s.client.setPosition.bind(s.client),
+    referencePan: s.client.referencePan.bind(s.client),
     setPolicy: (rs: unknown) => s.client.setPolicy(rs),
     cameraStart: () => s.camera.enable(),
     cameraStop: () => {
@@ -278,7 +339,8 @@ function emptySources(cfg: Config, cameraError: string | null): SourceInputs {
     taughtLimits: NOT_POLLED_YET, // mergeState collapses this to taughtLimits: null pre-first-poll
     vision: NOT_POLLED_YET, // mergeState collapses this to vision's safe-by-default shape pre-first-poll
     policy: NOT_POLLED_YET, // mergeState collapses this to DEFAULT_RULESET pre-first-poll
-    services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
+    // Not polled yet reads as down/unknown; the first tick (~1 s) replaces it.
+    services: { mcp: "down", agentArmed: null, mediamtx: "down", adsb: "down", head: "down" },
     camera: { enabled: false, streaming: false, viewers: 0, source: cfg.cameraSource },
     // Known immediately, unlike the polled fields above -- so even the
     // pre-first-poll snapshot (a client connecting to /api/stream/state
@@ -419,19 +481,7 @@ function registerRoutes(
     res.on("close", cleanup);
   });
 
-  // Direct-to-firmware E-STOP fan-out; registered ahead of the generic
-  // /api/control/* handler below so "estop" is never routed through runAction.
-  app.post("/api/control/estop", async (_req: Request, res: Response) => {
-    res.json(await emergencyStop(deps));
-  });
-
-  // Splat route: action strings like "calibrate/set-location" contain a "/",
-  // so a plain ":action" param (no slash) would truncate it — req.params[0]
-  // captures everything after "/api/control/", slashes included.
-  app.post("/api/control/*", async (req: Request, res: Response) => {
-    const action = req.params[0];
-    res.json(await runAction(deps, action, (req.body ?? {}) as Record<string, unknown>));
-  });
+  registerControlRoutes(app, deps);
 
   registerRecordingsRoutes(app, {
     recordingsDir: cfg.captureRecordingsDir,
@@ -508,17 +558,39 @@ function registerRoutes(
   });
 }
 
+// The control surface: the E-STOP and the generic action splat. Exported for
+// test/dashboard-estop-route.test.ts. Expects express.json() to be mounted.
+export function registerControlRoutes(app: Express, deps: ControlDeps): void {
+  // E-STOP; registered ahead of the generic /api/control/* handler below so
+  // "estop" is never routed through runAction. 502 only when the HEAD leg
+  // failed: that is the leg that actually stops the rig, and the daemon legs
+  // failing (e.g. the MCP server is down) must not read as a failed stop.
+  // The body always carries every leg's result for the banner.
+  app.post("/api/control/estop", async (_req: Request, res: Response) => {
+    const result = await emergencyStop(deps);
+    if (result.head.ok) { res.json(result); return; }
+    res.status(502).json({ ...result, error: result.head.message });
+  });
+
+  // Splat route: action strings like "calibrate/set-location" contain a "/",
+  // so a plain ":action" param (no slash) would truncate it — req.params[0]
+  // captures everything after "/api/control/", slashes included.
+  app.post("/api/control/*", async (req: Request, res: Response) => {
+    const action = req.params[0];
+    res.json(await runAction(deps, action, (req.body ?? {}) as Record<string, unknown>));
+  });
+}
+
 // Runs the video-config preflight checks and converts a thrown failure into
 // a returned message instead of letting it propagate out of main(). A bad
 // cameraFfmpegBin/cameraEncoder must never crash the dashboard: it is the
 // ONLY UI for /api/control/estop (see controls.ts's emergencyStop), and the
 // isEntry block's main().catch(e => { ...; process.exit(1); }) below turns
-// any uncaught startup error into a process exit -- which, under
-// deploy/tb3-dashboard.service's Restart=on-failure, becomes a crash loop
-// that eventually trips systemd's start-limit and leaves a roof-mounted rig
-// with no operator stop button, no jog, no telemetry, while the MCP daemon
-// and tb3-agent keep running (and the rig keeps tracking/slewing)
-// unattended. Fail loudly -- the caller logs the same message that used to
+// any uncaught startup error into a process exit -- which, under the
+// container's restart policy, becomes a crash loop that leaves a
+// roof-mounted rig with no operator stop button, no jog, no telemetry, while
+// the MCP daemon and the agent keep running (and the rig keeps
+// tracking/slewing) unattended. Fail loudly -- the caller logs the same message that used to
 // crash the process -- not fatally.
 //
 // NOTE: by the time this runs, `camera` (see main() below) already exists,
@@ -562,8 +634,7 @@ export async function main(): Promise<{ close(): void }> {
     console.error("[tb3-dashboard] daemon MCP connect failed (continuing, degraded):", errMsg(e));
   }
 
-  const rig = new RigDirectClient([cfg.deviceHost, cfg.deviceIpFallback].filter((h): h is string => !!h));
-  const sc = new RealSystemctl();
+  const head = new HeadDirectClient(cfg.headUrl);
   // Capture backend is chosen once, at startup: a camera swap is a config
   // change + restart, not a code edit. mediamtx publishes WebRTC via
   // MediaMTX; v4l2 streams MJPEG through the in-process relay.
@@ -611,7 +682,7 @@ export async function main(): Promise<{ close(): void }> {
     readerPollInterval.unref();
   }
 
-  const sources: Sources = { client, rig, sc, cfg, camera, mtx, cameraError };
+  const sources: Sources = { client, head, cfg, camera, mtx, cameraError };
   const deps = buildControlDeps(sources);
   const agg = new Aggregator(sources);
 
@@ -631,7 +702,7 @@ export async function main(): Promise<{ close(): void }> {
   const httpServer = app.listen(cfg.dashboardPort, cfg.dashboardBind, () => {
     console.log(`[tb3-dashboard] listening on http://${cfg.dashboardBind}:${cfg.dashboardPort}` +
       (cfg.dashboardAuth ? " (token required)" : "") +
-      ` -> daemon :${cfg.mcpPort}, rig ${cfg.deviceHost}, camera ${cfg.cameraSource}` +
+      ` -> daemon :${cfg.mcpPort}, head ${cfg.headUrl}, camera ${cfg.cameraSource}` +
       (cfg.cameraSource === "mediamtx" ? ` (${cfg.cameraEncoder})` : ""));
   });
 

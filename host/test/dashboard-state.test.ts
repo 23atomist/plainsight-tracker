@@ -3,7 +3,7 @@ import { mergeState, type SourceInputs, type ServicesState } from "../src/dashbo
 
 const ok = <T>(value: T) => ({ ok: true as const, value });
 const err = (error: string) => ({ ok: false as const, error });
-const SVC: ServicesState = { readsb: "active", tb3mcp: "active", tb3agent: "inactive", llama: "inactive" };
+const SVC: ServicesState = { mcp: "up", agentArmed: false, mediamtx: "up", adsb: "up", head: "up" };
 
 const DEVICE_STATUS = {
   connected: true, pan_deg: 10, tilt_deg: 20, moving: false, estop: false, pan_ref: { source: "imu" as const },
@@ -48,12 +48,33 @@ describe("mergeState mode derivation", () => {
     expect(s.tracking.callsign).toBe("UAL1");
     expect(s.tracking.targetAzDeg).toBe(90);
   });
-  it("autonomous when the agent service is active", () => {
-    const s = mergeState(inputs({ services: { ...SVC, tb3agent: "active" },
+  it("autonomous when the agent is armed", () => {
+    const s = mergeState(inputs({ services: { ...SVC, agentArmed: true },
       tracking: ok({ state: "tracking", label: "x", target_azimuth_deg: 1, target_elevation_deg: 1,
         target_range_m: 1, pointing_error_deg: 1, pan_limited: false, tilt_limited: false,
         offset_pan_deg: 0, offset_tilt_deg: 0 }) }), 1000);
     expect(s.mode).toBe("autonomous");
+  });
+  // Spec 6.4: armed is the operator's intent. An unknown flag (MCP down) is
+  // not "armed", and neither is disarmed -- both fall through to the
+  // tracking state.
+  it("not autonomous when the armed flag is false or unknown (MCP down)", () => {
+    expect(mergeState(inputs({ services: { ...SVC, agentArmed: false } }), 1000).mode).toBe("idle");
+    expect(mergeState(inputs({ services: { ...SVC, mcp: "down", agentArmed: null } }), 1000).mode).toBe("idle");
+  });
+});
+
+describe("mergeState tracking automation gates", () => {
+  it("carries calibration_verified as calibrationVerified; null when absent or not polled", () => {
+    const trk = { state: "waiting", label: null, target_azimuth_deg: null, target_elevation_deg: null,
+      target_range_m: null, pointing_error_deg: null, pan_limited: false, tilt_limited: false,
+      offset_pan_deg: 0, offset_tilt_deg: 0 };
+    expect(mergeState(inputs({ tracking: ok({ ...trk, calibration_verified: false, pan_referenced: true }) }), 1)
+      .tracking.calibrationVerified).toBe(false);
+    expect(mergeState(inputs({ tracking: ok({ ...trk, calibration_verified: true }) }), 1)
+      .tracking.calibrationVerified).toBe(true);
+    expect(mergeState(inputs({ tracking: ok(trk) }), 1).tracking.calibrationVerified).toBeNull();
+    expect(mergeState(inputs({ tracking: err("down") }), 1).tracking.calibrationVerified).toBeNull();
   });
 });
 
@@ -88,7 +109,7 @@ describe("mergeState degradation", () => {
     expect(s.rig.connected).toBe(false);          // neither source up
     expect(s.rig.panDeg).toBeNull();
     expect(s.errors.some((e) => e.includes("ECONNREFUSED"))).toBe(true);
-    expect(s.services.readsb).toBe("active");      // unaffected
+    expect(s.services.adsb).toBe("up");            // unaffected
     expect(s.calibration.calibrated).toBe(true);
   });
   it("rig connected via direct even when the daemon get_status fails", () => {
@@ -99,7 +120,7 @@ describe("mergeState degradation", () => {
   it("stamps ts and never throws on all-failed", () => {
     const allErr = err("x");
     const s = mergeState({ deviceStatus: allErr, rigDirect: allErr, tracking: allErr, tracked: allErr,
-      calibration: allErr, sun: allErr, services: { readsb: "unknown", tb3mcp: "unknown", tb3agent: "unknown", llama: "unknown" },
+      calibration: allErr, sun: allErr, services: { mcp: "down", agentArmed: null, mediamtx: "down", adsb: "down", head: "down" },
       adsb: allErr, capture: allErr, camera: { enabled: false, streaming: false, viewers: 0 } }, 4242);
     expect(s.ts).toBe(4242);
     expect(s.mode).toBe("idle");

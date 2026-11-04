@@ -21,7 +21,11 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
     getTrackFloor: async () => ({ enabled: false, minElevationDeg: 0 }),
     setTrackFloor: rec("setTrackFloor"),
     setSunGuard: rec("setSunGuard"),
-    firmwareStop: rec("firmwareStop"), agentStop: rec("agentStop"), agentStart: rec("agentStart"),
+    setAgentArmed: rec("setAgentArmed"),
+    headEstop: rec("headEstop"), headClearEstop: rec("headClearEstop"), mcpClearEstop: rec("mcpClearEstop"),
+    home: async () => { calls.push("home:[]"); return "homing tilt"; },
+    setPosition: async (p?: number, t?: number) => { calls.push(`setPosition:${JSON.stringify([p ?? null, t ?? null])}`); return "position declared"; },
+    referencePan: async () => { calls.push("referencePan:[]"); return "re-referencing pan"; },
     cameraStart: () => { calls.push("cameraStart:[]"); },
     cameraStop: () => { calls.push("cameraStop:[]"); },
     // Previously-unreachable tools (2026-07-28 dashboard-redesign plumbing) --
@@ -42,27 +46,108 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
 }
 
 describe("emergencyStop", () => {
-  it("fires all three in parallel and reports allOk", async () => {
+  // Spec 6.4 + plan Review Focus 3: disarm, stop tracking, THEN latch the
+  // head -- in that order.
+  it("disarms the agent, stops tracking, then latches the head, in that order, and reports allOk", async () => {
     const { d, calls } = deps();
     const r = await emergencyStop(d);
-    expect(calls.sort()).toEqual(["agentStop:[]", "firmwareStop:[]", "stopTracking:[]"]);
+    expect(calls).toEqual(["setAgentArmed:[false]", "stopTracking:[]", "headEstop:[]"]);
     expect(r.allOk).toBe(true);
-    expect(r.firmware.ok).toBe(true);
+    expect(r.head).toEqual({ ok: true, message: "head E-STOP latched" });
   });
-  it("one failure does NOT abort the others", async () => {
-    const { d, calls } = deps({ firmwareStop: async () => { throw new Error("rig unreachable"); } });
+
+  // The field lesson: the E-STOP must not depend on the MCP daemon.
+  it("still latches the head when every MCP leg throws (daemon down)", async () => {
+    const { d, calls } = deps({
+      setAgentArmed: async () => { throw new Error("fetch failed"); },
+      stopTracking: async () => { throw new Error("fetch failed"); },
+    });
     const r = await emergencyStop(d);
-    expect(r.firmware.ok).toBe(false);
-    expect(r.firmware.message).toMatch(/rig unreachable/);
-    expect(r.tracking.ok).toBe(true);            // still fired
+    expect(calls).toEqual(["headEstop:[]"]);
+    expect(r.head.ok).toBe(true);
+    expect(r.agent).toEqual({ ok: false, message: "fetch failed" });
+    expect(r.tracking.ok).toBe(false);
+    expect(r.allOk).toBe(false);
+  });
+
+  it("bounds a wedged MCP leg so the head latch is not held hostage", async () => {
+    const never = () => new Promise<void>(() => {});
+    const { d, calls } = deps({ setAgentArmed: never, stopTracking: never });
+    const t0 = Date.now();
+    const r = await emergencyStop(d, 30);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(r.agent.message).toMatch(/timed out/);
+    expect(r.tracking.message).toMatch(/timed out/);
+    expect(calls).toEqual(["headEstop:[]"]);
+    expect(r.head.ok).toBe(true);
+  });
+
+  it("reports a failed head leg without claiming success", async () => {
+    const { d } = deps({ headEstop: async () => { throw new Error("head unreachable"); } });
+    const r = await emergencyStop(d);
+    expect(r.head).toEqual({ ok: false, message: "head unreachable" });
     expect(r.agent.ok).toBe(true);
     expect(r.allOk).toBe(false);
-    expect(calls).toContain("stopTracking:[]");
-    expect(calls).toContain("agentStop:[]");
+  });
+});
+
+describe("clear_estop", () => {
+  it("clears the head, then the daemon best-effort; never re-arms the agent", async () => {
+    const { d, calls } = deps();
+    const r = await runAction(d, "clear_estop", {});
+    expect(r).toEqual({ ok: true, message: "E-STOP cleared" });
+    expect(calls).toEqual(["headClearEstop:[]", "mcpClearEstop:[]"]);
+  });
+
+  it("succeeds when only the daemon leg fails, and says so", async () => {
+    const { d } = deps({ mcpClearEstop: async () => { throw new Error("fetch failed"); } });
+    const r = await runAction(d, "clear_estop", {});
+    expect(r.ok).toBe(true);
+    expect(r.message).toMatch(/cleared on the head.*fetch failed/);
+  });
+
+  it("fails when the head did not clear (and skips the daemon leg)", async () => {
+    const { d, calls } = deps({ headClearEstop: async () => { throw new Error("HTTP 500"); } });
+    const r = await runAction(d, "clear_estop", {});
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/head did not clear E-STOP: HTTP 500/);
+    expect(calls).not.toContain("mcpClearEstop:[]");
+  });
+});
+
+describe("head reference actions", () => {
+  it("routes head/home, head/reference-pan, head/set-position (omitted axis stays omitted)", async () => {
+    const { d, calls } = deps();
+    expect((await runAction(d, "head/home", {})).message).toBe("homing tilt");
+    expect((await runAction(d, "head/reference-pan", {})).message).toBe("re-referencing pan");
+    expect((await runAction(d, "head/set-position", { pan_deg: 12.5 })).ok).toBe(true);
+    expect((await runAction(d, "head/set-position", { pan_deg: 0, tilt_deg: -3 })).ok).toBe(true);
+    expect(calls).toEqual(["home:[]", "referencePan:[]", "setPosition:[12.5,null]", "setPosition:[0,-3]"]);
+  });
+
+  it("head/set-position with neither axis (or non-finite values) is refused without a call", async () => {
+    const { d, calls } = deps();
+    expect((await runAction(d, "head/set-position", {})).ok).toBe(false);
+    expect((await runAction(d, "head/set-position", { pan_deg: "12", tilt_deg: null })).ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it("a refused tool (e.g. tracking active) comes back as {ok:false} with its text", async () => {
+    const { d } = deps({ home: async () => { throw new Error("home: tracking active; stop_tracking first"); } });
+    const r = await runAction(d, "head/home", {});
+    expect(r).toEqual({ ok: false, message: "home: tracking active; stop_tracking first" });
   });
 });
 
 describe("runAction", () => {
+  // The Auto toggle keeps its control name; it now flips the armed flag.
+  it("agent {on} maps to set_agent_armed", async () => {
+    const { d, calls } = deps();
+    expect(await runAction(d, "agent", { on: true })).toEqual({ ok: true, message: "agent armed" });
+    expect(await runAction(d, "agent", { on: false })).toEqual({ ok: true, message: "agent disarmed" });
+    expect(await runAction(d, "agent", {})).toEqual({ ok: true, message: "agent disarmed" });
+    expect(calls).toEqual(["setAgentArmed:[true]", "setAgentArmed:[false]", "setAgentArmed:[false]"]);
+  });
   it("routes track/stop/agent/jog/calibration", async () => {
     const { d, calls } = deps();
     expect((await runAction(d, "track", { hex: "abc" })).ok).toBe(true);
@@ -74,7 +159,7 @@ describe("runAction", () => {
     const solved = await runAction(d, "calibrate/solve", {});
     expect(solved.message).toMatch(/heading/);
     expect(calls).toContain('track:["abc"]');
-    expect(calls).toContain("agentStart:[]");
+    expect(calls).toContain("setAgentArmed:[true]");
     expect(calls).toContain("jog:[5,0,300]");
   });
   it("routes nudge-aim-offset", async () => {

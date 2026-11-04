@@ -32,12 +32,12 @@
 // responsiveness and to keep this a bounded, predictable loop per the
 // brief above), but the commanded DURATION (jogDurationMs) is comfortably
 // longer than that cadence -- close to, but always strictly under,
-// jogVectorTtlMs -- so each new post EXTENDS motion the rig is already
+// holdTtlMs -- so each new post EXTENDS motion the rig is already
 // executing instead of racing an about-to-expire one. Both are pure
-// functions of jogVectorTtlMs (see their doc comments below), the same
+// functions of holdTtlMs (see their doc comments below), the same
 // "derive it, don't hardcode it" precedent StickHold's holdIntervalMs
 // already established for the press-and-hold ramp. If posting stops for
-// any reason, the rig still halts within jogVectorTtlMs -- the dead-man
+// any reason, the rig still halts within holdTtlMs -- the dead-man
 // margin is unchanged.
 //
 // Safety posture (see the module's design brief):
@@ -61,45 +61,45 @@ import {
   risingEdge, isPressed, allPressed,
 } from "./joystick-math.js";
 
-// jogVectorTtlMs's default (config.ts) -- mirrored here the same way
+// holdTtlMs's default (config.ts) -- mirrored here the same way
 // jog-hold.js/app.js mirror it, purely so this module's own exported
 // defaults (POLL_INTERVAL_MS below) are self-consistent without a live
 // config value.
 const JOG_VECTOR_TTL_MS_DEFAULT = 500;
 
-// Fraction of jogVectorTtlMs used for the poll/post cadence: ~10Hz at the
+// Fraction of holdTtlMs used for the poll/post cadence: ~10Hz at the
 // default 500ms TTL (Math.floor(500 * 1/5) = 100) -- "enough for responsive
 // feel, bounded and predictable" per the module brief, and preserves this
 // loop's existing, already-tuned cadence at that default. Expressed as a
-// function of jogVectorTtlMs (not a bare hardcoded number) so a TTL config
+// function of holdTtlMs (not a bare hardcoded number) so a TTL config
 // change moves it, the same "derive it" precedent as jog-hold.js's
 // holdIntervalMs.
 const JOG_POLL_INTERVAL_FRACTION = 1 / 5;
-export function pollIntervalMs(jogVectorTtlMs) {
-  return Math.max(1, Math.floor(jogVectorTtlMs * JOG_POLL_INTERVAL_FRACTION));
+export function pollIntervalMs(holdTtlMs) {
+  return Math.max(1, Math.floor(holdTtlMs * JOG_POLL_INTERVAL_FRACTION));
 }
 
 // The commanded JOG vector's duration_ms on every post. Deliberately NOT
 // equal to pollIntervalMs (that equality was the stutter bug -- see the
 // module doc above): instead this is comfortably longer than the poll
 // interval, so each new post overlaps and extends motion that's already in
-// flight, while staying strictly under jogVectorTtlMs so the dead-man still
+// flight, while staying strictly under holdTtlMs so the dead-man still
 // applies if posting stops for any reason (a dropped connection, a closed
 // tab, a crashed tab) -- the margin between this and the TTL is exactly one
 // poll interval, i.e. even a single dropped/delayed post cannot make the
 // commanded motion outlive the TTL.
-export function jogDurationMs(jogVectorTtlMs) {
-  const interval = pollIntervalMs(jogVectorTtlMs);
-  const ttl = Math.floor(jogVectorTtlMs);
+export function jogDurationMs(holdTtlMs) {
+  const interval = pollIntervalMs(holdTtlMs);
+  const ttl = Math.floor(holdTtlMs);
   return Math.max(interval + 1, ttl - interval);
 }
 
-// ~10Hz at the default jogVectorTtlMs (500ms): "enough for responsive feel,
+// ~10Hz at the default holdTtlMs (500ms): "enough for responsive feel,
 // bounded and predictable" per the module brief. Kept as a named export
 // (still equal to the historical 100) for backward compatibility with
 // existing callers/tests that reference it directly as the DEFAULT poll
-// cadence; a JoystickHold constructed with a non-default jogVectorTtlMs
-// uses pollIntervalMs(jogVectorTtlMs) instead (see the constructor below).
+// cadence; a JoystickHold constructed with a non-default holdTtlMs
+// uses pollIntervalMs(holdTtlMs) instead (see the constructor below).
 export const POLL_INTERVAL_MS = pollIntervalMs(JOG_VECTOR_TTL_MS_DEFAULT);
 
 // Default button/axis mapping for a browser "standard" gamepad layout
@@ -194,13 +194,13 @@ export class JoystickHold {
   //                       deflected) -- see haltAndLatch()'s doc comment for
   //                       why this fires once per episode, not once per
   //                       tick.
-  //   jogVectorTtlMs  -- config.ts's dead-man TTL (mirrored client-side the
+  //   holdTtlMs  -- config.ts's dead-man TTL (mirrored client-side the
   //                       same way jog-hold.js/app.js already do). Source
   //                       for BOTH derived defaults below when intervalMs
   //                       isn't given explicitly -- see pollIntervalMs/
   //                       jogDurationMs's doc comments.
   //   intervalMs      -- poll/post cadence; defaults to
-  //                       pollIntervalMs(jogVectorTtlMs) (~10Hz at the
+  //                       pollIntervalMs(holdTtlMs) (~10Hz at the
   //                       default TTL, i.e. POLL_INTERVAL_MS). An explicit
   //                       override is honoured as-is (tests use this), but
   //                       app.js leaves it derived.
@@ -236,7 +236,7 @@ export class JoystickHold {
     isTrackingActive, isGated, isSightGated,
     getMaxJogDps,
     onSnapshot, onFailure,
-    jogVectorTtlMs = JOG_VECTOR_TTL_MS_DEFAULT,
+    holdTtlMs = JOG_VECTOR_TTL_MS_DEFAULT,
     intervalMs,
     deadzone = DEADZONE_DEFAULT,
     sensitivity = SENSITIVITY_MAX,
@@ -252,13 +252,13 @@ export class JoystickHold {
     this.getMaxJogDps = getMaxJogDps || (() => 0);
     this.onSnapshot = onSnapshot || (() => {});
     this.onFailure = onFailure || (() => {});
-    this.jogVectorTtlMs = jogVectorTtlMs;
-    this.intervalMs = intervalMs !== undefined ? intervalMs : pollIntervalMs(jogVectorTtlMs);
+    this.holdTtlMs = holdTtlMs;
+    this.intervalMs = intervalMs !== undefined ? intervalMs : pollIntervalMs(holdTtlMs);
     // The JOG vector's duration_ms on every post -- see jogDurationMs's doc
-    // comment. Derived once from jogVectorTtlMs at construction, same
+    // comment. Derived once from holdTtlMs at construction, same
     // lifecycle as this.intervalMs above (both are effectively fixed for
     // the life of this loop, like JogHold's this._intervalMs).
-    this._jogDurationMs = jogDurationMs(jogVectorTtlMs);
+    this._jogDurationMs = jogDurationMs(holdTtlMs);
     this.deadzone = deadzone; // public, mutable -- see doc above.
     this.sensitivity = sensitivity; // public, mutable -- see doc above.
 
@@ -301,7 +301,7 @@ export class JoystickHold {
   // Note this is a belt-and-braces immediacy measure, not the sole safety
   // net: device.ts's jog() tool already self-terminates (explicit
   // clearJog()) at the end of whatever duration_ms it was last posted with
-  // (jogDurationMs(jogVectorTtlMs) here -- always strictly under the TTL,
+  // (jogDurationMs(holdTtlMs) here -- always strictly under the TTL,
   // see that function's doc comment) even if this class posts nothing
   // further at all, so the worst case for a bug in this method is a stale
   // rate for at most one more commanded duration, still bounded by the TTL,

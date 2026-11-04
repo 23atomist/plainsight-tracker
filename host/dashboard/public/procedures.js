@@ -50,7 +50,7 @@ const SUN_LOCK_REASON = "sun guard locked -- calibration writes are refused whil
 // to "reset" for rig-location once there's an IMU sweep to lose, so the
 // row's own markup never claims to be an in-place edit it isn't.
 //
-// `sunLocked` (review fix, finding I-4): Travel limits and Set home each
+// `sunLocked` (review fix, finding I-4): Travel limits and Home & reference each
 // gate their own controls structurally under a sun lock, with a visible
 // reason, so the operator never sees a live button that only toasts and
 // refuses on click -- Calibration was the one entry that didn't, because
@@ -103,7 +103,7 @@ export function renderCalibration(state, actions) {
   const steps = calibrationSteps(state);
   const badge = calibrationBadge(state);
   // Folded in by procedure-actions.js the same way renderTravelLimits'/
-  // renderSetHome's own registrations already do (review fix, finding
+  // renderHomeReference's own registrations already do (review fix, finding
   // I-4) -- not part of the raw SSE payload.
   const sunLocked = !!(state && state.sunLocked);
 
@@ -339,107 +339,104 @@ export function formatCurrentPanTilt(state) {
 }
 
 // -----------------------------------------------------------------------
-// The Setup drawer's Set home entry: the design doc's own example of a
-// control that silently invalidates two other procedures' work and, before
-// this task, was visually indistinguishable from any other button (see
-// destructiveConfirm below, which is what actually gates the write). The
-// warning here is always-visible text -- never a title tooltip, same rule
-// renderStepRow's blocked-reason follows -- and the button itself carries
-// `.destructive` so it reads as dangerous at a glance, not only behind a
-// dialog the operator might reflexively dismiss.
+// The Setup drawer's Home & reference entry: the head-controller replacement
+// for the retired ESP32 home-zeroing tool (spec 6.3). Three separate
+// procedures, because the head has three different ways to know where it is:
 //
-// set_home also refuses server-side under a sun lock (src/tools.ts) -- the
-// button is replaced by a visible reason (never a `title` tooltip) rather
-// than left clickable-but-doomed, structurally matching travel-limits'
-// limitsRow gating above (review fix, UI-9 fix round, finding M-4).
+//   Home tilt      -- MCP `home`: tilt runs against its endstop (MOVES).
+//   Reference pan  -- MCP `reference_pan`: re-runs the head's IMU north
+//                     reference (MOVES tilt to the reference angle).
+//   Set position   -- MCP `set_position`: declares the CURRENT pose to be
+//                     the typed pan/tilt (user frame) WITHOUT moving.
+//
+// None of them clears anything: a pan re-reference arrives as a head
+// pan_reference event and the host shifts calibration, taught limits and
+// the azimuth sector by the delta itself. So no destructive confirmation.
+//
+// Every one is refused server-side under a sun lock and while tracking
+// (tools.ts's motionRefusal), and by the head itself under E-STOP (423 on
+// home, setpos and reference alike -- docs/HEAD-API.md "Commands"). Those
+// gates are drawn structurally -- a visible reason
+// in place of the button, never a title tooltip -- same rule as
+// travel-limits' limitsRow. The markup depends only on those gates and the
+// pan reference source, so drawer.js (which rewrites #drawer-body only when
+// the HTML changes) does not wipe half-typed Set position values on every
+// tick.
 // -----------------------------------------------------------------------
 
-// `actions` is accepted (unused today) for the same forward-compatibility
-// reason as renderTravelLimits/renderCalibration above. `state.sunLocked`
-// is folded in by app.js (not part of the raw SSE payload), same
-// convention as renderTravelLimits'/cockpit.render()'s own
-// `{...state, estopLatched, sunLocked}`.
-export function renderSetHome(state, actions) {
-  const sunLocked = !!(state && state.sunLocked);
-  const control = sunLocked
-    ? `<span class="blocked-reason">sun guard locked -- refused while parked</span>`
-    : `<button type="button" data-act="home:set" class="primary destructive">Set home</button>`;
+const PAN_REF_TEXT = {
+  imu: "pan referenced from the IMU",
+  host: "pan referenced by Set position",
+  none: "pan NOT referenced -- automated motion is refused until it is",
+};
+
+export function renderHomeReference(state, actions) {
+  const s = state || {};
+  const sunLocked = !!s.sunLocked;
+  const estop = !!s.estopLatched;
+  const tracking = !!s.trimActive;
+  const panRef = s.rig && typeof s.rig.panRef === "string" ? s.rig.panRef : null;
+  const refText = panRef && PAN_REF_TEXT[panRef] ? PAN_REF_TEXT[panRef] : "pan reference unknown (head unreachable)";
+
+  const blockedReason = estop ? "E-STOP latched -- clear it first"
+    : sunLocked ? "sun guard locked -- refused while parked"
+      : tracking ? "tracking active -- stop tracking first"
+        : null;
+  const btn = (act, label) => blockedReason
+    ? `<span class="blocked-reason">${blockedReason}</span>`
+    : `<button type="button" data-act="headref:${act}" class="primary">${label}</button>`;
+
   return `
-    <p class="muted">Zeroes the rig's current physical position as the new software home.</p>
-    <p class="sethome-warning">This clears the current calibration AND every taught travel limit -- both
-      are measured relative to the OLD zero and become invalid the instant it moves. Recalibrating costs a
-      fresh IMU sweep plus two aircraft sightings (minutes of watching the sky); every taught edge (pan
-      min/max, tilt min/max) will need re-teaching too.</p>
-    <div class="sethome-actions">${control}</div>
+    <p class="muted headref-status${panRef === "none" ? " headref-unreferenced" : ""}">${refText}</p>
+    <div class="headref-row">
+      <p class="muted">Tilt homes against its endstop. Pan has no endstop.</p>
+      <div class="headref-actions">${btn("home", "Home tilt")}</div>
+    </div>
+    <div class="headref-row">
+      <p class="muted">Re-run the head's IMU north reference for pan (moves tilt to the reference angle).</p>
+      <div class="headref-actions">${btn("reference-pan", "Reference pan")}</div>
+    </div>
+    <div class="headref-row">
+      <p class="muted">Declare the current pose without moving (user frame, degrees). Leave an axis blank to keep it.
+        Calibration, taught limits and the sector shift with a pan change automatically.</p>
+      <div class="headref-actions headref-setpos">
+        <label>pan <input id="setpos-pan" type="number" step="0.1" inputmode="decimal"></label>
+        <label>tilt <input id="setpos-tilt" type="number" step="0.1" inputmode="decimal"></label>
+        ${btn("set-position", "Set position")}
+      </div>
+    </div>
   `;
 }
 
-// True once ANY of calibration's own steps has left a real mark -- a
-// solved calibration, a provisional (north-zero) seed, a stored rig
-// location, an IMU mounting solve, or a recorded sighting. Used only to
-// decide whether destructiveConfirm's set_home message may honestly claim
-// a recalibration cost -- NOT a re-derivation of step-gate.js's ordering
-// logic (which stays the single source of truth for what's done/blocked/
-// available; this is strictly weaker, "is there ANYTHING here at all").
-function hasCalibrationProgress(state) {
-  const cal = (state && state.calibration) || {};
-  return !!(cal.calibrated || cal.provisional || cal.rig || cal.imuMounting
-    || (Array.isArray(cal.sightings) && cal.sightings.length > 0));
-}
-
-// True once at least one edge has actually been captured by teach_limit
-// (state.taughtLimits -- see state.ts's TaughtLimits, plumbed through
-// review fix I-2). Used the same way as hasCalibrationProgress above: only
-// to decide whether the "will need re-teaching" sentence is honest.
-function hasTaughtEdges(state) {
-  const t = (state && state.taughtLimits) || {};
-  return [t.panMinDeg, t.panMaxDeg, t.tiltMinDeg, t.tiltMaxDeg].some((v) => typeof v === "number");
+// PURE: parse the two Set position inputs. Blank -> omitted (that axis is
+// left alone); anything else must be a finite number. Returns
+// { ok: true, body } with body = { pan_deg?, tilt_deg? }, or { ok: false, message }.
+export function parseSetPosition(panText, tiltText) {
+  const body = {};
+  for (const [key, raw] of [["pan_deg", panText], ["tilt_deg", tiltText]]) {
+    const t = typeof raw === "string" ? raw.trim() : "";
+    if (t === "") continue;
+    const v = Number(t);
+    if (!Number.isFinite(v)) return { ok: false, message: `${key.replace("_deg", "")} must be a number` };
+    body[key] = v;
+  }
+  if (Object.keys(body).length === 0) return { ok: false, message: "enter a pan and/or tilt value" };
+  return { ok: true, body };
 }
 
 // PURE: whether an action needs an explicit confirmation before app.js is
 // allowed to fire it, and -- when it does -- the exact text naming what it
-// destroys. `set_home` is the sharp case the design doc calls out by name:
-// it silently invalidates BOTH the calibration (an IMU sweep plus two
-// aircraft sightings, each taken over minutes of watching the sky) and
-// every taught travel-limit edge -- "Are you sure?" would tell the operator
-// nothing about what they are actually about to spend, so this names both
-// things explicitly, every time. `clear_taught_limits` is gated too --
-// reverting to the wider config ceiling is a real loss of field-taught
-// edges, even though it is far cheaper to redo than a full calibration.
-// `teach_limit` itself (capturing one edge) is deliberately NOT gated here,
-// matching limits-tools.ts's own "read-only-of-motion, no gate" convention
-// for that tool -- and every action name below is the raw MCP tool name
-// (teach_limit/clear_taught_limits/set_home), not a controls.ts route
-// string, so a caller can pass exactly what it's about to invoke.
-//
-// The two COST sentences below ("recalibrating costs...", "every taught
-// edge... will need re-teaching") are each conditional on
-// hasCalibrationProgress/hasTaughtEdges -- review fix, UI-9 fix round,
-// finding M-1: the original version always claimed both costs, which read
-// as self-contradictory the moment the badge was UNCALIBRATED with nothing
-// ever set ("clears the current UNCALIBRATED calibration ... recalibrating
-// costs an IMU sweep..." names a cost that doesn't exist). WHAT is cleared
-// (the naming sentence itself) is never conditional -- only the redo-COST
-// framing is, so the message never claims a false price while still always
-// saying what it destroys.
+// destroys ("Are you sure?" would tell the operator nothing about what they
+// are actually about to spend). `clear_taught_limits` reverts to the wider
+// config ceiling -- a real loss of field-taught edges. `teach_limit` itself
+// (capturing one edge) is deliberately NOT gated here, matching
+// limits-tools.ts's own "read-only-of-motion, no gate" convention for that
+// tool. The head reference procedures (home / set_position / reference_pan)
+// are not gated either: none of them clears anything (see
+// renderHomeReference above). Action names are the raw MCP tool names, not
+// controls.ts route strings, so a caller can pass exactly what it's about
+// to invoke.
 export function destructiveConfirm(action, state) {
-  if (action === "set_home") {
-    const badge = calibrationBadge(state);
-    const calCost = hasCalibrationProgress(state)
-      ? "Recalibrating costs a fresh IMU sweep plus two aircraft sightings (minutes of watching the sky). "
-      : "";
-    const limitsCost = hasTaughtEdges(state)
-      ? "Every taught edge (pan min/max, tilt min/max) will need re-teaching too. "
-      : "";
-    return {
-      needed: true,
-      message:
-        `Set home clears the current ${badge.text} calibration AND every taught travel-limit edge -- ` +
-        "both are measured relative to the OLD zero and become invalid the instant it moves. " +
-        calCost + limitsCost +
-        "This cannot be undone. Set home anyway?",
-    };
-  }
   if (action === "clear_taught_limits") {
     return {
       needed: true,
@@ -459,7 +456,7 @@ export function destructiveConfirm(action, state) {
   // and relabels sighting 2 as the new "sighting 1". It also clears
   // orientation/solvedAt/cHead (the same addSighting call), destroying an
   // already-completed solve with no confirmation. Gated here the same way
-  // set_home/clear_taught_limits already are -- this does NOT change
+  // clear_taught_limits already is -- this does NOT change
   // addSighting itself; real per-slot semantics are separate multi-landmark
   // work (see the task brief).
   if (action === "resight-sight-1" || action === "resight-sight-2") {

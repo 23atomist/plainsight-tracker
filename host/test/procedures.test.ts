@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   renderCalibration, stepHandler, sightingStripHtml, formatTrackedAircraft, formatTrimOffset,
-  renderTravelLimits, teachStripHtml, formatEdgeLabel, formatCurrentPanTilt, renderSetHome,
+  renderTravelLimits, teachStripHtml, formatEdgeLabel, formatCurrentPanTilt, renderHomeReference, parseSetPosition,
 } from "../dashboard/public/procedures.js";
 
 const base = {
@@ -191,9 +191,9 @@ describe("renderCalibration", () => {
     expect(li).not.toContain("landmark:");
   });
 
-  // Review fix, finding I-4: Travel limits and Set home both gate their own
+  // Review fix, finding I-4: Travel limits and Home & reference both gate their own
   // controls structurally under a sun lock (see renderTravelLimits'/
-  // renderSetHome's own tests below) -- Calibration was the one entry that
+  // renderHomeReference's own tests below) -- Calibration was the one entry that
   // stayed green, so all six steps rendered as clickable and a click only
   // ever produced a 3s toast. step-gate.js itself stays sun-guard-agnostic
   // on purpose (a pure ordering model) -- the gate is folded in here, at the
@@ -434,34 +434,65 @@ describe("teachStripHtml / formatCurrentPanTilt", () => {
   });
 });
 
-describe("renderSetHome", () => {
-  it("names both consequences as visible text, not a title tooltip", () => {
-    const html = renderSetHome({}, {});
-    expect(html).toMatch(/calibrat/i);
-    expect(html).toMatch(/limit/i);
-    expect(html).not.toContain("title=");
+describe("renderHomeReference", () => {
+  it("offers the three procedures -- home tilt, reference pan, set position -- with no destructive marking", () => {
+    const html = renderHomeReference({ rig: { panRef: "imu" } }, {});
+    expect(html).toContain('data-act="headref:home"');
+    expect(html).toContain('data-act="headref:reference-pan"');
+    expect(html).toContain('data-act="headref:set-position"');
+    expect(html).toContain('id="setpos-pan"');
+    expect(html).toContain('id="setpos-tilt"');
+    expect(html).not.toContain("destructive");
+    expect(html).toMatch(/pan referenced from the IMU/);
   });
 
-  it("the [Set home] control is visually marked destructive, not indistinguishable from any other button", () => {
-    const html = renderSetHome({}, {});
-    expect(html).toContain('data-act="home:set"');
-    expect(html).toContain("destructive");
+  it("says loudly when pan is not referenced", () => {
+    const html = renderHomeReference({ rig: { panRef: "none" } }, {});
+    expect(html).toContain("headref-unreferenced");
+    expect(html).toMatch(/NOT referenced/);
   });
 
-  // Review fix, UI-9 fix round, finding M-4: the home tool also refuses
-  // server-side under a sun lock -- the control must disappear
-  // structurally (no data-act), not stay clickable behind a toast.
-  it("gates [Set home] structurally under a sun lock -- no data-act, a visible reason instead", () => {
-    const html = renderSetHome({ sunLocked: true }, {});
-    expect(html).not.toContain('data-act="home:set"');
-    expect(html).toContain('class="blocked-reason"');
-    expect(html).toMatch(/sun guard locked/i);
-    expect(html).not.toContain("title=");
+  // Same rule as travel limits: a control the daemon would refuse is
+  // replaced by a visible reason (never a title tooltip), not left live.
+  it("gates every control under a sun lock, and while tracking", () => {
+    for (const st of [{ sunLocked: true }, { trimActive: true }]) {
+      const html = renderHomeReference(st, {});
+      expect(html).not.toContain("data-act=");
+      expect(html).toContain('class="blocked-reason"');
+      expect(html).not.toContain("title=");
+    }
+    expect(renderHomeReference({ sunLocked: true }, {})).toMatch(/sun guard locked/);
+    expect(renderHomeReference({ trimActive: true }, {})).toMatch(/tracking active/);
   });
 
-  it("[Set home] is NOT gated when the sun lock isn't set", () => {
-    const html = renderSetHome({ sunLocked: false }, {});
-    expect(html).toContain('data-act="home:set"');
-    expect(html).not.toContain('class="blocked-reason"');
+  // The head refuses home, setpos and reference alike under E-STOP (423).
+  it("gates every control under E-STOP, naming it", () => {
+    const html = renderHomeReference({ estopLatched: true }, {});
+    expect(html).not.toContain("data-act=");
+    expect(html).toMatch(/E-STOP latched/);
+  });
+
+  // drawer.js rewrites #drawer-body only when the HTML changes; live
+  // telemetry in this markup would wipe half-typed Set position values.
+  it("does not render live pan/tilt telemetry (the markup must be stable tick to tick)", () => {
+    const a = renderHomeReference({ rig: { panRef: "imu", panDeg: 1, tiltDeg: 2 } }, {});
+    const b = renderHomeReference({ rig: { panRef: "imu", panDeg: 50, tiltDeg: -9 } }, {});
+    expect(a).toBe(b);
+  });
+});
+
+describe("parseSetPosition", () => {
+  it("blank leaves an axis out; numbers go through; at least one is required", () => {
+    expect(parseSetPosition("12.5", "")).toEqual({ ok: true, body: { pan_deg: 12.5 } });
+    expect(parseSetPosition(" ", "-3")).toEqual({ ok: true, body: { tilt_deg: -3 } });
+    expect(parseSetPosition("0", "0")).toEqual({ ok: true, body: { pan_deg: 0, tilt_deg: 0 } });
+    expect(parseSetPosition("", "").ok).toBe(false);
+  });
+
+  it("rejects non-numbers instead of declaring 0", () => {
+    const r = parseSetPosition("abc", "1");
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/pan must be a number/);
+    expect(parseSetPosition("Infinity", "").ok).toBe(false);
   });
 });

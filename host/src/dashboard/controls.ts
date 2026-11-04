@@ -1,3 +1,5 @@
+import { withTimeout } from "./util.js";
+
 export interface ControlDeps {
   track(hex: string): Promise<void>;
   stopTracking(): Promise<void>;
@@ -30,9 +32,20 @@ export interface ControlDeps {
   setAimTrim(panDeg?: number, tiltDeg?: number): Promise<string>;
   clearAimTrim(): Promise<string>;
   setSunGuard(enabled: boolean): Promise<void>;
-  firmwareStop(): Promise<void>;
-  agentStop(): Promise<void>;
-  agentStart(): Promise<void>;
+  // The agent's armed flag (set_agent_armed, spec 6.4): the Auto toggle and
+  // the E-STOP agent leg. An MCP call, so it fails while the daemon is down.
+  setAgentArmed(armed: boolean): Promise<void>;
+  // DIRECT to the head (head.ts's HeadDirectClient), never through the MCP
+  // daemon: the dashboard E-STOP must latch the head with the daemon down.
+  headEstop(): Promise<void>;
+  headClearEstop(): Promise<void>;
+  // The daemon's own clear_estop, best-effort alongside headClearEstop.
+  mcpClearEstop(): Promise<void>;
+  // Head reference procedures (MCP tools home / set_position /
+  // reference_pan); each relays the tool's message text.
+  home(): Promise<string>;
+  setPosition(panDeg?: number, tiltDeg?: number): Promise<string>;
+  referencePan(): Promise<string>;
   // Camera arm/disarm — synchronous (they just flip the in-process
   // CameraStreamer's state); no rig motion, so no daemon round-trip.
   cameraStart(): void;
@@ -63,7 +76,15 @@ export interface ControlDeps {
 }
 
 export interface ActionResult { ok: boolean; message: string; }
-export interface EstopResult { firmware: ActionResult; tracking: ActionResult; agent: ActionResult; allOk: boolean; }
+// `head` is the leg that matters: the response is an error (502) only when it
+// failed. agent/tracking are best-effort MCP legs, reported but not fatal.
+export interface EstopResult { agent: ActionResult; tracking: ActionResult; head: ActionResult; allOk: boolean; }
+
+// Budget for each best-effort MCP leg of the E-STOP. The legs run BEFORE the
+// head latch (see emergencyStop), so a wedged daemon delays the latch by at
+// most twice this. Kept short for that reason; a down daemon (connection
+// refused) fails in well under it.
+export const ESTOP_MCP_LEG_TIMEOUT_MS = 1000;
 
 function msg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
@@ -72,17 +93,52 @@ async function attempt(fn: () => Promise<unknown>, okMsg: string): Promise<Actio
   catch (e) { return { ok: false, message: msg(e) }; }
 }
 
-export async function emergencyStop(d: ControlDeps): Promise<EstopResult> {
-  const [firmware, tracking, agent] = await Promise.all([
-    attempt(() => d.firmwareStop(), "rig stopped"),
-    attempt(() => d.stopTracking(), "tracking stopped"),
-    attempt(() => d.agentStop(), "agent stopped"),
-  ]);
-  return { firmware, tracking, agent, allOk: firmware.ok && tracking.ok && agent.ok };
+// Field lesson ("E-STOP is the reliable stop", 2026-07-22 roof bring-up): the
+// operator's stop must not depend on the MCP daemon, whose session can wedge
+// or cascade. So the head leg goes straight to the head, and the daemon legs
+// are best-effort and bounded.
+//
+// ORDER matters (spec 6.4: E-STOP clears the armed flag before stopping
+// motion): disarm the agent first so its next tick cannot pick a new target,
+// end the tracking session so nothing re-issues setpoints, THEN latch the
+// head. The latch alone already refuses every motion route (423), so the
+// order costs nothing in safety if the daemon legs fail -- it only keeps the
+// system's own state consistent when they succeed.
+export async function emergencyStop(
+  d: ControlDeps, mcpLegTimeoutMs: number = ESTOP_MCP_LEG_TIMEOUT_MS,
+): Promise<EstopResult> {
+  const agent = await attempt(
+    () => withTimeout(d.setAgentArmed(false), mcpLegTimeoutMs, "setAgentArmed(false)"), "agent disarmed");
+  const tracking = await attempt(
+    () => withTimeout(d.stopTracking(), mcpLegTimeoutMs, "stopTracking"), "tracking stopped");
+  const head = await attempt(() => d.headEstop(), "head E-STOP latched");
+  return { agent, tracking, head, allOk: agent.ok && tracking.ok && head.ok };
+}
+
+// Releasing the latch: the head clear is the one that must succeed; the
+// daemon's own clear_estop is a best-effort second call to the same latch.
+// Does NOT re-arm the agent -- arming is a separate, explicit operator act.
+export async function clearEstop(d: ControlDeps): Promise<ActionResult> {
+  try {
+    await d.headClearEstop();
+  } catch (e) {
+    return { ok: false, message: `head did not clear E-STOP: ${msg(e)}` };
+  }
+  const mcp = await attempt(
+    () => withTimeout(d.mcpClearEstop(), ESTOP_MCP_LEG_TIMEOUT_MS, "clearEstop"), "daemon cleared");
+  return {
+    ok: true,
+    message: mcp.ok ? "E-STOP cleared" : `E-STOP cleared on the head (daemon leg failed: ${mcp.message})`,
+  };
 }
 
 function num(v: unknown, dflt = 0): number { return typeof v === "number" && Number.isFinite(v) ? v : dflt; }
 function str(v: unknown): string | undefined { return typeof v === "string" ? v : undefined; }
+// Distinct from num(): an omitted axis must stay omitted (set_position then
+// leaves that axis alone), never collapse to a declared 0.
+function finiteOrUndefined(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
 
 export async function runAction(d: ControlDeps, action: string, body: Record<string, unknown>): Promise<ActionResult> {
   try {
@@ -93,9 +149,19 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
         await d.track(hex); return { ok: true, message: `tracking ${hex}` };
       }
       case "stop": await d.stopTracking(); return { ok: true, message: "tracking stopped" };
+      // The Auto toggle: the agent's armed flag (spec 6.4).
       case "agent":
-        if (body.on === true) { await d.agentStart(); return { ok: true, message: "agent started" }; }
-        await d.agentStop(); return { ok: true, message: "agent stopped" };
+        if (body.on === true) { await d.setAgentArmed(true); return { ok: true, message: "agent armed" }; }
+        await d.setAgentArmed(false); return { ok: true, message: "agent disarmed" };
+      case "clear_estop": return await clearEstop(d);
+      case "head/home": return { ok: true, message: await d.home() };
+      case "head/set-position": {
+        const pan = finiteOrUndefined(body.pan_deg);
+        const tilt = finiteOrUndefined(body.tilt_deg);
+        if (pan === undefined && tilt === undefined) return { ok: false, message: "pan_deg and/or tilt_deg required" };
+        return { ok: true, message: await d.setPosition(pan, tilt) };
+      }
+      case "head/reference-pan": return { ok: true, message: await d.referencePan() };
       case "jog":
         await d.jog(num(body.pan_dps), num(body.tilt_dps), num(body.duration_ms, 300));
         return { ok: true, message: "jogged" };

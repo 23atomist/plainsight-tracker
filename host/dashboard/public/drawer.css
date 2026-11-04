@@ -343,52 +343,47 @@
   max-width: 170px;
 }
 
-/* ---------- set home (guided procedure) ---------- */
+/* ---------- home & reference (guided procedure) ---------- */
 
-/* procedures.js's renderSetHome -- the one control in this drawer that
-   silently invalidates two other procedures' work (see destructiveConfirm,
-   procedures.js). The warning is always-visible text, same rule
-   .blocked-reason above follows -- a consequence nobody can see is exactly
-   what made this button indistinguishable from any other one. */
-.sethome-warning {
-  margin: 0 0 14px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--yellow);
-  background: rgba(210, 153, 34, 0.12);
-  color: var(--yellow);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.sethome-actions { display: flex; }
-.sethome-actions button.primary {
+/* procedures.js's renderHomeReference: three rows (Home tilt, Reference
+   pan, Set position), each an explanation and its control. A gated control
+   is replaced by a visible .blocked-reason, same rule as travel limits. */
+.headref-status { margin: 0 0 12px; font-size: 12px; }
+.headref-status.headref-unreferenced { color: var(--yellow); font-weight: 700; }
+.headref-row { margin: 0 0 14px; }
+.headref-row p { margin: 0 0 6px; font-size: 12px; }
+.headref-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.headref-actions button.primary {
   padding: 8px 16px;
   border-radius: 6px;
   border: none;
   cursor: pointer;
   font-size: 13px;
   font-weight: 700;
+  background: var(--accent);
+  color: #0d1117;
 }
-.sethome-actions button.primary:hover { filter: brightness(1.1); }
-/* [Set home] replaced by a visible reason under a sun lock (review fix,
-   UI-9 fix round, finding M-4) -- same treatment as travel-limits' own
-   rows above. */
-.sethome-actions .blocked-reason {
-  font-size: 12px;
-  color: var(--yellow);
+.headref-actions button.primary:hover { filter: brightness(1.1); }
+.headref-actions .blocked-reason { font-size: 12px; color: var(--yellow); }
+.headref-setpos label { font-size: 12px; color: var(--muted); }
+.headref-setpos input {
+  width: 6em;
+  margin-left: 4px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
 }
 
-/* Shared visual marker for Set home's own button and travel-limits'
-   [clear taught limits] link -- both destroy something the operator can't
-   get back without real cost. Red instead of the drawer's usual accent
-   blue/muted-link tones, so a destructive control reads as dangerous at a
-   glance rather than looking like every other button until a confirmation
-   dialog (which it also always gets -- see destructiveConfirm) happens to
-   appear. Selectors are as specific as (or more specific than) the base
-   `.limits-*/.sethome-actions` button rules above, so this always wins the
-   cascade regardless of source order. */
+/* Shared visual marker for travel-limits' [clear taught limits] link -- it
+   destroys something the operator can't get back without real cost. Red
+   instead of the drawer's usual muted-link tone, so it reads as dangerous at
+   a glance rather than looking like every other button until a
+   confirmation dialog (which it also always gets -- see destructiveConfirm)
+   happens to appear. As specific as the base `.limits-*` button rule above,
+   so this wins the cascade regardless of source order. */
 .limits-actions button.link.destructive { border-color: var(--red); color: var(--red); }
-.sethome-actions button.primary.destructive { background: var(--red); color: #fff; }
 
 /* ---------- track sector (relocated compass widget) ---------- */
 

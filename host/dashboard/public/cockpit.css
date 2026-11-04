@@ -45,6 +45,24 @@
 /* rig/sun/svc glance: each dot+label pair needs its own air or they read as
    one mashed string in the compact bar cluster. */
 .health .led { margin-right: 3px; }
+/* Head status chips (head-chips.js): same pill as .badge/.health; the two
+   alarm tones reuse the mode chip's palette. E-STOP is the loudest thing in
+   the bar on purpose. */
+.head-chips { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.head-chips:empty { display: none; }
+.head-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.head-chip .led { margin-right: 4px; }
+.head-chip-warn { color: #0d1117; background: var(--yellow); border-color: var(--yellow); }
+.head-chip-critical { color: #fff; background: var(--red); border-color: var(--red); }
 #drawer-open {
   background: var(--panel-2);
   border: 1px solid var(--border);
