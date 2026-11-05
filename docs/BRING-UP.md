@@ -161,6 +161,20 @@ HEAD_IMU_PITCH_OFFSET_DEG=-1.7
 `-1.7` is the midrange of `-roll - tilt` over the five points (1.25 to 2.125).
 After the restart, `tiltDisagreeDeg` read:
 
+> **2026-11-05 — IMU re-mounted inverted.** The board now sits upside down, so
+> the head writes the BNO055 axis-remap registers at open
+> (`HEAD_IMU_AXIS_MAP_CONFIG=0x24`, `HEAD_IMU_AXIS_MAP_SIGN=0x05`, datasheet
+> placement P7). Without the remap the fusion sat on the Euler pitch=180
+> singularity (heading flipped 27→203 across a tilt move, pitch compressed
+> 47°→44°). With it, gravity reads +Z at level and heading holds ±0.5° across
+> tilt 0..90. The tilt mapping became `HEAD_IMU_TILT_AXIS=pitch`,
+> `HEAD_IMU_TILT_SIGN=1`, `HEAD_IMU_PITCH_OFFSET_DEG=2.0` (fusion pitch at Pico
+> tilt 0 read 1.8–2.5 across three settles; the raw accelerometer said 1.0–1.3).
+> The settings above this note are the pre-move values. The IMU reads ~2.5–4.5%
+> fewer degrees than the Pico commands on tilt (45→43.0 fusion / 44.1 raw accel;
+> 92→88 raw accel), consistently across both mountings — check tilt 90 against
+> a plumb line before trusting `gear 10.0`.
+
 | Pico tilt | tiltDisagreeDeg |
 |---|---|
 | 0.0105 | -0.148 |

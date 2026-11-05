@@ -62,8 +62,10 @@ def find_bus() -> int:
 
 class BNO055:
     def __init__(self, bus: int | None = None, address: int | None = None,
-                 external_crystal: bool = False, mode: int = MODE_NDOF):
+                 external_crystal: bool = False, mode: int = MODE_NDOF,
+                 axis_map_config: int = 0x24, axis_map_sign: int = 0x00):
         self.fusion_mode = mode
+        self.axis_map_config, self.axis_map_sign = axis_map_config, axis_map_sign
         self.bus = find_bus() if bus is None else bus
         self.fd = os.open(f"/dev/i2c-{self.bus}", os.O_RDWR)
         try:
@@ -104,6 +106,10 @@ class BNO055:
         self.write(PAGE_ID, 0)
         self.write(PWR_MODE, 0x00)  # normal
         self.write(UNIT_SEL, 0x00)  # degrees, m/s^2, Celsius, Windows orientation
+        # Mounting remap (CONFIG mode only): the fusion, Euler, quaternion and gravity outputs
+        # all come out in the remapped frame, so an inverted board still reports Z up.
+        self.write(AXIS_MAP_CONFIG, self.axis_map_config)
+        self.write(AXIS_MAP_SIGN, self.axis_map_sign)
         self.write(SYS_TRIGGER, 0x80 if external_crystal else 0x00)
         time.sleep(0.01)
         self._mode(self.fusion_mode)

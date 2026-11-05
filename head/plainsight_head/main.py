@@ -330,7 +330,9 @@ async def run(cfg: HeadConfig, *, serial_factory: Callable[[str, int], Any] | No
               stop_event: asyncio.Event | None = None, bind: str = "0.0.0.0") -> None:
     stop_event = stop_event if stop_event is not None else asyncio.Event()
     head = Head(cfg, serial_factory,
-                imu_open or (lambda: BNO055(cfg.i2c_bus, cfg.imu_address)),
+                imu_open or (lambda: BNO055(cfg.i2c_bus, cfg.imu_address,
+                                            axis_map_config=cfg.imu_axis_map_config,
+                                            axis_map_sign=cfg.imu_axis_map_sign)),
                 store if store is not None else JsonStore(cfg.data_dir))
     runner = web.AppRunner(make_app(head.ctx), shutdown_timeout=HTTP_SHUTDOWN_S,
                            access_log_class=AccessLog)

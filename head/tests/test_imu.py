@@ -322,3 +322,33 @@ async def test_sample_time_is_taken_when_the_read_runs_not_when_it_queued():
     (sample,) = await burst
     assert sample.t == 105.0
     await r.close()
+
+
+def test_begin_writes_the_axis_remap_in_config_mode_before_fusion(monkeypatch):
+    writes = []
+    dev = BNO055.__new__(BNO055)
+    dev.fusion_mode = 0x0C
+    dev.address = 0x28
+    dev.axis_map_config, dev.axis_map_sign = 0x24, 0x05  # datasheet P7: board inverted
+    monkeypatch.setattr("plainsight_head.imu.time.sleep", lambda s: None)
+    monkeypatch.setattr(dev, "_select", lambda addr: None)
+    monkeypatch.setattr(dev, "write", lambda reg, *d: writes.append((reg, d)))
+    dev._begin(False)
+    regs = [reg for reg, _ in writes]
+    assert writes[0] == (0x3D, (0x00,))                      # CONFIG mode first
+    assert (0x41, (0x24,)) in writes and (0x42, (0x05,)) in writes
+    assert regs.index(0x41) < regs.index(0x3D, 1) and regs.index(0x42) < regs.index(0x3D, 1)
+    assert writes[-1] == (0x3D, (0x0C,))                     # fusion mode last
+
+
+def test_begin_default_placement_still_writes_the_reset_values(monkeypatch):
+    writes = []
+    dev = BNO055.__new__(BNO055)
+    dev.fusion_mode = 0x0C
+    dev.address = 0x28
+    dev.axis_map_config, dev.axis_map_sign = 0x24, 0x00
+    monkeypatch.setattr("plainsight_head.imu.time.sleep", lambda s: None)
+    monkeypatch.setattr(dev, "_select", lambda addr: None)
+    monkeypatch.setattr(dev, "write", lambda reg, *d: writes.append((reg, d)))
+    dev._begin(False)
+    assert (0x41, (0x24,)) in writes and (0x42, (0x00,)) in writes

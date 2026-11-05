@@ -36,3 +36,20 @@ def test_range_checks(key, ok, bad):
     for v in bad:
         with pytest.raises(ValueError, match=key):
             HeadConfig.from_env({key: v})
+
+
+def test_axis_remap_defaults_to_the_bno055_reset_placement():
+    c = HeadConfig.from_env({})
+    assert (c.imu_axis_map_config, c.imu_axis_map_sign) == (0x24, 0x00)
+
+
+def test_axis_remap_accepts_hex_and_decimal():
+    c = HeadConfig.from_env({"HEAD_IMU_AXIS_MAP_CONFIG": "0x21", "HEAD_IMU_AXIS_MAP_SIGN": "5"})
+    assert (c.imu_axis_map_config, c.imu_axis_map_sign) == (0x21, 0x05)
+
+
+@pytest.mark.parametrize("key,val", [("HEAD_IMU_AXIS_MAP_CONFIG", "0x40"), ("HEAD_IMU_AXIS_MAP_SIGN", "8"),
+                                     ("HEAD_IMU_AXIS_MAP_SIGN", "P7")])
+def test_axis_remap_range_checks_name_the_key(key, val):
+    with pytest.raises(ValueError, match=key):
+        HeadConfig.from_env({key: val})

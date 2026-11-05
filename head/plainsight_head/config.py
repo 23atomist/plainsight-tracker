@@ -53,6 +53,19 @@ def _str(key: str, raw: str) -> str:
     return raw
 
 
+def _reg_in(lo: int, hi: int) -> Callable[[str, str], int]:
+    """A register value, decimal or 0x-hex, within lo..hi."""
+    def parse(key: str, raw: str) -> int:
+        if not _is_int(raw):
+            raise ValueError(f"{key}: expected an integer (0x.. accepted), got {raw!r}")
+        v = int(raw.strip(), 0)
+        if not lo <= v <= hi:
+            raise ValueError(f"{key}: expected {lo:#x}..{hi:#x}, got {raw!r}")
+        return v
+
+    return parse
+
+
 def _int_in(lo: int, hi: int) -> Callable[[str, str], int]:
     def parse(key: str, raw: str) -> int:
         v = _int(key, raw)
@@ -79,6 +92,13 @@ class HeadConfig:
     imu_pitch_offset_deg: float = 0.0
     imu_tilt_axis: str = "pitch"
     imu_tilt_sign: int = 1
+    # BNO055 AXIS_MAP_CONFIG / AXIS_MAP_SIGN (datasheet 3.4, table 3-6), written at open so the
+    # fusion runs in a frame with Z up however the board is bolted on. Placements:
+    #   P0 0x21/0x04  P1 0x24/0x00 (reset)  P2 0x24/0x06  P3 0x21/0x02
+    #   P4 0x24/0x03  P5 0x21/0x01          P6 0x21/0x07  P7 0x24/0x05
+    # SIGN bits: 2 = X negated, 1 = Y negated, 0 = Z negated.
+    imu_axis_map_config: int = 0x24
+    imu_axis_map_sign: int = 0x00
     jog_deadman_ms: int = 500
     track_timeout_ms: int = 1000
     stream_ms: int = 100
@@ -102,6 +122,8 @@ class HeadConfig:
             "imu_pitch_offset_deg": _float,
             "imu_tilt_axis": _choice("pitch", "roll"),
             "imu_tilt_sign": _sign,
+            "imu_axis_map_config": _reg_in(0x00, 0x3F),
+            "imu_axis_map_sign": _reg_in(0x00, 0x07),
             "jog_deadman_ms": _int_in(100, 10000),
             "track_timeout_ms": _int,
             "stream_ms": _int_in(20, 1000),
