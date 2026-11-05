@@ -19,6 +19,25 @@ import type { Ruleset } from "../shared/policy/rules.js";
 // rather than rejecting them, so growing those tool outputs never breaks this
 // client.
 
+// The MCP SDK's callTool() defaults to a 60 s request timeout. Tools that
+// wait on the head's motion outrun it: characterize_imu sweeps seven postures
+// at the Pico's vmax (5°/s today, a 354° pan leg alone is ~70 s), and home /
+// track_aircraft block until the slew arrives. Left at the default the
+// dashboard reported "MCP error -32001: Request timed out" while the daemon
+// carried on -- the "IMU characterised" step looked like it never finished
+// (field 2026-11-05). Quick tools keep the SDK default.
+const SWEEP_TOOL_TIMEOUT_MS = 20 * 60_000;
+const SLEW_TOOL_TIMEOUT_MS = 5 * 60_000;
+const TOOL_TIMEOUT_MS: Readonly<Record<string, number>> = {
+  characterize_imu: SWEEP_TOOL_TIMEOUT_MS,
+  home: SLEW_TOOL_TIMEOUT_MS,
+  track_aircraft: SLEW_TOOL_TIMEOUT_MS,
+};
+function toolRequestOptions(name: string): { timeout: number } | undefined {
+  const timeout = TOOL_TIMEOUT_MS[name];
+  return timeout === undefined ? undefined : { timeout };
+}
+
 const DeviceStatusZ = z.object({
   connected: z.boolean(),
   pan_deg: z.number(),
@@ -244,15 +263,16 @@ export class McpDashboardClient {
     if (this.inflight) {
       try { await this.inflight; } catch { /* the call below fails "Not connected" and reconnects */ }
     }
+    const opts = toolRequestOptions(name);
     try {
-      return resultText(name, await this.client.callTool({ name, arguments: args }));
+      return resultText(name, await this.client.callTool({ name, arguments: args }, undefined, opts));
     } catch (e) {
       // "Not connected": the startup connect failed (the dashboard started
       // before the MCP server, or it never answered). Without this the
       // dashboard would stay degraded until restarted.
       if (!isSessionError(e) && !isNotConnected(e)) throw e;
       await this.reconnectOnce();
-      return resultText(name, await this.client.callTool({ name, arguments: args }));
+      return resultText(name, await this.client.callTool({ name, arguments: args }, undefined, opts));
     }
   }
 

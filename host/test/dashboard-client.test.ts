@@ -200,3 +200,47 @@ describe("McpDashboardClient -- armed flag, E-STOP legs, head procedures", () =>
     await expect(dash.getAgentArmed()).rejects.not.toThrow(/^Not connected$/);
   });
 });
+
+// The MCP SDK's callTool() defaults to a 60 s request timeout. characterize_imu
+// sweeps seven postures at the Pico's 5°/s (minutes), so without a per-tool
+// override the dashboard reported "MCP error -32001: Request timed out" while
+// the daemon carried on sweeping -- the "IMU characterised" step looked like it
+// never finished (field 2026-11-05).
+describe("McpDashboardClient — long-running tools get a request timeout above the SDK's 60 s default", () => {
+  function spyCalls(dash: McpDashboardClient): Array<{ name: string; timeout: number | undefined }> {
+    const calls: Array<{ name: string; timeout: number | undefined }> = [];
+    const sdk = dash as unknown as {
+      client: { callTool(p: { name: string }, s?: unknown, o?: { timeout?: number }): Promise<unknown> };
+    };
+    sdk.client.callTool = async (p, _s, o) => {
+      calls.push({ name: p.name, timeout: o?.timeout });
+      return { content: [{ type: "text", text: "ok" }] };
+    };
+    return calls;
+  }
+
+  it("characterize_imu is allowed at least 10 minutes", async () => {
+    const dash = new McpDashboardClient("http://unused/mcp");
+    const calls = spyCalls(dash);
+    await dash.characterizeImu();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].name).toBe("characterize_imu");
+    expect(calls[0].timeout).toBeGreaterThanOrEqual(10 * 60_000);
+  });
+
+  it("home and track_aircraft (both wait for a slew to arrive) get more than 60 s", async () => {
+    const dash = new McpDashboardClient("http://unused/mcp");
+    const calls = spyCalls(dash);
+    await dash.home();
+    await dash.track("abc123");
+    expect(calls.map((c) => c.name)).toEqual(["home", "track_aircraft"]);
+    for (const c of calls) expect(c.timeout).toBeGreaterThan(60_000);
+  });
+
+  it("a quick tool keeps the SDK default (no override)", async () => {
+    const dash = new McpDashboardClient("http://unused/mcp");
+    const calls = spyCalls(dash);
+    await dash.clearEstop();
+    expect(calls[0]).toEqual({ name: "clear_estop", timeout: undefined });
+  });
+});
