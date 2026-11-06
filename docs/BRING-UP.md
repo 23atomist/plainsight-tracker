@@ -105,6 +105,8 @@ curl -s -XPOST http://192.168.4.100:8780/api/home -H 'Content-Type: application/
   rig), saved to flash:
   - `tilt home_pos -2` and `tilt min -2`: the endstop reads -2, so **tilt 0 is
     level**. This replaces the earlier "tilt 0 = endstop, roughly level".
+    *(Superseded 2026-11-05 PM: the endstop is level, so these are 0 / 0 again;
+    see the IMU re-mount note.)*
   - `pan min -270`, `pan max 270`: the cabling runs through the centre, which
     allows about a full turn each way. ±270 was chosen; the rest is margin.
   - Then `HOME tilt` (about 25 s) and `goto tilt 0`, which puts tilt at level.
@@ -174,6 +176,15 @@ After the restart, `tiltDisagreeDeg` read:
 > fewer degrees than the Pico commands on tilt (45→43.0 fusion / 44.1 raw accel;
 > 92→88 raw accel), consistently across both mountings — check tilt 90 against
 > a plumb line before trusting `gear 10.0`.
+
+> **2026-11-05 PM — tilt zero moved back to the endstop.** The owner confirmed
+> the tilt endstop is exactly level, and the re-mounted IMU agreed (fusion pitch
+> -0.1, raw accelerometer -0.8 at the switch). So `tilt home_pos 0` and
+> `tilt min 0` are saved to flash again (replacing -2 / -2), tilt 0 is the
+> endstop, and `HEAD_IMU_PITCH_OFFSET_DEG=0.0`. Checked after re-homing: Pico
+> tilt 0 → fusion 0.0 / raw -0.9; 45 → 42.0 / 42.7; 90 → 86.8 / 87.5; back to
+> 0 → 0.1 / -0.6. The ~3.5 % shortfall at 90 remains (plumb-line check still
+> owed). The "tilt 0 is level, endstop reads -2" passages below are superseded.
 
 | Pico tilt | tiltDisagreeDeg |
 |---|---|
@@ -374,9 +385,8 @@ post-home reference tilt).
 
 **Pico CFG**, saved to flash:
 
-- `tilt home_pos -2` and `tilt min -2`: tilt 0 is level and the endstop reads
-  -2. The old "tilt 0 = endstop ≈ level" wording in this checklist is
-  superseded.
+- `tilt home_pos 0` and `tilt min 0` (2026-11-05 PM; they were -2 / -2 from
+  2026-11-03 to 2026-11-05): the endstop is level, so tilt 0 is the endstop.
 - `pan min -270` and `pan max 270`: the cabling routed through the centre
   allows about a full turn each way. ±270 was chosen; the rest is margin.
 - Then `HOME tilt` (about 25 s) and `goto tilt 0`, which put tilt at level.
