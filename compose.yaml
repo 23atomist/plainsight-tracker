@@ -111,6 +111,8 @@ services:
       - READSB_RTLSDR_DEVICE=${RTLSDR_SERIAL:-}
       - READSB_GAIN=${RTLSDR_GAIN:-autogain}
       - READSB_RTLSDR_PPM=${RTLSDR_PPM:-0}
+      # ON powers a bias-tee LNA from the dongle (needs a dongle with the circuit).
+      - READSB_ENABLE_BIASTEE=${RTLSDR_BIASTEE:-OFF}
       - READSB_LAT=${FEEDER_LAT}
       - READSB_LON=${FEEDER_LONG}
       - READSB_ALT=${FEEDER_ALT_M}m
