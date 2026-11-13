@@ -6,7 +6,7 @@ The only install doc for both machines. The two-machine picture is in the
 | Machine | Address | Runs |
 |---|---|---|
 | plainsight head (Orange Pi Zero 2W, Armbian trixie, arm64) | `192.168.4.100` | `head/compose.yaml`: the head API on `:8780` |
-| application host (Debian 13, x86_64) | `192.168.4.92` | `compose.yaml` at the repo root: mcp, agent, dashboard, mediamtx, adsb, gpsd |
+| application host (Debian 13, x86_64) | `192.168.4.92` | `compose.yaml` at the repo root: mcp, agent, dashboard, mediamtx, readsb-pluto, adsb, gpsd |
 
 Both machines log in as `atomist` (uid 1000). Commands below run from the
 repo root on the workstation unless they start with `ssh`.
@@ -28,8 +28,7 @@ repo root on the workstation unless they start with `ssh`.
 - **Devices on the host** (stable by-id paths, already in `.env.example`):
   - camera `/dev/v4l/by-id/usb-16MP_Camera_Mamufacture_16MP_USB_Camera_2022050701-video-index0`
     (MJPG only; encoded to H.264 by VAAPI on `/dev/dri/renderD128`)
-  - Nooelec RTL-SDR (RTL2838, `0bda:2838`, Elonics E4000 tuner), opened by
-    ultrafeeder's readsb directly (see RTL-SDR below)
+  - ADALM-Pluto (PlutoSDR), found by libiio as `usb:`
   - u-blox 7 GPS `/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00`
   - group ids `video=44`, `render=992` (`getent group video render`)
 - **The data tree, owned by uid 1000, before the first `up`.** The Node
@@ -176,14 +175,14 @@ dashboard read the same token from `.env`. Browsers open the dashboard as
 On the host (`ssh atomist@192.168.4.92`, then `cd ~/plainsight-tracker`):
 
 ```bash
-docker compose ps                                   # mcp, agent, dashboard, mediamtx, adsb (ultrafeeder), gpsd up; no detector
+docker compose ps                                   # mcp, agent, dashboard, mediamtx, readsb-pluto, adsb (ultrafeeder), gpsd up; no detector
 curl -s localhost:8770/healthz                      # MCP: {"ok":true}
 curl -s localhost:8088/data/aircraft.json | head -c 300   # tar1090: non-empty "aircraft" array
 curl -s localhost:8788/api/state | head -c 600      # rig.connected true, services.head/adsb/mediamtx "up"
 curl -s localhost:9997/v3/paths/list                # MediaMTX API: path tb3
 curl -s http://192.168.4.100:8780/healthz           # the head, from the host
 docker compose exec dashboard vainfo                # VAEntrypointEncSlice for H264 profiles
-docker compose logs adsb --tail 40 | grep -i rtl    # readsb opened the RTL-SDR, gain set
+docker compose logs readsb-pluto --tail 20          # Pluto opened
 docker compose logs gpsd --tail 10
 ```
 
@@ -211,7 +210,7 @@ existing `config.json`: diff and merge by hand.
 ## Logs
 
 ```bash
-docker compose logs -f <service>        # mcp | agent | dashboard | mediamtx | adsb | gpsd
+docker compose logs -f <service>        # mcp | agent | dashboard | mediamtx | readsb-pluto | adsb | gpsd
 docker compose logs --tail 100 dashboard
 ```
 
@@ -232,37 +231,28 @@ The ultrafeeder container is named `ultrafeeder` (service `adsb`).
   `docker compose exec dashboard ffmpeg -hide_banner -f v4l2 -list_formats all -i "$CAMERA_DEVICE"`.
   The dashboard does not start the camera until "Start camera" is pressed
   (`cameraStartEnabled: false`).
-- **USB bandwidth.** On .92 the RTL-SDR, the GPS and the camera all enumerate on
+- **USB bandwidth.** On .92 the Pluto, the GPS and the camera all enumerate on
   the USB 2.0 root hub (bus 001, `lsusb -t`). If the camera drops frames or
   readsb reports lost samples, move the camera to a USB 3.0 port (bus 002).
-- **RTL-SDR.** Debian auto-loads the DVB-T kernel driver for the Nooelec
-  (`lsmod | grep dvb_usb_rtl28xxu`). readsb in the `adsb` container detaches it
-  by itself at start-up (log: `Detached kernel driver`, then `Found Elonics
-  E4000 tuner`, `tuner gain set to ...`; verified 2026-11-13). Only if it
-  instead logs `usb_claim_interface error -6` / "No supported devices found",
-  blacklist the driver on the host OS (sudo, one time):
-
-  ```bash
-  printf 'blacklist dvb_usb_rtl28xxu\nblacklist rtl2832\nblacklist rtl2832_sdr\nblacklist rtl2830\n' \
-    | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf
-  sudo modprobe -r rtl2832_sdr dvb_usb_rtl28xxu rtl2832
-  cd ~/plainsight-tracker && docker compose restart adsb
-  ```
-
-  Then `docker compose logs adsb | grep -i "rtl\|gain"` shows the device opened
-  and the gain chosen. Knobs in `.env`: `RTLSDR_GAIN` (`autogain`, or a fixed
-  dB value), `RTLSDR_PPM`, `RTLSDR_SERIAL` (blank = first dongle). 2026-11-05
-  to 2026-11-13 the receiver was an ADALM-Pluto behind a `readsb-pluto` Beast
-  sidecar on 127.0.0.1:31005; that service and `host/readsb-pluto/` are in git
-  history if it ever comes back.
+- **PlutoSDR.** `docker compose logs readsb-pluto` should show the Pluto being
+  opened at `usb:`. "No device found" means the Pluto is not on USB or another
+  process holds it; `lsusb | grep -i pluto` on the host (`0456:b673`).
+  `PLUTO_GAIN` (default 60) is the only receiver knob; there is no PPM to set
+  on the Pluto (the RTL-SDR PPM item from the spec no longer applies).
+  *Nooelec trial, 2026-11-13:* an E4000-tuner RTL2838 (`0bda:2838`, max gain
+  42 dB, no bias tee) was tried for an hour behind a passive 1090 bandpass
+  filter: noise floor -39 dBFS, a plane 6.5 km out at -33 dB RSSI, 12 km max
+  range at 02:00, so the Pluto came back. The RTL-SDR compose variant
+  (`READSB_DEVICE_TYPE=rtlsdr`, autogain, `RTLSDR_BIASTEE`) is in git history
+  (097402c, a5bf748) if a better dongle or an LNA ever arrives.
 - **tar1090 not on :8088.** With host networking there is no `8088:80`
   mapping, so ultrafeeder's nginx is told the port with
   `TAR1090_NGINX_PORT=8088` in `compose.yaml`. Without it nginx binds `:80`,
   `adsbUrl` fails and the dashboard shows `services.adsb down`.
 - **ADS-B empty.** `curl -s localhost:8088/data/aircraft.json`: an empty
   `aircraft` array with `messages` climbing means the receiver works but sees
-  nothing (antenna); `messages` stuck means readsb has no samples (check the
-  RTL-SDR item above: kernel driver, `lsusb | grep 0bda:2838`).
+  nothing (antenna); `messages` stuck means ultrafeeder is not getting Beast
+  from `127.0.0.1:31005` (check `readsb-pluto` is up).
 - **GPS.** `docker compose logs gpsd`; from the host
   `(echo '?WATCH={"enable":true,"json":true}'; sleep 3) | nc -q1 127.0.0.1 2947`.
 - **Head unreachable.** `curl -s http://192.168.4.100:8780/healthz` from the

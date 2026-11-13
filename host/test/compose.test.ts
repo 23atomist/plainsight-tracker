@@ -42,7 +42,7 @@ describe.skipIf(!dockerAvailable)("compose.yaml", () => {
   const services = dockerAvailable ? render() : {};
 
   it("defines every service", () => {
-    for (const name of ["mcp", "agent", "dashboard", "mediamtx", "adsb", "gpsd", "detector"]) {
+    for (const name of ["mcp", "agent", "dashboard", "mediamtx", "adsb", "readsb-pluto", "gpsd", "detector"]) {
       expect(services[name], name).toBeDefined();
     }
   });
@@ -80,8 +80,18 @@ describe.skipIf(!dockerAvailable)("compose.yaml", () => {
     expect(rec?.read_only).toBeFalsy();
   });
 
+  it("keeps readsb-pluto off ultrafeeder's ports", () => {
+    const cmd = (services["readsb-pluto"].command ?? []).join(" ");
+    expect(cmd).toContain("--net-bo-port 31005");
+    for (const f of ["--net-ri-port", "--net-ro-port", "--net-sbs-port", "--net-bi-port"]) {
+      expect(cmd).toContain(`${f} 0`);
+    }
+    expect(cmd).not.toContain("--net-only");
+  });
+
   it("gates optional services behind profiles", () => {
     expect(services.adsb.profiles).toContain("adsb");
+    expect(services["readsb-pluto"].profiles).toContain("adsb");
     expect(services.gpsd.profiles).toContain("gps");
     expect(services.detector.profiles).toContain("vision");
   });
@@ -94,14 +104,11 @@ describe.skipIf(!dockerAvailable)("compose.yaml", () => {
     }
   });
 
-  it("runs ultrafeeder on the RTL-SDR directly, no Beast sidecar", () => {
+  it("runs ultrafeeder without an SDR, fed by readsb-pluto", () => {
     const env = services.adsb.environment ?? {};
-    expect(env.READSB_DEVICE_TYPE).toBe("rtlsdr");
-    expect(env.READSB_GAIN).toBe("autogain");
-    expect(env.READSB_NET_ONLY).toBeUndefined();
-    expect(env.READSB_NET_CONNECTOR).toBeUndefined();
-    expect(services.adsb.depends_on).toBeUndefined();
-    expect(services.adsb.device_cgroup_rules).toContain("c 189:* rwm");
-    expect(services.adsb.volumes?.some((v) => v.target === "/dev/bus/usb")).toBe(true);
+    expect(env.READSB_DEVICE_TYPE).toBeUndefined();
+    expect(env.READSB_NET_CONNECTOR).toBe("127.0.0.1,31005,beast_in");
+    expect(services.adsb.device_cgroup_rules).toBeUndefined();
+    expect(services["readsb-pluto"].device_cgroup_rules).toContain("c 189:* rwm");
   });
 });

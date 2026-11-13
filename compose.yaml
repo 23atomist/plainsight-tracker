@@ -91,26 +91,64 @@ services:
       - "./host/mediamtx/mediamtx.yml:/mediamtx.yml:ro"
       - "${PLAINSIGHT_DATA}/recordings:/recordings"
 
-  # Ported from /media/data/adsb/docker-compose.yml on 192.168.4.11. Reads the
-  # Nooelec RTL-SDR (RTL2838, 0bda:2838) directly. readsb detaches the host
-  # kernel's DVB driver itself at start-up ("Detached kernel driver" in the log);
-  # blacklist dvb_usb_rtl28xxu only if it ever fails to claim (docs/DEPLOY.md).
-  # 2026-11-05..13 it was fed Beast by a readsb-pluto sidecar (git history).
+  # PlutoSDR front end: readsb built with libiio, publishing Beast on 127.0.0.1:31005.
+  # BUILD NOTE: pinned via ARG READSB_VERSION in host/readsb-pluto/Dockerfile.
+  readsb-pluto:
+    build: ./host/readsb-pluto
+    image: plainsight-readsb-pluto
+    network_mode: host
+    restart: unless-stopped
+    device_cgroup_rules:
+      - "c 189:* rwm"
+    volumes:
+      - "/dev/bus/usb:/dev/bus/usb"
+    command:
+      - readsb
+      - --device-type
+      - plutosdr
+      - --pluto-uri
+      - "${PLUTO_URI:-usb:}"
+      - --gain
+      - "${PLUTO_GAIN:-60}"
+      - --net
+      # Beast out on 31005, loopback only. --net also enables readsb's default
+      # listeners on 30001-30004 (raw-in, raw-out, SBS-out, Beast-in) and
+      # ultrafeeder (host network) binds its own 30001-30005, so every listener
+      # except Beast-out is disabled explicitly and Beast-out moves to 31005.
+      - --net-bind-address
+      - 127.0.0.1
+      - --net-bo-port
+      - "31005"
+      - --net-ri-port
+      - "0"
+      - --net-ro-port
+      - "0"
+      - --net-sbs-port
+      - "0"
+      - --net-bi-port
+      - "0"
+      - --lat
+      - "${FEEDER_LAT}"
+      - --lon
+      - "${FEEDER_LONG}"
+      - --quiet
+    profiles: ["adsb"]
+
+  # Ported from /media/data/adsb/docker-compose.yml on 192.168.4.11. No SDR of
+  # its own: it ingests Beast from readsb-pluto on 127.0.0.1:31005.
   adsb:
     image: ghcr.io/sdr-enthusiasts/docker-adsb-ultrafeeder:telegraf
     container_name: ultrafeeder
     hostname: ultrafeeder
     network_mode: host
     restart: unless-stopped
-    device_cgroup_rules:
-      - "c 189:* rwm"
+    depends_on:
+      - readsb-pluto
     environment:
       - LOGLEVEL=${LOGLEVEL:-verbose}
       - TZ=${FEEDER_TZ}
-      - READSB_DEVICE_TYPE=rtlsdr
-      - READSB_RTLSDR_DEVICE=${RTLSDR_SERIAL:-}
-      - READSB_GAIN=${RTLSDR_GAIN:-autogain}
-      - READSB_RTLSDR_PPM=${RTLSDR_PPM:-0}
+      - READSB_NET_ONLY=true
+      - READSB_NET_CONNECTOR=127.0.0.1,31005,beast_in
       - READSB_LAT=${FEEDER_LAT}
       - READSB_LON=${FEEDER_LONG}
       - READSB_ALT=${FEEDER_ALT_M}m
@@ -155,7 +193,6 @@ services:
       - INFLUXDBV2_BUCKET=${INFLUX_BUCKET:-adsb}
       - PROMETHEUS_ENABLE=false
     volumes:
-      - "/dev/bus/usb:/dev/bus/usb"
       - "${PLAINSIGHT_DATA}/adsb/globe_history:/var/globe_history"
       - "${PLAINSIGHT_DATA}/adsb/graphs1090:/var/lib/collectd"
       - "/proc/diskstats:/proc/diskstats:ro"
