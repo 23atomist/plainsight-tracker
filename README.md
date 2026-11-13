@@ -20,12 +20,11 @@ the camera and serves the operator dashboard.
   |        |-- SKR Pico (plainsight-ptz) on USB serial  |   +-- agent                LLM target chooser (MCP client)
   |        +-- BNO055 IMU on I2C                        |   +-- dashboard     :8788  ops UI, camera ingest (ffmpeg VAAPI -> MediaMTX)
   |                                                     |   +-- mediamtx      :8189/udp WebRTC; api/rtsp/whep on 127.0.0.1
-  |                                                     |   +-- readsb-pluto         PlutoSDR -> Beast on 127.0.0.1:31005
-  |                                                     |   +-- adsb          :8088  ultrafeeder (readsb + tar1090 + feeders)
+  |                                                     |   +-- adsb          :8088  ultrafeeder (readsb on the RTL-SDR + tar1090 + feeders)
   |                                                     |   +-- gpsd          :2947  u-blox 7 (loopback)
   |                                                     |   +-- detector             profile "vision", not built yet
   |                                                     |
-  |                                                     |  USB camera (MJPG), ADALM-Pluto, u-blox 7 GPS
+  |                                                     |  USB camera (MJPG), Nooelec RTL-SDR, u-blox 7 GPS
   |                                                     |  /dev/dri/renderD128  Intel VAAPI
   |                                                     |  $PLAINSIGHT_DATA/{config,state,recordings,snapshots,adsb}
   |
@@ -48,7 +47,6 @@ plainsight-tracker/
     src/               mcp/ agent/ dashboard/ shared/
     dashboard/public/  the dashboard UI (vanilla JS, no build)
     mediamtx/          mediamtx.yml
-    readsb-pluto/      readsb built with PlutoSDR support
     gpsd/              gpsd image
     config.example.json
     test/              vitest suite

@@ -428,7 +428,7 @@ Hardware on .92 (all three enumerate on the USB 2.0 root hub, bus 001):
 | Device | Path / id |
 |---|---|
 | USB camera, MJPG | `/dev/v4l/by-id/usb-16MP_Camera_Mamufacture_16MP_USB_Camera_2022050701-video-index0` |
-| ADALM-Pluto | `0456:b673`, libiio `usb:` |
+| Nooelec RTL-SDR (since 2026-11-13; ADALM-Pluto `0456:b673` before) | `0bda:2838`, serial 00000001 |
 | u-blox 7 GPS | `/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00` |
 | Intel iGPU | `/dev/dri/renderD128`, video gid 44, render gid 992 |
 
@@ -544,7 +544,7 @@ until both are cleared:
 
 ## Host follow-ups
 
-- **USB placement.** The camera, Pluto and GPS share the USB 2.0 root hub.
+- **USB placement.** The camera, SDR and GPS share the USB 2.0 root hub.
   Fine at 720p MJPG so far; if frames drop or readsb loses samples, move the
   camera to a USB 3.0 port.
 - **ADS-B range 23 km** with the Pluto and no LNA or filter. An LNA + 1090 MHz
