@@ -466,8 +466,8 @@ Also: MediaMTX 1.19.3 enables MoQ by default (an unauthenticated listener on
 | `docker compose ps` | mcp (healthy), agent, dashboard, mediamtx, readsb-pluto, adsb/`ultrafeeder` (healthy), gpsd up; detector absent |
 | `curl -s localhost:8770/healthz` | `{"ok":true}` |
 | `curl -s localhost:8088/data/aircraft.json` | 9 aircraft (7 with position) 15 s after start; 11 (8 with position) after 4 min |
-| ADS-B rate | 3392 messages in the last minute (about 56/s), all via Beast from `readsb-pluto` on 127.0.0.1:31005; max range 23.1 km |
-| `readsb-pluto` log | `readsb 3.16.21`, `plutosdr: Context has 5 device(s)`, Beast on 31005. One harmless line: `Unable to create Avahi DNS-SD client` |
+| ADS-B rate | 3392 messages in the last minute (about 56/s), all via Beast from `readsb-pluto` on 127.0.0.1:29005; max range 23.1 km |
+| `readsb-pluto` log | `readsb 3.16.21`, `plutosdr: Context has 5 device(s)`, Beast on 29005. One harmless line: `Unable to create Avahi DNS-SD client` |
 | ultrafeeder | feeds connected (adsb.fi, adsb.lol, planespotters, ...), MLAT handshakes complete |
 | gpsd (`?WATCH` on 127.0.0.1:2947) | gpsd 3.22, u-blox driver, TPV `mode 3`, `status 2`, hdop 0.90 |
 | `curl -s localhost:8788/api/state` | `rig.connected true`, `panRef "host"`, `estop false`, `link {pico:true, imu:true}`, telemetry age 34 to 55 ms |

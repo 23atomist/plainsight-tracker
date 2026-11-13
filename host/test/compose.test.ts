@@ -82,7 +82,7 @@ describe.skipIf(!dockerAvailable)("compose.yaml", () => {
 
   it("keeps readsb-pluto off ultrafeeder's ports", () => {
     const cmd = (services["readsb-pluto"].command ?? []).join(" ");
-    expect(cmd).toContain("--net-bo-port 31005");
+    expect(cmd).toContain("--net-bo-port 29005");
     for (const f of ["--net-ri-port", "--net-ro-port", "--net-sbs-port", "--net-bi-port"]) {
       expect(cmd).toContain(`${f} 0`);
     }
@@ -107,7 +107,7 @@ describe.skipIf(!dockerAvailable)("compose.yaml", () => {
   it("runs ultrafeeder without an SDR, fed by readsb-pluto", () => {
     const env = services.adsb.environment ?? {};
     expect(env.READSB_DEVICE_TYPE).toBeUndefined();
-    expect(env.READSB_NET_CONNECTOR).toBe("127.0.0.1,31005,beast_in");
+    expect(env.READSB_NET_CONNECTOR).toBe("127.0.0.1,29005,beast_in");
     expect(services.adsb.device_cgroup_rules).toBeUndefined();
     expect(services["readsb-pluto"].device_cgroup_rules).toContain("c 189:* rwm");
   });

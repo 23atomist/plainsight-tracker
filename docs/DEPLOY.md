@@ -252,7 +252,7 @@ The ultrafeeder container is named `ultrafeeder` (service `adsb`).
 - **ADS-B empty.** `curl -s localhost:8088/data/aircraft.json`: an empty
   `aircraft` array with `messages` climbing means the receiver works but sees
   nothing (antenna); `messages` stuck means ultrafeeder is not getting Beast
-  from `127.0.0.1:31005` (check `readsb-pluto` is up).
+  from `127.0.0.1:29005` (check `readsb-pluto` is up).
 - **GPS.** `docker compose logs gpsd`; from the host
   `(echo '?WATCH={"enable":true,"json":true}'; sleep 3) | nc -q1 127.0.0.1 2947`.
 - **Head unreachable.** `curl -s http://192.168.4.100:8780/healthz` from the

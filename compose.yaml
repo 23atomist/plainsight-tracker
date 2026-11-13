@@ -91,7 +91,7 @@ services:
       - "./host/mediamtx/mediamtx.yml:/mediamtx.yml:ro"
       - "${PLAINSIGHT_DATA}/recordings:/recordings"
 
-  # PlutoSDR front end: readsb built with libiio, publishing Beast on 127.0.0.1:31005.
+  # PlutoSDR front end: readsb built with libiio, publishing Beast on 127.0.0.1:29005.
   # BUILD NOTE: pinned via ARG READSB_VERSION in host/readsb-pluto/Dockerfile.
   readsb-pluto:
     build: ./host/readsb-pluto
@@ -111,14 +111,16 @@ services:
       - --gain
       - "${PLUTO_GAIN:-60}"
       - --net
-      # Beast out on 31005, loopback only. --net also enables readsb's default
+      # Beast out on 29005, loopback only. --net also enables readsb's default
       # listeners on 30001-30004 (raw-in, raw-out, SBS-out, Beast-in) and
-      # ultrafeeder (host network) binds its own 30001-30005, so every listener
-      # except Beast-out is disabled explicitly and Beast-out moves to 31005.
+      # ultrafeeder (host network) binds its own 30001-30006 plus 31003-31006
+      # for its internal MLAT hub (31005 was ours until 2026-11-13 and lost the
+      # bind race to the hub after a reboot), so every listener except
+      # Beast-out is disabled explicitly and Beast-out moves to 29005.
       - --net-bind-address
       - 127.0.0.1
       - --net-bo-port
-      - "31005"
+      - "29005"
       - --net-ri-port
       - "0"
       - --net-ro-port
@@ -135,7 +137,7 @@ services:
     profiles: ["adsb"]
 
   # Ported from /media/data/adsb/docker-compose.yml on 192.168.4.11. No SDR of
-  # its own: it ingests Beast from readsb-pluto on 127.0.0.1:31005.
+  # its own: it ingests Beast from readsb-pluto on 127.0.0.1:29005.
   adsb:
     image: ghcr.io/sdr-enthusiasts/docker-adsb-ultrafeeder:telegraf
     container_name: ultrafeeder
@@ -148,7 +150,7 @@ services:
       - LOGLEVEL=${LOGLEVEL:-verbose}
       - TZ=${FEEDER_TZ}
       - READSB_NET_ONLY=true
-      - READSB_NET_CONNECTOR=127.0.0.1,31005,beast_in
+      - READSB_NET_CONNECTOR=127.0.0.1,29005,beast_in
       - READSB_LAT=${FEEDER_LAT}
       - READSB_LON=${FEEDER_LONG}
       - READSB_ALT=${FEEDER_ALT_M}m

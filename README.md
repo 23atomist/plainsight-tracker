@@ -20,7 +20,7 @@ the camera and serves the operator dashboard.
   |        |-- SKR Pico (plainsight-ptz) on USB serial  |   +-- agent                LLM target chooser (MCP client)
   |        +-- BNO055 IMU on I2C                        |   +-- dashboard     :8788  ops UI, camera ingest (ffmpeg VAAPI -> MediaMTX)
   |                                                     |   +-- mediamtx      :8189/udp WebRTC; api/rtsp/whep on 127.0.0.1
-  |                                                     |   +-- readsb-pluto         PlutoSDR -> Beast on 127.0.0.1:31005
+  |                                                     |   +-- readsb-pluto         PlutoSDR -> Beast on 127.0.0.1:29005
   |                                                     |   +-- adsb          :8088  ultrafeeder (readsb + tar1090 + feeders)
   |                                                     |   +-- gpsd          :2947  u-blox 7 (loopback)
   |                                                     |   +-- detector             profile "vision", not built yet
