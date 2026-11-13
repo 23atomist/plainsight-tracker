@@ -1,5 +1,5 @@
 # readsb built from source with ADALM-Pluto support (the ultrafeeder image's
-# readsb lacks it). Publishes Beast on 127.0.0.1:31005 for ultrafeeder to consume.
+# readsb lacks it). Publishes Beast on 127.0.0.1:29005 for ultrafeeder to consume.
 ARG READSB_VERSION=v3.16.21
 
 FROM debian:bookworm-slim AS build
