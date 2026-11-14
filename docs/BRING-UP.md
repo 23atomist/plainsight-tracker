@@ -554,5 +554,18 @@ until both are cleared:
   although the comment says it should survive. Cosmetic; it goes away once the
   rig location is set.
 - **DHCP reservations** for .92 and .100 (see DEPLOY.md).
+- **Time is GPS-disciplined since 2026-11-13 PM.** A `chrony` service (profile
+  `gps`) reads gpsd's NTP shared-memory unit 0 (both containers `ipc: host`),
+  steers the host clock with `CAP_SYS_TIME` and serves NTP on :123 to the LAN,
+  replacing 192.168.4.11 as the house time source. Trigger: readsb logged one
+  `ppm: -897` warning the night the WAN was down, which was systemd-timesyncd
+  stepping the clock when the link came back, not the Pluto's crystal (the
+  check runs every 30 s and fired once in 16 h). Findings at first start:
+  GPS NMEA time arrives ~+90 ms late (serial latency, to be calibrated via
+  `CHRONY_GPS_OFFSET`), the u-blox 7 USB dongle emits **no PPS** (gpsd sends
+  TOFF but never PPS; the `PPS` refclock line stays at reach 0), pool anchor
+  selected within 5 s, `sntp 192.168.4.92` answers from the workstation.
+  Owner step still open: `sudo systemctl disable --now systemd-timesyncd` on
+  .92, and point the other machines at .92 instead of .11.
 - **Auth is off** (`TB3_DASHBOARD_AUTH=false`, no `TB3_MCP_TOKEN`). How to turn
   it on is in DEPLOY.md.

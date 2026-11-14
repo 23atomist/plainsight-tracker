@@ -6,7 +6,7 @@ The only install doc for both machines. The two-machine picture is in the
 | Machine | Address | Runs |
 |---|---|---|
 | plainsight head (Orange Pi Zero 2W, Armbian trixie, arm64) | `192.168.4.100` | `head/compose.yaml`: the head API on `:8780` |
-| application host (Debian 13, x86_64) | `192.168.4.92` | `compose.yaml` at the repo root: mcp, agent, dashboard, mediamtx, readsb-pluto, adsb, gpsd |
+| application host (Debian 13, x86_64) | `192.168.4.92` | `compose.yaml` at the repo root: mcp, agent, dashboard, mediamtx, readsb-pluto, adsb, gpsd, chrony |
 
 Both machines log in as `atomist` (uid 1000). Commands below run from the
 repo root on the workstation unless they start with `ssh`.
@@ -175,7 +175,7 @@ dashboard read the same token from `.env`. Browsers open the dashboard as
 On the host (`ssh atomist@192.168.4.92`, then `cd ~/plainsight-tracker`):
 
 ```bash
-docker compose ps                                   # mcp, agent, dashboard, mediamtx, readsb-pluto, adsb (ultrafeeder), gpsd up; no detector
+docker compose ps                                   # mcp, agent, dashboard, mediamtx, readsb-pluto, adsb (ultrafeeder), gpsd, chrony up; no detector
 curl -s localhost:8770/healthz                      # MCP: {"ok":true}
 curl -s localhost:8088/data/aircraft.json | head -c 300   # tar1090: non-empty "aircraft" array
 curl -s localhost:8788/api/state | head -c 600      # rig.connected true, services.head/adsb/mediamtx "up"
@@ -210,7 +210,7 @@ existing `config.json`: diff and merge by hand.
 ## Logs
 
 ```bash
-docker compose logs -f <service>        # mcp | agent | dashboard | mediamtx | readsb-pluto | adsb | gpsd
+docker compose logs -f <service>        # mcp | agent | dashboard | mediamtx | readsb-pluto | adsb | gpsd | chrony
 docker compose logs --tail 100 dashboard
 ```
 
@@ -253,6 +253,20 @@ The ultrafeeder container is named `ultrafeeder` (service `adsb`).
   `aircraft` array with `messages` climbing means the receiver works but sees
   nothing (antenna); `messages` stuck means ultrafeeder is not getting Beast
   from `127.0.0.1:29005` (check `readsb-pluto` is up).
+- **Time (chrony).** `docker compose exec chrony chronyc sources -v` should show
+  `GPS` with a non-zero reach and a pool server selected (`^*`). `PPS` stays at
+  reach 0 unless the u-blox puts a pulse on the serial DCD line. From another
+  machine `sntp <host>` (macOS) or `chronyc -h <host> ...` is refused by design;
+  use `ntpdate -q <host>` / `sntp <host>` to check the service.
+  The host must not run its own NTP client: `systemctl is-active systemd-timesyncd`
+  must say `inactive` (one-time `sudo systemctl disable --now systemd-timesyncd`).
+  **GPS offset calibration** (once per receiver): after an hour with the WAN up,
+  `chronyc sourcestats` shows the GPS line's mean offset against the pool-steered
+  clock (positive = local clock ahead of the GPS sample = NMEA arrived late).
+  Put that value, same sign, in `.env` as `CHRONY_GPS_OFFSET` (chrony adds it
+  to each sample: offset = gps − local + CHRONY_GPS_OFFSET), set
+  `CHRONY_GPS_DELAY=0.2`, and `docker compose up -d chrony`; the GPS line should
+  then read within ±20 ms. First calibration 2026-11-13: +0.09 s.
 - **GPS.** `docker compose logs gpsd`; from the host
   `(echo '?WATCH={"enable":true,"json":true}'; sleep 3) | nc -q1 127.0.0.1 2947`.
 - **Head unreachable.** `curl -s http://192.168.4.100:8780/healthz` from the

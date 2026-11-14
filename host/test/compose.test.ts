@@ -18,6 +18,8 @@ type Svc = {
   command?: string[];
   healthcheck?: { test: string[] };
   depends_on?: Record<string, { condition?: string }>;
+  ipc?: string;
+  cap_add?: string[];
 };
 
 const dockerAvailable = (() => {
@@ -42,7 +44,7 @@ describe.skipIf(!dockerAvailable)("compose.yaml", () => {
   const services = dockerAvailable ? render() : {};
 
   it("defines every service", () => {
-    for (const name of ["mcp", "agent", "dashboard", "mediamtx", "adsb", "readsb-pluto", "gpsd", "detector"]) {
+    for (const name of ["mcp", "agent", "dashboard", "mediamtx", "adsb", "readsb-pluto", "gpsd", "chrony", "detector"]) {
       expect(services[name], name).toBeDefined();
     }
   });
@@ -93,7 +95,20 @@ describe.skipIf(!dockerAvailable)("compose.yaml", () => {
     expect(services.adsb.profiles).toContain("adsb");
     expect(services["readsb-pluto"].profiles).toContain("adsb");
     expect(services.gpsd.profiles).toContain("gps");
+    expect(services.chrony.profiles).toContain("gps");
     expect(services.detector.profiles).toContain("vision");
+  });
+
+  // chrony reads gpsd's NTP shared-memory segments, so both must share the
+  // host IPC namespace; setting the host clock needs CAP_SYS_TIME; serving
+  // NTP to the LAN needs the host network. The drift file must persist.
+  it("disciplines the host clock from gpsd over shared memory", () => {
+    expect(services.gpsd.ipc).toBe("host");
+    expect(services.chrony.ipc).toBe("host");
+    expect(services.chrony.network_mode).toBe("host");
+    expect(services.chrony.cap_add).toContain("SYS_TIME");
+    expect(services.chrony.depends_on?.gpsd).toBeDefined();
+    expect(services.chrony.volumes?.some((v) => v.target === "/var/lib/chrony")).toBe(true);
   });
 
   it("mounts /config in every plainsight-host service", () => {

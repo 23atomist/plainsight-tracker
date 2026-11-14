@@ -1,0 +1,34 @@
+# Rendered by entrypoint.sh from chrony.conf.tmpl; __VARS__ come from .env.
+#
+# Time sources, in order of trust once the GPS offset is calibrated:
+#  - SHM 1: gpsd's PPS-corrected time (unit 1). Only written when the u-blox
+#    actually delivers a pulse on the serial DCD line. `noselect` until that
+#    has been seen in `chronyc sources` and its offset checked; flip to
+#    `prefer` then.
+#  - SHM 0: gpsd's NMEA time (unit 0). Serial latency makes it late by a
+#    device-specific tens-to-hundreds of ms; CHRONY_GPS_OFFSET (positive, the
+#    value `chronyc sources` shows for GPS before calibration) corrects that
+#    and CHRONY_GPS_DELAY is the error bar chrony assumes until it is measured
+#    (keep it wide, 0.5 s, before calibration or the GPS gets outvoted as a
+#    falseticker by the pool and is never used).
+#  - Debian NTP pool over the WAN: the anchor used to calibrate the GPS offset
+#    and the sub-10 ms source while the WAN is up. With the WAN down the GPS
+#    carries the clock alone; with everything gone `local ... orphan` keeps
+#    serving the LAN from the free-running clock at stratum 10.
+refclock SHM 1 refid PPS precision 1e-7 poll 3 noselect
+refclock SHM 0 refid GPS precision 1e-1 poll 3 offset __GPS_OFFSET__ delay __GPS_DELAY__
+pool 2.debian.pool.ntp.org iburst maxsources 3
+
+driftfile /var/lib/chrony/chrony.drift
+# Step only at start-up (first 3 updates) and only if off by >1 s; afterwards
+# slew, so the readsb SDR-clock check never sees a jump.
+makestep 1.0 3
+rtcsync
+user root
+
+# Serve the LAN. Clients on other machines point at this host's address.
+allow __ALLOW__
+local stratum 10 orphan
+
+# chronyc from inside the container only (127.0.0.1 is the default).
+cmdport 323

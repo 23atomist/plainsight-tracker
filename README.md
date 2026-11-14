@@ -23,6 +23,7 @@ the camera and serves the operator dashboard.
   |                                                     |   +-- readsb-pluto         PlutoSDR -> Beast on 127.0.0.1:29005
   |                                                     |   +-- adsb          :8088  ultrafeeder (readsb + tar1090 + feeders)
   |                                                     |   +-- gpsd          :2947  u-blox 7 (loopback)
+  |                                                     |   +-- chrony        :123   GPS-disciplined NTP for host + LAN
   |                                                     |   +-- detector             profile "vision", not built yet
   |                                                     |
   |                                                     |  USB camera (MJPG), ADALM-Pluto, u-blox 7 GPS
@@ -50,6 +51,7 @@ plainsight-tracker/
     mediamtx/          mediamtx.yml
     readsb-pluto/      readsb built with PlutoSDR support
     gpsd/              gpsd image
+    chrony/            chrony image (NTP from gpsd shared memory)
     config.example.json
     test/              vitest suite
   docs/

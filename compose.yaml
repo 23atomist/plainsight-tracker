@@ -6,11 +6,13 @@
 # DATA DIRECTORY OWNERSHIP: the Node services run as uid 1000 and mediamtx is
 # pinned to 1000:1000. Create the tree before the first `up`, otherwise Docker
 # creates the bind-mount dirs as root and state/snapshots/keep are unwritable:
-#   sudo mkdir -p ${PLAINSIGHT_DATA}/{config,state,recordings,snapshots,adsb} \
+#   sudo mkdir -p ${PLAINSIGHT_DATA}/{config,state,recordings,snapshots,adsb,chrony} \
 #     && sudo chown -R 1000:1000 ${PLAINSIGHT_DATA}
 #
-# Time discipline (chrony/NTP sync from the GPS) is NOT containerised; it is a
-# host-OS choice. The gpsd service below only exposes the receiver on :2947 (loopback; gpsd without -G).
+# Time discipline IS containerised (since 2026-11-13): the chrony service reads
+# gpsd's NTP shared-memory segments (both run with `ipc: host`), disciplines
+# the host clock with CAP_SYS_TIME and serves NTP on :123 to the LAN. The host
+# must NOT also run systemd-timesyncd: `sudo systemctl disable --now systemd-timesyncd`.
 x-host-service: &host-service
   build: ./host
   image: plainsight-host
@@ -204,15 +206,37 @@ services:
       - /var/log:size=32M
     profiles: ["adsb"]
 
-  # u-blox GPS exposed on :2947 for the host (chrony etc. is a host-OS matter).
+  # u-blox GPS exposed on :2947 (loopback; gpsd without -G) and, via the host
+  # IPC namespace, as NTP shared-memory time for chrony below.
   gpsd:
     build: ./host/gpsd
     image: plainsight-gpsd
     network_mode: host
+    ipc: host
     restart: unless-stopped
     command: ["-N", "-n", "${GPS_DEVICE}"]
     devices:
       - "${GPS_DEVICE}:${GPS_DEVICE}"
+    profiles: ["gps"]
+
+  # GPS-disciplined NTP for this host and the LAN. See host/chrony/chrony.conf.tmpl
+  # for the source model and docs/DEPLOY.md "Time" for the offset calibration.
+  chrony:
+    build: ./host/chrony
+    image: plainsight-chrony
+    network_mode: host
+    ipc: host
+    cap_add:
+      - SYS_TIME
+    restart: unless-stopped
+    depends_on:
+      - gpsd
+    environment:
+      CHRONY_GPS_OFFSET: "${CHRONY_GPS_OFFSET:-0.0}"
+      CHRONY_GPS_DELAY: "${CHRONY_GPS_DELAY:-0.5}"
+      CHRONY_ALLOW: "${CHRONY_ALLOW:-192.168.4.0/22}"
+    volumes:
+      - "${PLAINSIGHT_DATA}/chrony:/var/lib/chrony"
     profiles: ["gps"]
 
   # Placeholder: the YOLO sidecar lives in the old repo at
