@@ -290,43 +290,6 @@
   border-top: 1px solid var(--border);
 }
 
-/* Right cluster: the vertical Fine/Normal/Coarse column with Stop tracking
-   beneath it, then the stick at the far edge. */
-#bar-right {
-  display: flex;
-  align-items: stretch;
-  gap: 14px;
-}
-#sens-stop {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 6px;
-}
-/* Vertical sensitivity selector: one option per row instead of the old
-   horizontal segmented control. */
-#nudge-sens.seg-ctl {
-  flex-direction: column;
-  gap: 3px;
-  margin-top: 0;
-}
-#nudge-sens .seg-btn { text-align: left; padding: 4px 10px; }
-/* Sits beneath the sensitivity column, same width -- the one always-visible
-   "stop following this plane" control, so it gets motion-control weight
-   (accent border) rather than disappearing into panel chrome. */
-#stop-tracking {
-  align-self: stretch;
-  white-space: nowrap;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 12px;
-}
-#stop-tracking:hover:not(:disabled) { border-color: var(--accent); }
-#stop-tracking:disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* The analog stick pad (virtual-stick.js renders its internals into
    #stick-mount: .vstick-ring, .vstick-cross, .vstick-knob). */
@@ -488,26 +451,6 @@
    dashboard redesign, task 10); it's a policy set once a session, not a
    continuously-watched cockpit surface. */
 
-/* ---------- telemetry (rig / tracking / mode+services) ---------- */
-
-#telemetry {
-  display: flex;
-  flex-direction: column;
-}
-
-/* .navstatus previously relied on plain block stacking (#mode, then #svc
-   flush beneath it) since it only ever held one chip. Now that the
-   Recordings nav link (task 10, recordings-index) sits beside #mode as a
-   second chip, both need to sit on their own row rather than #mode's block
-   default pushing the link onto a line of its own. */
-.navstatus {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-#playback-link { text-decoration: none; cursor: pointer; }
-#playback-link:hover { border-color: var(--accent); color: var(--text); }
 
 /* ---------- adsb list rows ---------- */
 
@@ -755,58 +698,6 @@
 #hud-bottom #trim-block,
 #hud-bottom #camera-controls { background: transparent; border-color: rgba(255,255,255,0.08); }
 
-/* The three flying instruments sit side by side, always visible. Radar is
-   fixed-width (a square canvas), the other two share what is left. */
-#bottom-drawer { display: block; }
-#bd-body {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  padding: 8px 10px 0;
-  max-height: 30vh;
-  overflow: hidden;
-}
-#bd-body > .bd-panel { min-width: 0; overflow: hidden; }
-#bd-radar { }
-#bd-telemetry, #bd-controls { min-width: 0; }
-
-/* SETUP is the one thing still behind Tools. It is a procedure you run
-   BEFORE flying, not something you glance at during a pass -- so it gets to
-   overlay the instruments rather than permanently shrink them. */
-#bd-setup {
-  grid-column: 1 / -1;
-  max-height: 46vh;
-  overflow-y: auto;
-}
-#bd-setup[hidden] { display: none; }
-
-/* Bottom bar: identity left, STICK CENTRED, sensitivity right. The stick was
-   flush right and the toast stack (top-right now, see style.css) used to
-   land on it. */
-#bottom-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 12px 10px;
-  background: transparent;
-  border-top: none;
-}
-#bar-left, #bar-right {
-  flex: 1 1 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-#bar-right { justify-content: flex-end; }
-#bar-center {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 
 /* ---- the deck must be PART of the HUD, not a solid box sitting on it ----
    #bottom-drawer kept drawer.css's `position: fixed` + `background:
@@ -851,12 +742,6 @@
 #hud-bottom #trim-block,
 #hud-bottom .minimap-wrap { border-color: rgba(255, 255, 255, 0.12); }
 
-/* Compact enough that the PICTURE still dominates. The radar is the tall
-   one, so it is capped hardest; on a short window the whole deck scrolls
-   internally rather than eating the video. */
-#hud-bottom #bd-body { max-height: min(26vh, 230px); }
-#hud-bottom .deck-panel { max-height: min(24vh, 210px); }
-#hud-bottom #minimap-panel canvas { max-height: 150px; }
 
 /* Muted greys were chosen against a DARK PANEL. Over a bright sky at 20%
    alpha they nearly vanish -- labels like "Connected" / "Moving" and the
@@ -881,32 +766,6 @@
    shadow inside a filled chip just smears it. */
 #hud-bottom button { text-shadow: none; }
 
-/* Give the picture back more of the screen: the deck is reference, not the
-   subject. */
-#hud-bottom #bd-body { max-height: min(22vh, 190px); }
-#hud-bottom .deck-panel { max-height: min(20vh, 175px); }
-#hud-bottom #minimap-panel canvas { max-height: 120px; }
-#bottom-bar { padding: 4px 12px 8px; }
-
-/* Rig and Tracking side by side rather than stacked. Stacked, the telemetry
-   column needs ~300px of height and Tracking got clipped by the deck cap --
-   but the screen is WIDE and this column was using a third of it. Trading
-   unused width for height is what lets the deck stay short enough to leave
-   the picture dominant. The mode/services row spans underneath both. */
-#hud-bottom #telemetry {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px 18px;
-  align-items: start;
-}
-#hud-bottom #telemetry > :last-child { grid-column: 1 / -1; }
-#hud-bottom .navblock {
-  padding-bottom: 0;
-  margin-bottom: 0;
-  border-bottom: none;
-}
-/* Telemetry earns the extra width from the two neighbours. */
-#bd-body { grid-template-columns: auto minmax(0, 1.5fr) minmax(0, 1fr); }
 
 /* ---- COMPOSITING COST: no backdrop-filter over live video ----
    blur() in a backdrop-filter forces the browser to re-blur everything

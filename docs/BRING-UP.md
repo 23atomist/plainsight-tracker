@@ -554,6 +554,16 @@ until both are cleared:
   although the comment says it should survive. Cosmetic; it goes away once the
   rig location is set.
 - **DHCP reservations** for .92 and .100 (see DEPLOY.md).
+- **Dashboard HUD rework 2026-11-15** (plan: `docs/superpowers/plans/2026-11-15-cockpit-hud-rework.md`):
+  one-line bottom bar (status chips left, Fine/Normal/Coarse + Stop tracking
+  centre, camera/capture controls right), RIG/TRIM/TRACKING widgets on the
+  left-centre with a show/hide rail, the stick centred 3/4 down, radar moved
+  to Tools -> Radar, E-STOP/Tools/MODE/Recordings/Overlay top-right, and an
+  aircraft overlay (lines from the strip cards to each aircraft's place in the
+  picture) driven by the new read-only `get_pointing` tool, falling back to
+  the IMU heading/pitch while uncalibrated. Overlay FOV defaults to 60 deg
+  (Tools -> Radar slider) until a vision scale calibration provides the focal
+  length.
 - **Time is GPS-disciplined since 2026-11-13 PM.** A `chrony` service (profile
   `gps`) reads gpsd's NTP shared-memory unit 0 (both containers `ipc: host`),
   steers the host clock with `CAP_SYS_TIME` and serves NTP on :123 to the LAN,

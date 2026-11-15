@@ -77,6 +77,7 @@ const ENTRIES = [
   { id: "track-sector", label: "Track sector" },
   { id: "policy", label: "Policy" },
   { id: "joystick", label: "Joystick" },
+  { id: "radar", label: "Radar" },
 ];
 
 // Runs `fn` for every element `root.querySelectorAll(selector)` matches, but

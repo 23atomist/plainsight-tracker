@@ -6,6 +6,7 @@
 
 @import "cockpit.css";
 @import "drawer.css";
+@import "hud.css";
 
 :root {
   --bg: #0d1117;
@@ -282,7 +283,9 @@ dl dd { margin: 0; text-align: right; }
    Transient text over the top corner of the picture is the cheap trade. */
 #toast-container {
   position: fixed;
-  top: 64px;
+  /* Under the top-right cluster (hud.css's #top-right: E-STOP, Tools, ...),
+     never on it -- a toast must not be able to cover E-STOP. */
+  top: calc(var(--strip-h, 54px) + 56px);
   right: 16px;
   display: flex;
   flex-direction: column;

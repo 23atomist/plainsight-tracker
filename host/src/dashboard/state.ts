@@ -85,6 +85,11 @@ export interface CalibrationRaw {
   // DashboardState.calibration just like a missing `rig` does.
   imuMounting?: ImuMountingStatus | null;
 }
+// get_pointing (src/mcp/pointing-tools.ts): the boresight's world-frame
+// az/el, or nulls when the daemon has no orientation to compute it from.
+export interface PointingRaw {
+  azDeg: number | null; elDeg: number | null; source: "calibration" | "provisional" | null;
+}
 export interface SunRaw { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; }
 // The effective (taught-or-config) pan/tilt range — see limits-store.ts's
 // effectiveLimits() and its get_taught_limits tool. This is the ONE value
@@ -212,6 +217,11 @@ export interface DashboardState {
   adsb: { rawCount: number | null; aircraft: AircraftRow[]; trackable: AircraftRow[]; };
   sunGuard: { state: string; locked: boolean; separationDeg: number | null; enabled: boolean; };
   camera: DashboardCameraStatus;
+  // Where the boresight points (get_pointing). Null pre-first-poll, on a
+  // failed leg AND when the daemon has no orientation -- the aircraft
+  // overlay then falls back to the IMU or draws nothing; it must never be
+  // handed a fabricated boresight.
+  pointing: { azDeg: number; elDeg: number; source: "calibration" | "provisional" } | null;
   // Recording/snapshot state from the daemon's capture controller. Null both
   // when the daemon hasn't reported yet (not polled) AND when the poll leg
   // fails (degraded) -- either way the dashboard shows a dash rather than
@@ -316,6 +326,9 @@ export interface SourceInputs {
   // above -- an omitted leg collapses to DEFAULT_RULESET, never to a missing
   // field or an empty ruleset.
   policy?: Result<Ruleset>;
+  // get_pointing (see PointingRaw). Optional for the same fixture-compiles-
+  // unchanged reason as the legs above; omitted collapses to pointing: null.
+  pointing?: Result<PointingRaw>;
 }
 
 // Mirrors config.ts's own default (maxJogDps).
@@ -343,6 +356,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
   const taughtLimits = s.taughtLimits?.ok ? s.taughtLimits.value : null;
   const vision = s.vision?.ok ? s.vision.value : null;
   const policy = s.policy?.ok ? s.policy.value : null;
+  const pointing = s.pointing?.ok ? s.pointing.value : null;
 
   const trackingState = trk?.state ?? "unknown";
   const mode: Mode = s.services.agentArmed === true ? "autonomous"
@@ -396,6 +410,9 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
     adsb: { rawCount: adsb?.rawCount ?? null, aircraft: adsb?.aircraft ?? [], trackable: adsb?.trackable ?? [] },
     sunGuard: { state: sun?.state ?? "unknown", locked: sun?.locked ?? false, separationDeg: sun?.separationDeg ?? null, enabled: sun?.enabled ?? false },
     camera: s.camera,
+    pointing: pointing && pointing.azDeg !== null && pointing.elDeg !== null && pointing.source !== null
+      ? { azDeg: pointing.azDeg, elDeg: pointing.elDeg, source: pointing.source }
+      : null,
     capture: s.capture.ok ? s.capture.value : null,
     errors,
     jog: s.jog ?? JOG_CONFIG_DEFAULTS,

@@ -15,6 +15,7 @@ import { registerGeoTools } from "./geo-tools.js";
 import { registerImuTools } from "./imu-tools.js";
 import { registerTrackTools } from "./track-tools.js";
 import { registerSunTools } from "./sun-tools.js";
+import { registerPointingTools } from "./pointing-tools.js";
 import { CalibrationStore } from "../shared/calibration.js";
 import { TrackingSession, realScheduler } from "../shared/track/session.js";
 import { SunSupervisor } from "../shared/track/supervisor.js";
@@ -451,6 +452,7 @@ export function buildApp(
         registerImuTools(server, device, cfg, store, supervisor, session, limitsStore);
         registerTrackTools(server, session, supervisor, aimTrimStore);
         registerSunTools(server, device, cfg, store, supervisor);
+        registerPointingTools(server, device, cfg, store);
         registerAdsbTools(server, source, follower, store, cfg, session, supervisor, sectorStore, rangeStore,
           () => limitsStore.get(), () => policyStore.get(), (rs) => policyStore.set(rs as Ruleset),
           () => device.getAxisConfig());

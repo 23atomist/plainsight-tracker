@@ -47,7 +47,12 @@ plainsight-tracker/
   head/                the head controller: compose.yaml, Dockerfile, plainsight_head/, tests/, tools/
   host/                the host stack: one Node image for mcp/agent/dashboard
     src/               mcp/ agent/ dashboard/ shared/
-    dashboard/public/  the dashboard UI (vanilla JS, no build)
+    dashboard/public/  the dashboard UI (vanilla JS, no build). Layout since 2026-11-15:
+                       full-bleed video; aircraft strip on top; E-STOP/Tools/Overlay top-right;
+                       RIG (compass + tilt + pitch/roll gauges), TRIM and TRACKING widgets
+                       left-centre (each hideable); the stick centred 3/4 down; one bottom line of
+                       status chips, stick sensitivity and camera controls; radar under Tools.
+                       See docs/superpowers/plans/2026-11-15-cockpit-hud-rework.md.
     mediamtx/          mediamtx.yml
     readsb-pluto/      readsb built with PlutoSDR support
     gpsd/              gpsd image

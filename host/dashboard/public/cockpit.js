@@ -18,6 +18,7 @@
 import { aimMode, calibrationBadge } from "./ui-mode.js";
 import { renderVisionStatus } from "./vision-status.js";
 import { headChipsHtml, serviceLed, servicesHealthClass } from "./head-chips.js";
+import { paintRigGauges } from "./rig-gauges.js";
 
 function fmt(v, digits) {
   if (v === null || v === undefined) return "—"; // em dash for unavailable
@@ -329,6 +330,10 @@ export class Cockpit {
         ? "—" : `${r.telemetryAgeMs} ms`;
     }
 
+    // The RIG widget's instruments (pan compass, tilt quadrant, pitch/roll
+    // gauges) -- optional like every other element here.
+    if (el.rigGauges) paintRigGauges(el.rigGauges, r);
+
     const imu = r.imu;
     if (imu && imu.ok) {
       if (el.rigImuPitchRoll) el.rigImuPitchRoll.textContent = fmtPair(imu.pitch, imu.roll, "°");
@@ -564,10 +569,15 @@ export class Cockpit {
           ? "led-active"
           : "led-inactive";
 
+    // Button-style chips (hud.css fills each from its led-* class via :has);
+    // the led span stays as the state carrier. svc is last on purpose --
+    // test/cockpit.test.ts reads the LAST led class as the services dot.
+    const chip = (label, cls, title) =>
+      `<span class="stchip" title="${escapeHtml(title)}"><span class="led ${cls}"></span>${label}</span>`;
     el.innerHTML =
-      `<span class="led ${rigCls}" title="rig: ${rig.connected ? "connected" : "disconnected"}"></span>rig ` +
-      `<span class="led ${sunCls}" title="sun guard: ${escapeHtml(sunGuard.state ?? "unknown")}"></span>sun ` +
-      `<span class="led ${svcCls}" title="services"></span>svc`;
+      chip("RIG", rigCls, `rig: ${rig.connected ? "connected" : "disconnected"}`) +
+      chip("SUN", sunCls, `sun guard: ${sunGuard.state ?? "unknown"}`) +
+      chip("SVC", svcCls, "services");
   }
 
   // -- AIM control (virtual stick) ----------------------------------------

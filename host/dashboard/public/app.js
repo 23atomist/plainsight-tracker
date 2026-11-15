@@ -36,6 +36,10 @@ import * as sector from "./sector.js";
 import * as policy from "./policy.js";
 import { renderJoystickEntry, mountJoystickEntry, initJoystickPanel } from "./joystick-panel.js";
 import { renderMiniMap, wireRadarEvents } from "./radar.js";
+import { compassMarkup, tiltMarkup, gaugeMarkup } from "./rig-gauges.js";
+import { wireWidgetRail } from "./widgets.js";
+import { createOverlay } from "./overlay.js";
+import { renderRadarEntry, mountRadarEntry } from "./radar-entry.js";
 import { humanizeToolMessage } from "./tool-message.js";
 
 // -- element refs -------------------------------------------------------
@@ -119,6 +123,17 @@ const el = {
 
   minimap: document.getElementById("minimap"),
   minimapTooltip: document.getElementById("minimap-tooltip"),
+  minimapPanel: document.getElementById("minimap-panel"),
+
+  // 2026-11-15 HUD rework: the RIG widget's instruments, the widget rail,
+  // and the aircraft overlay (hud.css / rig-gauges.js / widgets.js /
+  // overlay.js).
+  rigGauges: document.getElementById("rig-gauges"),
+  widgetRail: document.getElementById("widget-rail"),
+  widgets: document.getElementById("widgets"),
+  arOverlay: document.getElementById("ar-overlay"),
+  overlayToggle: document.getElementById("overlay-toggle"),
+  adsbStrip: document.getElementById("adsb-strip"),
 
 
   errors: document.getElementById("errors"),
@@ -152,6 +167,7 @@ if (drawer) {
   drawer.setEntryRenderer("track-sector", sector.renderSectorEntry);
   drawer.setEntryRenderer("policy", policy.renderPolicyEntry);
   drawer.setEntryRenderer("joystick", renderJoystickEntry);
+  drawer.setEntryRenderer("radar", renderRadarEntry);
 }
 
 // Tools toggles the bottom drawer's Setup tab; if a procedure is mid-aim
@@ -190,6 +206,8 @@ if (el.drawerBody) {
       policy.renderPolicyPanel(el.drawerBody, lastState);
     } else if (entryBtn.dataset.entry === "joystick") {
       mountJoystickEntry(el.drawerBody, joystickHold);
+    } else if (entryBtn.dataset.entry === "radar") {
+      mountRadarEntry(el.drawerBody, el.minimapPanel, overlay);
     }
   });
 }
@@ -244,6 +262,12 @@ let cockpit;
 let lastState = null;
 
 // -- formatting helpers ---------------------------------------------------
+
+// localStorage can throw outright (private mode, blocked site data); the
+// widgets/overlay modules treat a null storage as "remember nothing".
+function safeStorage() {
+  try { return window.localStorage; } catch { return null; }
+}
 
 function fmt(v, digits) {
   if (v === null || v === undefined) return "—"; // em dash for unavailable
@@ -406,6 +430,7 @@ function render(state) {
   cockpit.render({ ...state, estopLatched: estop.isLatched(), sunLocked });
 
   renderMiniMap(el, state);
+  overlay.render(state);
   renderCamera(state.camera);
   renderCapture(state.capture);
   renderErrors(state.errors);
@@ -626,6 +651,21 @@ const virtualStick = createVirtualStick({
 // reused as-is: it already carries every element Cockpit needs.
 cockpit = new Cockpit({ el, stickHold, post: postControl });
 
+// -- HUD rework (2026-11-15): widgets, instruments, overlay -----------------
+// The RIG widget's instruments are constant SVG injected once; cockpit.js's
+// _renderRig moves the needles every tick (paintRigGauges).
+if (el.rigGauges) {
+  el.rigGauges.innerHTML = compassMarkup("rg-pan") + tiltMarkup("rg-tilt") +
+    gaugeMarkup("rg-pitch", "PITCH") + gaugeMarkup("rg-roll", "ROLL");
+}
+// Show/hide per widget, remembered per browser.
+wireWidgetRail({ root: el.widgets, rail: el.widgetRail, storage: safeStorage() });
+// Lines from the strip's cards to each aircraft's place in the picture.
+const overlay = createOverlay({
+  svg: el.arOverlay, strip: el.adsbStrip, frame: el.cameraFrame, video: el.cameraVideo, img: el.cameraImg,
+  toggleBtn: el.overlayToggle, storage: safeStorage(),
+});
+
 // ---------------------------------------------------------------------------
 // Bottom drawer: tab switching + open/close. Panels are permanent DOM toggled
 // with [hidden] (never innerHTML-rewritten), so canvas listeners (#minimap),
@@ -662,6 +702,7 @@ function openBottomDrawer(panelName) {
   bdSetup.hidden = false;
   bdOpen = true;
   if (hudBottom) hudBottom.classList.add("hud-setup-open");
+  document.body.classList.add("hud-setup-open");
   if (panelName) showBdPanel(panelName);
 }
 
@@ -670,6 +711,7 @@ function closeBottomDrawer() {
   bdSetup.hidden = true;
   bdOpen = false;
   if (hudBottom) hudBottom.classList.remove("hud-setup-open");
+  document.body.classList.remove("hud-setup-open");
 }
 
 // Keep the drawer tucked under the bar even when the bar's height changes

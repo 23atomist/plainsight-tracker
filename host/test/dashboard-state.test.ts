@@ -268,3 +268,15 @@ describe("mergeState carries the sun-guard enabled flag", () => {
     expect(s.sunGuard.enabled).toBe(false);
   });
 });
+
+describe("mergeState pointing (get_pointing leg)", () => {
+  it("surfaces az/el when the leg reports a pointing", () => {
+    const s = mergeState(inputs({ pointing: ok({ azDeg: 123.4, elDeg: 12.5, source: "calibration" as const }) }), 1000);
+    expect(s.pointing).toEqual({ azDeg: 123.4, elDeg: 12.5, source: "calibration" });
+  });
+  it("collapses a null pointing (uncalibrated) and a failed leg to null, never to a fabricated boresight", () => {
+    expect(mergeState(inputs({ pointing: ok({ azDeg: null, elDeg: null, source: null }) }), 1000).pointing).toBeNull();
+    expect(mergeState(inputs({ pointing: err("down") }), 1000).pointing).toBeNull();
+    expect(mergeState(inputs(), 1000).pointing).toBeNull();
+  });
+});

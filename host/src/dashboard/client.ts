@@ -4,7 +4,7 @@ import { z } from "zod";
 import { resultText, isSessionError } from "../agent/mcp-client.js";
 import {
   DeviceStatus, TrackingRaw, TrackedRaw, CalibrationRaw, SunRaw, AircraftRow, deriveTrackable, EffectiveLimits,
-  ImuMountingStatus, TaughtLimits, VisionRaw,
+  ImuMountingStatus, TaughtLimits, VisionRaw, PointingRaw,
 } from "./state.js";
 import type { CaptureStatus } from "../shared/capture/controller.js";
 import { RulesetSchema } from "../shared/policy-store.js";
@@ -121,6 +121,12 @@ const SunRawZ = z.object({
   locked: z.boolean(),
   boresight_separation_deg: z.number().nullable(),
   guard_enabled: z.boolean(),
+});
+
+const PointingZ = z.object({
+  azimuth_deg: z.number().nullable(),
+  elevation_deg: z.number().nullable(),
+  source: z.enum(["calibration", "provisional"]).nullable(),
 });
 
 const AircraftRowZ = z.object({
@@ -301,6 +307,11 @@ export class McpDashboardClient {
   async getSun(): Promise<SunRaw> {
     const b = SunRawZ.parse(JSON.parse(await this.call("get_sun", {})));
     return { state: b.guard_state, locked: b.locked, separationDeg: b.boresight_separation_deg, enabled: b.guard_enabled };
+  }
+
+  async getPointing(): Promise<PointingRaw> {
+    const b = PointingZ.parse(JSON.parse(await this.call("get_pointing", {})));
+    return { azDeg: b.azimuth_deg, elDeg: b.elevation_deg, source: b.source };
   }
 
   async getCaptureStatus(): Promise<CaptureStatus> {

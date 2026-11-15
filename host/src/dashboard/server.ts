@@ -200,7 +200,7 @@ async function collect(s: Sources): Promise<SourceInputs> {
   const adsbPeek = peekAdsb(s.cfg.adsbUrl);
   const [
     deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, armed, mediamtx, limits,
-    taughtLimits, vision, policy,
+    taughtLimits, vision, policy, pointing,
   ] = await Promise.all([
     tryResult(() => withTimeout(s.client.getDeviceStatus(), COLLECT_CALL_TIMEOUT_MS, "getDeviceStatus")),
     tryResult(() => s.head.state()), // already bounded: head.ts uses AbortSignal.timeout
@@ -230,6 +230,9 @@ async function collect(s: Sources): Promise<SourceInputs> {
     // limits/taughtLimits/vision above: a set_policy from the ops UI must
     // show up on the very next tick, not require a dashboard reload.
     tryResult(() => withTimeout(s.client.getPolicy(), COLLECT_CALL_TIMEOUT_MS, "getPolicy")),
+    // Boresight az/el for the aircraft overlay (get_pointing) -- per tick,
+    // it moves with every jog.
+    tryResult(() => withTimeout(s.client.getPointing(), COLLECT_CALL_TIMEOUT_MS, "getPointing")),
   ]);
   const services = deriveServices(armed, mediamtx, (await adsbPeek).up, rigDirect);
   // camera status is in-process + synchronous — no await, never fails.
@@ -237,7 +240,7 @@ async function collect(s: Sources): Promise<SourceInputs> {
   // the frontend can tell WebRTC (mediamtx) apart from the MJPEG sources.
   return {
     deviceStatus, rigDirect, tracking, tracked, calibration, sun, capture, adsb, services, limits, taughtLimits,
-    vision, policy,
+    vision, policy, pointing,
     camera: { ...s.camera.status(), source: s.cfg.cameraSource },
     // Static since startup, not re-checked every tick -- just threaded
     // through so mergeState keeps surfacing it (see state.ts).
@@ -339,6 +342,7 @@ function emptySources(cfg: Config, cameraError: string | null): SourceInputs {
     taughtLimits: NOT_POLLED_YET, // mergeState collapses this to taughtLimits: null pre-first-poll
     vision: NOT_POLLED_YET, // mergeState collapses this to vision's safe-by-default shape pre-first-poll
     policy: NOT_POLLED_YET, // mergeState collapses this to DEFAULT_RULESET pre-first-poll
+    pointing: NOT_POLLED_YET, // mergeState collapses this to pointing: null pre-first-poll
     // Not polled yet: unknown (null), not down -- the first tick (~1 s) replaces it.
     services: { mcp: null, agentArmed: null, mediamtx: null, adsb: null, head: null },
     camera: { enabled: false, streaming: false, viewers: 0, source: cfg.cameraSource },
