@@ -36,6 +36,24 @@ describe("Drawer", () => {
     expect(d.mode()).toBe("closed");
     expect(els.strip.hidden).toBe(true);
   });
+  // The page hides the stick and the widgets while Setup owns the screen, so
+  // EVERY way the drawer leaves "open" (its own x button, a procedure
+  // collapsing to its strip) must be reported, not just app.js's Tools
+  // toggle -- otherwise the stick stays hidden with the drawer gone
+  // (field, 2026-11-15: "I lost my jog joystick and it won't come back").
+  it("reports every mode change through onModeChange", () => {
+    const seen: string[] = [];
+    const d = new Drawer({ ...fakeEls(), onModeChange: (m: string) => { seen.push(m); } });
+    d.open("calibration");
+    d.collapseToStrip("x", {});
+    d.expand();
+    d.close();
+    expect(seen).toEqual(["open", "strip", "open", "closed"]);
+  });
+  it("works without an onModeChange callback", () => {
+    const d = new Drawer(fakeEls());
+    expect(() => { d.open("calibration"); d.close(); }).not.toThrow();
+  });
   it("open() falls back to the first entry for an unrecognized id", () => {
     const els = fakeEls();
     const d = new Drawer(els);

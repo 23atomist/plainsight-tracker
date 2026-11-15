@@ -138,8 +138,14 @@ export class Drawer {
   //             is rewritten on every open()/expand().
   //   strip  -- the slim always-cockpit-visible bar (#proc-strip). `.hidden`
   //             is true except while in "strip" mode.
-  constructor({ drawer, body, strip }) {
+  // onModeChange(mode) -- optional; fired after every transition
+  // ("open" | "strip" | "closed"). The page uses it to give the stick and
+  // the widgets back the moment Setup stops owning the screen, whichever
+  // control closed it (its own x, a procedure collapsing, or the Tools
+  // toggle) -- see app.js.
+  constructor({ drawer, body, strip, onModeChange }) {
     this.els = { drawer, body, strip };
+    this._onModeChange = typeof onModeChange === "function" ? onModeChange : null;
     this._mode = "closed";
     // The entry last opened, remembered across a collapseToStrip()/expand()
     // round trip so expand() reopens the same procedure rather than
@@ -172,6 +178,11 @@ export class Drawer {
     return this._mode;
   }
 
+  _setMode(mode) {
+    this._mode = mode;
+    if (this._onModeChange) this._onModeChange(mode);
+  }
+
   // Registers `renderFn` (called with no args, returning an HTML string) as
   // the real body for `entryId`, replacing the placeholder for that entry
   // from the next render onward (open()/expand()/a nav click landing on it).
@@ -196,6 +207,7 @@ export class Drawer {
     this.els.strip.innerHTML = "";
     this.els.drawer.hidden = false;
     this._renderBody();
+    this._setMode("open");
   }
 
   // Fully hides the drawer AND the strip -- cockpit-only, the resting state.
@@ -210,6 +222,7 @@ export class Drawer {
     this._lastBodyHtml = null;
     this.els.strip.hidden = true;
     this.els.strip.innerHTML = "";
+    this._setMode("closed");
   }
 
   // Called by an in-progress procedure step that needs the operator's eyes
@@ -236,7 +249,7 @@ export class Drawer {
   // `handlers` is an optional { elementId: onClick } map matched against
   // this markup by id, e.g. { "strip-mark": () => ... }.
   collapseToStrip(html, handlers) {
-    this._mode = "strip";
+    this._setMode("strip");
     this.els.drawer.hidden = true;
     this.els.strip.innerHTML = String(html ?? "");
     this.els.strip.hidden = false;
@@ -284,6 +297,7 @@ export class Drawer {
     this.els.strip.innerHTML = "";
     this.els.drawer.hidden = false;
     this._renderBody();
+    this._setMode("open");
   }
 
   // Re-renders the currently-open entry in place -- same entry, same mode --

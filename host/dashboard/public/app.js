@@ -156,8 +156,16 @@ const cameraPanel = new CameraPanel({
 // The Setup drawer: off-canvas panel for multi-step procedures, plus the
 // strip fallback a procedure collapses to when it needs the operator's eyes
 // back on the video. See drawer.js's module doc.
+// onModeChange keeps the Setup panel (and the stick/widgets it displaces)
+// in step with the Drawer however it was closed: its own x button and a
+// procedure collapsing to its strip never went through the Tools toggle,
+// which left #bd-setup open and empty -- and, since the HUD rework hides
+// the stick while Setup is open, left the operator with no stick.
 const drawer = el.drawer && el.drawerBody && el.procStrip
-  ? new Drawer({ drawer: el.drawer, body: el.drawerBody, strip: el.procStrip })
+  ? new Drawer({
+    drawer: el.drawer, body: el.drawerBody, strip: el.procStrip,
+    onModeChange: (mode) => { if (mode === "open") openBottomDrawer(); else closeBottomDrawer(); },
+  })
   : null;
 
 if (drawer) {
