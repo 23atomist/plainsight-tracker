@@ -554,6 +554,14 @@ until both are cleared:
   although the comment says it should survive. Cosmetic; it goes away once the
   rig location is set.
 - **DHCP reservations** for .92 and .100 (see DEPLOY.md).
+- **GPU 2026-11-15 PM.** .92 is a two-core Celeron G6900 with an RTX 2080 Ti
+  (11 GB, driver 550); its only render node is the NVIDIA one, so the VAAPI
+  config could never have worked there (the Intel iGPU is gone/disabled).
+  `compose.gpu.yaml` moves H.264 to NVENC and adds a local Ollama
+  (`qwen2.5:7b-instruct`, ~5.5 GB, leaving ~5 GB for vision). Blocked on the
+  owner installing the NVIDIA Container Toolkit (sudo; DEPLOY.md "GPU") --
+  the files are deployed to `~/plainsight-tracker`, the `.env` switch and the
+  model pull are the remaining steps.
 - **Dashboard HUD rework 2026-11-15** (plan: `docs/superpowers/plans/2026-11-15-cockpit-hud-rework.md`):
   one-line bottom bar (status chips left, Fine/Normal/Coarse + Stop tracking
   centre, camera/capture controls right), RIG/TRIM/TRACKING widgets on the

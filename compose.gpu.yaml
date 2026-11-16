@@ -1,0 +1,65 @@
+# GPU additions for the application host (RTX 2080 Ti, 11 GB). Loaded on top
+# of compose.yaml via COMPOSE_FILE in .env:
+#   COMPOSE_FILE=compose.yaml:compose.gpu.yaml
+# Requires the NVIDIA Container Toolkit on the host (docs/DEPLOY.md "GPU");
+# without it `docker compose up` fails with "could not select device driver
+# nvidia", which is why this lives in its own file: the base stack must stay
+# deployable on a host with no GPU.
+#
+# VRAM budget (11 GB): NVENC ~0.2 GB, the LLM below ~5.5 GB at an 8k
+# context, leaving ~5 GB for the vision detector. Keep it that way when
+# changing TB3_LLM_MODEL: a 14B q4 model (~9 GB) starves the detector.
+services:
+  # H.264 encoding moves from the (two-core) CPU to NVENC. `video` is what
+  # mounts libnvidia-encode into the container; `gpu` covers CUDA/utility.
+  dashboard:
+    environment:
+      - TB3_CAMERA_ENCODER=${TB3_CAMERA_ENCODER:-nvenc}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]
+
+  # Local LLM for the agent (profile llm). Loopback only: the agent shares
+  # the host network namespace, nothing else on the LAN needs it.
+  ollama:
+    image: ollama/ollama:0.40.16
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - OLLAMA_HOST=127.0.0.1:11434
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-1h}
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_CONTEXT_LENGTH:-8192}
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
+    volumes:
+      - "${PLAINSIGHT_DATA}/ollama:/root/.ollama"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles: ["llm"]
+
+  # The agent's decisions go to the local model (TB3_LLM_URL in .env points
+  # at 127.0.0.1:11434). Start order only; the agent retries a cold model.
+  agent:
+    depends_on:
+      ollama:
+        condition: service_started
+        required: false
+
+  # The vision detector (profile vision) gets the GPU too once it exists.
+  detector:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

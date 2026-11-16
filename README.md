@@ -24,6 +24,7 @@ the camera and serves the operator dashboard.
   |                                                     |   +-- adsb          :8088  ultrafeeder (readsb + tar1090 + feeders)
   |                                                     |   +-- gpsd          :2947  u-blox 7 (loopback)
   |                                                     |   +-- chrony        :123   GPS-disciplined NTP for host + LAN
+  |                                                     |   +-- ollama        :11434 local LLM on the RTX 2080 Ti (compose.gpu.yaml)
   |                                                     |   +-- detector             profile "vision", not built yet
   |                                                     |
   |                                                     |  USB camera (MJPG), ADALM-Pluto, u-blox 7 GPS
@@ -43,6 +44,7 @@ directly, without going through the MCP server.
 plainsight-tracker/
   README.md            this file
   compose.yaml         the application host stack
+  compose.gpu.yaml     GPU overlay: NVENC for the camera, Ollama for the agent (needs the NVIDIA toolkit)
   .env.example         host settings (copy to .env on the host; never commit .env)
   head/                the head controller: compose.yaml, Dockerfile, plainsight_head/, tests/, tools/
   host/                the host stack: one Node image for mcp/agent/dashboard

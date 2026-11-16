@@ -27,7 +27,7 @@ repo root on the workstation unless they start with `ssh`.
   needs sudo. Copy with `tar` over ssh (below); on the head `rsync` works.
 - **Devices on the host** (stable by-id paths, already in `.env.example`):
   - camera `/dev/v4l/by-id/usb-16MP_Camera_Mamufacture_16MP_USB_Camera_2022050701-video-index0`
-    (MJPG only; encoded to H.264 by VAAPI on `/dev/dri/renderD128`)
+    (MJPG only; encoded to H.264 by NVENC on the RTX 2080 Ti -- see "GPU" below; x264 on the CPU without it)
   - ADALM-Pluto (PlutoSDR), found by libiio as `usb:`
   - u-blox 7 GPS `/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_7_-_GPS_GNSS_Receiver-if00`
   - group ids `video=44`, `render=992` (`getent group video render`)
@@ -94,10 +94,12 @@ Edit it on the host. The keys that differ per install:
 |---|---|
 | `PLAINSIGHT_DATA` | `/home/atomist/plainsight-data` (or `/srv/plainsight`) |
 | `TB3_HEAD_URL` | `http://192.168.4.100:8780` |
-| `TB3_LLM_API_KEY` | the Ollama Cloud key, from 1Password (below) |
+| `TB3_LLM_URL` / `TB3_LLM_MODEL` | `http://127.0.0.1:11434/v1/chat/completions` / `qwen2.5:7b-instruct` (local Ollama, "GPU" below); Ollama Cloud is the fallback |
+| `TB3_LLM_API_KEY` | only for the Ollama Cloud fallback, from 1Password (below); blank for the local model |
+| `COMPOSE_FILE` | `compose.yaml:compose.gpu.yaml` once the NVIDIA toolkit is installed ("GPU" below) |
 | `CAMERA_DEVICE` | the camera by-id path |
 | `GPS_DEVICE` | the u-blox by-id path |
-| `COMPOSE_PROFILES` | `adsb,gps` (add `vision` only once the detector exists) |
+| `COMPOSE_PROFILES` | `adsb,gps,llm` (add `vision` only once the detector exists) |
 
 A blank `KEY=` counts as unset, so the empty `TB3_MCP_TOKEN=` and
 `INFLUX_TOKEN=` lines can stay.
@@ -109,6 +111,47 @@ the host `.env`, never echoed or written to a local file:
 op item get <your-1password-item-id> --fields password --reveal \
   | ssh atomist@192.168.4.92 'IFS= read -r k; cd ~/plainsight-tracker && K="$k" awk '"'"'BEGIN{k=ENVIRON["K"]} /^TB3_LLM_API_KEY=/{print "TB3_LLM_API_KEY=" k; next} {print}'"'"' .env > .env.new && mv .env.new .env && chmod 600 .env'
 ```
+
+### 2b. GPU (NVENC encoding + the local LLM)
+
+The host is a two-core Celeron with an RTX 2080 Ti (11 GB, driver 550). The
+only render node is the NVIDIA one, so VAAPI cannot work there; H.264
+encoding and the agent's LLM both run on the GPU through `compose.gpu.yaml`,
+which needs the NVIDIA Container Toolkit on the host (the one host-side
+package this stack depends on besides Docker; sudo, one-time -- from
+<https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html>):
+
+```bash
+sudo apt-get update && sudo apt-get install -y --no-install-recommends ca-certificates curl gnupg2
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker      # restarts every container
+docker info | grep -A2 Runtimes    # must now list nvidia
+```
+
+Then in `~/plainsight-tracker/.env`: `COMPOSE_FILE=compose.yaml:compose.gpu.yaml`,
+`COMPOSE_PROFILES=adsb,gps,llm`, `TB3_CAMERA_ENCODER=nvenc`,
+`TB3_LLM_URL=http://127.0.0.1:11434/v1/chat/completions`,
+`TB3_LLM_MODEL=qwen2.5:7b-instruct`, and:
+
+```bash
+cd ~/plainsight-tracker && mkdir -p ~/plainsight-data/ollama
+docker compose up -d
+docker compose exec ollama ollama pull qwen2.5:7b-instruct   # ~4.7 GB, once
+docker compose restart agent
+```
+
+Checks: `nvidia-smi` shows `ollama` (~5.5 GB once a decision has run) and,
+with the camera on, an ffmpeg process and `encoder.stats.sessionCount 1`
+(`nvidia-smi --query-gpu=encoder.stats.sessionCount --format=csv`);
+`docker compose logs dashboard` says `camera mediamtx (nvenc)`; `top` on the
+host shows ffmpeg well under one core. VRAM budget: NVENC ~0.2 GB + LLM
+~5.5 GB leaves ~5 GB for the vision detector -- a 14B model does not fit
+beside it.
 
 ### 3. `config.json`
 
@@ -218,7 +261,10 @@ The ultrafeeder container is named `ultrafeeder` (service `adsb`).
 
 ## Troubleshooting
 
-- **VAAPI.** `docker compose exec dashboard vainfo` must list
+- **NVENC.** `docker compose exec dashboard ffmpeg -hide_banner -encoders | grep nvenc` must list
+  `h264_nvenc`, and `docker compose exec dashboard nvidia-smi` must work (if it does not, the
+  toolkit/COMPOSE_FILE step above is missing). Pre-GPU note follows.
+- **VAAPI (historical, Intel iGPU).** `docker compose exec dashboard vainfo` must list
   `VAProfileH264*: VAEntrypointEncSlice` (or `EncSliceLP`). "failed to
   initialize display" means `/dev/dri/renderD128` is not mapped or
   `RENDER_GID` is wrong (`getent group render`). The driver

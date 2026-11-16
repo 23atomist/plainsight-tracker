@@ -34,7 +34,9 @@ const dockerAvailable = (() => {
 function render(): Record<string, Svc> {
   const out = execFileSync(
     "docker",
-    ["compose", "--env-file", ".env.example", "--profile", "*", "config", "--format", "json"],
+    // -f compose.yaml explicitly: a COMPOSE_FILE in the env file must not
+    // silently pull the GPU overlay into the "base" render.
+    ["compose", "-f", "compose.yaml", "--env-file", ".env.example", "--profile", "*", "config", "--format", "json"],
     { cwd: root, encoding: "utf8" },
   );
   return JSON.parse(out).services;
@@ -125,5 +127,58 @@ describe.skipIf(!dockerAvailable)("compose.yaml", () => {
     expect(env.READSB_NET_CONNECTOR).toBe("127.0.0.1,29005,beast_in");
     expect(services.adsb.device_cgroup_rules).toBeUndefined();
     expect(services["readsb-pluto"].device_cgroup_rules).toContain("c 189:* rwm");
+  });
+});
+
+// compose.gpu.yaml is an OVERLAY (COMPOSE_FILE=compose.yaml:compose.gpu.yaml)
+// so the base stack stays deployable without the NVIDIA toolkit. Rendered
+// together here: NVENC for the dashboard, the local LLM for the agent, and
+// the GPU for the detector.
+function renderGpu(): Record<string, Svc & { deploy?: { resources?: { reservations?: { devices?: { driver: string; capabilities: string[] }[] } } } }> {
+  const out = execFileSync(
+    "docker",
+    ["compose", "-f", "compose.yaml", "-f", "compose.gpu.yaml", "--env-file", ".env.example", "--profile", "*", "config", "--format", "json"],
+    { cwd: root, encoding: "utf8" },
+  );
+  return JSON.parse(out).services;
+}
+
+describe.skipIf(!dockerAvailable)("compose.gpu.yaml", () => {
+  const services = dockerAvailable ? renderGpu() : {};
+  const gpuDevices = (name: string) => services[name].deploy?.resources?.reservations?.devices ?? [];
+
+  it("gives the dashboard the GPU with the video capability (NVENC) and switches the encoder", () => {
+    const dev = gpuDevices("dashboard");
+    expect(dev).toHaveLength(1);
+    expect(dev[0].driver).toBe("nvidia");
+    expect(dev[0].capabilities).toEqual(expect.arrayContaining(["gpu", "video"]));
+    expect(services.dashboard.environment?.TB3_CAMERA_ENCODER).toBe("nvenc");
+    // The base service's camera device and mounts survive the overlay.
+    expect(JSON.stringify(services.dashboard.devices)).toContain("video-index0");
+    expect(services.dashboard.volumes?.some((v) => v.target === "/recordings")).toBe(true);
+  });
+
+  it("runs ollama on the GPU, loopback only, behind the llm profile, with persistent models", () => {
+    expect(services.ollama.profiles).toContain("llm");
+    expect(services.ollama.network_mode).toBe("host");
+    expect(gpuDevices("ollama")[0]?.driver).toBe("nvidia");
+    expect(services.ollama.environment?.OLLAMA_HOST).toBe("127.0.0.1:11434");
+    expect(services.ollama.environment?.OLLAMA_MAX_LOADED_MODELS).toBe("1");
+    expect(services.ollama.volumes?.some((v) => v.target === "/root/.ollama")).toBe(true);
+  });
+
+  it("points the agent at the local model and starts it after ollama", () => {
+    expect(services.agent.depends_on?.ollama).toBeDefined();
+    expect(services.agent.depends_on?.mcp?.condition).toBe("service_healthy");
+  });
+
+  it("gives the detector the GPU too", () => {
+    expect(gpuDevices("detector")[0]?.driver).toBe("nvidia");
+  });
+
+  it("keeps the base file free of any nvidia device reservation", () => {
+    for (const [name, s] of Object.entries(render())) {
+      expect(JSON.stringify((s as { deploy?: unknown }).deploy ?? {}), name).not.toContain("nvidia");
+    }
   });
 });
