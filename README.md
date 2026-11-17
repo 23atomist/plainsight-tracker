@@ -1,9 +1,42 @@
 # plainsight-tracker
 
+<img src="docs/images/head-render.png" alt="CAD render of the printed pan/tilt head carrying a camera and telephoto lens" width="320" align="right">
+
 A roof-mounted pan/tilt camera head that points at aircraft. A small head
 controller drives the motors and reports telemetry; an application host on the
 LAN decides where to look (ADS-B, calibration, an LLM target chooser), streams
 the camera and serves the operator dashboard.
+
+Everything needed to build one is in this repo:
+
+| Directory | What | Runs on |
+|---|---|---|
+| [`hardware/`](hardware/) | the 3D-printable head (OpenSCAD, STLs, BOM) | your printer |
+| [`firmware/`](firmware/) | `plainsight-ptz` stepper firmware for a BTT SKR Pico | the head's motor board |
+| [`head/`](head/) | head service: homing, limits, IMU, HTTP + WebSocket API | Orange Pi Zero 2W on the head |
+| [`host/`](host/) | MCP server, LLM agent, dashboard, video, ADS-B | an x86 box with Docker |
+
+<br clear="right">
+
+![System overview: the head (Orange Pi, SKR Pico, BNO055, steppers) and the application host (MCP server, agent, dashboard, MediaMTX, ultrafeeder, readsb-pluto, gpsd/chrony) with their USB devices](docs/images/system.svg)
+
+## The head
+
+A fork on a turntable: pan runs on a printed 140 mm ball race (67 steel balls), tilt
+0–90° on steel trunnions in 608 bearings, focus and zoom by ring gears clamped to
+the lens. The tilt has a hard stop at exactly level, which doubles as the
+calibration reference. Gearing is 76:12 on pan and 120:12 on tilt, so one 1/16
+microstep is 0.018° and 0.011°. Details, print settings and the hardware list:
+[hardware/README.md](hardware/README.md).
+
+![Side views at tilt 0°, 45° and 90°](docs/images/tilt-range.png)
+
+<details>
+<summary>The 19 printed parts</summary>
+
+![Every printable part in its print orientation](docs/images/printed-parts.png)
+
+</details>
 
 ## Two machines
 
@@ -18,7 +51,7 @@ the camera and serves the operator dashboard.
   |  head/compose.yaml                                  |  compose.yaml (network_mode: host)
   |   +-- head  (Python, :8780 HTTP + WS)               |   +-- mcp           :8770  MCP server + tracking + capture
   |        |-- SKR Pico (plainsight-ptz) on USB serial  |   +-- agent                LLM target chooser (MCP client)
-  |        +-- BNO055 IMU on I2C                        |   +-- dashboard     :8788  ops UI, camera ingest (ffmpeg VAAPI -> MediaMTX)
+  |        +-- BNO055 IMU on I2C                        |   +-- dashboard     :8788  ops UI, camera ingest (ffmpeg NVENC/VAAPI -> MediaMTX)
   |                                                     |   +-- mediamtx      :8189/udp WebRTC; api/rtsp/whep on 127.0.0.1
   |                                                     |   +-- readsb-pluto         PlutoSDR -> Beast on 127.0.0.1:29005
   |                                                     |   +-- adsb          :8088  ultrafeeder (readsb + tar1090 + feeders)
@@ -28,10 +61,10 @@ the camera and serves the operator dashboard.
   |                                                     |   +-- detector             profile "vision", not built yet
   |                                                     |
   |                                                     |  USB camera (MJPG), ADALM-Pluto, u-blox 7 GPS
-  |                                                     |  /dev/dri/renderD128  Intel VAAPI
+  |                                                     |  NVIDIA GPU (NVENC + Ollama) via compose.gpu.yaml
   |                                                     |  $PLAINSIGHT_DATA/{config,state,recordings,snapshots,adsb}
   |
-  external: LLM = Ollama Cloud; optional InfluxDB on 192.168.4.11 for ultrafeeder stats
+  LLM: local Ollama (compose.gpu.yaml) or any OpenAI-compatible endpoint; optional InfluxDB on 192.168.4.11 for ultrafeeder stats
 ```
 
 The host talks to the head only through the head API over the LAN. The head
@@ -46,6 +79,8 @@ plainsight-tracker/
   compose.yaml         the application host stack
   compose.gpu.yaml     GPU overlay: NVENC for the camera, Ollama for the agent (needs the NVIDIA toolkit)
   .env.example         host settings (copy to .env on the host; never commit .env)
+  hardware/            the printed head: config.scad, parts/, lib/, build/stl/, scripts/
+  firmware/            plainsight-ptz for the SKR Pico (PlatformIO) + tools/ptz.py CLI + docs/PROTOCOL.md
   head/                the head controller: compose.yaml, Dockerfile, plainsight_head/, tests/, tools/
   host/                the host stack: one Node image for mcp/agent/dashboard
     src/               mcp/ agent/ dashboard/ shared/
@@ -96,3 +131,14 @@ Dashboard: `http://192.168.4.92:8788`. tar1090: `http://192.168.4.92:8088`.
 cd host && npm ci && npm test      # Node 22
 cd head && pytest                  # Python 3.13
 ```
+
+Hardware: `hardware/scripts/build.sh` renders every STL and the preview PNGs with
+OpenSCAD (tested with 2026.10; set `OPENSCAD=` if it is not at the macOS app path), and
+`hardware/scripts/check_clearances.sh` runs the interference sweep. Firmware:
+`cd firmware && pio run`.
+
+## License
+
+Software (everything outside `hardware/`) is MIT, see [LICENSE](LICENSE). The
+head design in [`hardware/`](hardware/) is CERN-OHL-P v2, see
+[hardware/LICENSE](hardware/LICENSE).

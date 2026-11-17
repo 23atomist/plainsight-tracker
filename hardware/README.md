@@ -1,0 +1,204 @@
+# the-pan-v4 — fork-on-a-turntable pan/tilt/focus/zoom head for ADS-B aircraft tracking
+
+3D-printable head for an IFWATER IF-USB16MP01-MFV 16 MP USB camera carrying a Nikon AF-S 70-300 mm
+f/4.5-5.6G VR (800 g) through a 30 mm adapter. Pan on a printed 140 mm ball race, tilt 0..90 deg on
+short steel trunnions in a low fork, focus and zoom on 28BYJ-48 steppers, hard level stop at 0 deg
+for calibration, IMU pad on top of the lens clamp.
+
+Design reasoning: `docs/design.md`.
+Everything dimensional is in `config.scad`. Rendered parts are in `build/stl/` (committed); `scripts/build.sh` also writes previews to `build/png/`.
+
+## Why this one does not wobble
+
+v2 carried the whole head on an 8 mm rod through two 608 bearings; the rod and the bearing play were
+multiplied by a 100 mm lever. v4 has no column:
+
+- **Pan:** 67 x 6 mm steel balls in 90 deg V grooves at 140 mm diameter between the deck and the
+  platform. Tipping is resisted at a 70 mm radius. A retainer ring on the hollow centre tube
+  (30 mm cable bore) catches lift-off.
+- **Tilt:** the payload hangs between two A-frame uprights on 8 mm steel stubs in 608 bearings,
+  at the optical-axis height. The fork is loaded in-plane, 10 mm thick, 90 mm wide at the foot.
+- **Drives:** the tilt sector gear is printed into the cradle's left arm (no wheel on a shaft to
+  slip); the pan ring gear is printed into the platform. Both pinions are the same 12T part.
+
+## Numbers
+
+| | Pan | Tilt | Focus / zoom |
+|---|---|---|---|
+| Ratio | 76:12 = 6.33 | 120:12 = 10 | 86:24 / 90:24 on a 64:1 geared 28BYJ-48 |
+| Per 1/16 microstep | 0.018 deg | 0.011 deg | ~0.025 deg of ring per half step |
+| Travel | +/-180 (cable limited) | 0..90 deg (stop at 0, software limit at 90) | ring throw |
+| Holding, 0.4 N m motor | 2.5 N m | 4 N m (payload is ~0.35 N m nose-heavy) | |
+
+Optical axis is 220 mm above the housing feet. The deck, housing and platform are 200 / 200 / 184 mm
+in diameter: you need a bed of at least 200 x 200 mm for those three.
+
+## Before printing: measure these
+
+| Parameter | Default | What to check |
+|---|---|---|
+| `cam_h`, `cam_mount_x` | 50, 0 | camera case height; whether the 9 mm hole pair is centred under the case (shift it along X with `cam_mount_x`) |
+| `lens_rear_barrel_d` | 76 | barrel diameter 5..30 mm in front of the flange (the saddle sits at X 28..60) |
+| `focus_ring_x/w/od`, `zoom_ring_x/w/od` | 75/12/74, 100/28/79 | ring centres from the camera case front, widths, diameters. The names are as you gave them; on this lens the wide ring nearest the mount is normally the zoom ring, so swap the widths/ODs if that is what you measure |
+| `switch_panel_x0/x1/protrude` | 35, 69, 4 | AF/VR switch panel extent (left side, 8..10 o'clock); saddle and clamp avoid it |
+| `adapter_d` | 64 | adapter OD (spine top is at Z -35, clears r 32) |
+| `m3_insert_*`, `m4_insert_*` | 4.0 x 6, 5.6 x 7 | your heat-set insert hole sizes |
+| `ball_d` | 6 | ball diameter (6 mm steel or airsoft BBs) |
+
+Then `scripts/build.sh` and `scripts/check_clearances.sh` (171 pair checks, fails on any overlap > 1 mm^3).
+
+## Files
+
+```
+config.scad                 all dimensions, derived values, asserts
+lib/gears.scad              involute spur, internal and sector gears
+lib/hardware.scad           inserts, 608 pocket, NEMA 17 / 28BYJ-48 patterns, race groove, helpers
+parts/*.scad                one printable part per file, each rendered in its print orientation
+assembly.scad               whole head: -D tilt_angle=.. -D pan_angle=.. -D show_base=false
+tests/clearance.scad        intersection of two named items (see item() in assembly.scad)
+scripts/build.sh            renders all parts to build/stl + previews + assembly views
+scripts/check_clearances.sh interference sweep over tilt -3..93 deg and ring-gear rotation
+scripts/render.sh           render one part
+```
+
+## Printed parts (16 STLs + 3 optional)
+
+| Part | Qty | Prints | Notes |
+|---|---|---|---|
+| deck | 1 | as exported, underside down | race ridge + V groove, centre tube, pan motor slots, 6 x M4 counterbores |
+| housing | 1 | as exported | 200 mm tube under the deck, 6 tabs with M4 inserts, 4 feet, cable slot |
+| platform | 1 | top face down (exported so) | V groove, 76T internal gear skirt, dust lip, 8 x M4 inserts for the uprights |
+| retainer | 1 | flat | ring on the tube, 3 x M3 countersunk |
+| pinion_nema | 2 | hub down | 12T m1.25, D-bore, M3 insert for a set screw (pan and tilt) |
+| upright_left | 1 | outer face down | 608 pocket (from the inside), pinion window, 4 slotted NEMA holes, level-stop ear + boss, switch holes |
+| upright_right | 1 | outer face down | 608 pocket only |
+| cradle_body | 1 | bottom down | camera shelf with rails and two M3 slots 9 mm apart (one access channel below), saddle block, inserts for clamp / arms / nose, counterweight holes |
+| lens_clamp | 1 | IMU pad down | cap over the top of the barrel, two M3 x 16 through the legs, 5 mm grid of M2.5 holes for the IMU |
+| arm_left | 1 | inner face down | 120T sector gear + hub, 4 x M4 to the block, M4 set screw for the stub |
+| arm_right | 1 | inner face down | plain arm, same bolts |
+| nose | 1 | keel down | keel + focus (left-low) and zoom (right-high) 28BYJ-48 brackets, 4 x M4 x 40 through the keel into the block |
+| spacer | 2 | flat | 2 mm washer between arm and upright |
+| ring_gear_focus | 2 | lugs up | identical halves, 86T m1; each half has one insert lug and one through lug |
+| ring_gear_zoom | 2 | lugs up | 90T m1, same scheme |
+| pinion_28byj | 2 | hub down | 24T m1, double-D bore, M3 grub (self-tap) |
+| controller_tray | 1 (optional) | flat, standoffs up | add-on plate under the housing: BTT SKR Pico V1.0 (turned 45 deg, USB-C pointing into the cavity) + Orange Pi Zero 2W on printed standoffs, vent slots, bolts to the four housing feet. 166 x 175 x 3 mm plate, no supports |
+| tray_foot | 4 (optional) | flat | 16 x 8 mm puck under each tray corner, M4 head pocket on the bed side |
+| tripod_spider | 1 (optional) | flat, bosses up | puts the head on a Celestron NexStar SE / Evolution tripod: 180 x 184 x 5 mm ring with four foot bosses (replaces the tray_foot pucks) and three hex pockets for 3/8-16 nuts on an 82 mm radius, the tripod's captive thumbscrews thread up into them; a 2 mm pad under each nut pocket fills the shallow recess around the thumbscrew. No supports |
+
+Print settings: PETG (or PLA+) 4 walls, 30 % gyroid for the big parts; gears and the race parts
+(deck, platform) 5+ walls and 0.12-0.16 mm layers so the V grooves and teeth are smooth. Grease the
+grooves. Nothing needs supports: the only bridges are the 608 lips (3 mm over a 9.5 mm hole) and the
+counterweight holes.
+
+## Hardware
+
+| Item | Qty |
+|---|---|
+| NEMA 17, body <= 40 mm, 5 mm D shaft >= 22 mm | 2 (pan, tilt) |
+| 28BYJ-48 + ULN2003 | 2 (focus, zoom) |
+| 608ZZ bearing | 2 |
+| 8 mm steel rod, 2 x 22 mm, ends deburred | 2 stubs |
+| 6 mm steel balls (or airsoft BBs) | 67 + spares |
+| M3 heat-set inserts | 11: clamp 2, retainer/tube 3, ring-gear lugs 4, pinion set screws 2 |
+| M4 heat-set inserts | 33: platform feet 8, housing tabs 6, arm bolts 8, nose 4, motor ears 4, stub set screws 2, level stop 1 |
+| M3 x 12 | 4, pan motor through the deck |
+| M3 x 14 | 4, tilt motor through the upright (heads in the counterbores on the inner face) |
+| M3 x 16 | 6: lens clamp 2, ring-gear clamps 4 |
+| M3 x 10 countersunk | 3, retainer |
+| M3 x 5 set/grub screws | 4: NEMA pinions 2, 28BYJ pinions 2 (self-tapped) |
+| M4 x 16 | 16: uprights to platform 8, arms to block 8 |
+| M4 x 40 socket head | 4, nose to block (through the whole keel, heads on its front face) |
+| M4 x 10 | 6, deck to housing |
+| M4 x 8 | 4, 28BYJ-48 ears |
+| M4 x 20 | 1, level stop |
+| M4 x 6 set screws | 2, stubs |
+| M8 bolts + nuts (optional counterweight) | 2 stacks |
+| 1-2 mm foam / rubber tape | saddle and clamp |
+| Lever microswitch (optional homing) | 1, 2 x M2.5 |
+| **Controller tray (optional):** M4 x 25 + M4 nut | 4, up through the tray_foot pucks, the tray and the housing foot slots |
+| M2.5 x 6 self-tapping (or M2.5 x 8 with the board's own standoffs removed) | 8, boards onto the printed standoffs |
+| **Tripod spider (optional):** 3/8-16 hex nut (9/16" AF; a jam nut also fits) | 3, dropped into the pockets; the tripod's own thumbscrews do the clamping |
+
+## Assembly order
+
+1. Set all inserts (M3 and M4 lists above) with a soldering iron, flush with the faces.
+2. **Base.** Fit a 12T pinion on the pan NEMA (hub toward the motor, set screw on the flat).
+   Hold the motor under the deck with 4 x M3 x 12 through the slots, loosely. Bolt the housing under
+   the deck (6 x M4 x 10 from the top). Push the motor outward until the pinion meshes the
+   platform's gear with just no play (test with the platform on), tighten.
+3. Grease the deck groove, drop in 67 balls, lower the platform (notch toward the lens side), screw
+   the retainer onto the tube (3 x M3 countersunk). The platform should spin freely with no rock.
+4. **Fork.** Press a 608 into each upright from the inner face. Pinion on the tilt NEMA; bolt the
+   motor to the outside of the left upright with 4 x M3 x 14 from the inner face through the slots,
+   loose. Bolt both uprights to the platform (8 x M4 x 16): left upright on the +Y side (camera-left
+   as seen from behind).
+5. **Cradle.** Camera on the shelf between the rails, two M3 screws up through the access channel from
+   below into its 9 mm-pitch holes; slide it fore/aft in the slots to balance before tightening. Bolt the arms to the block sides (8 x M4 x 16; the sector arm goes on the +Y side).
+   Tape the saddle, seat the lens, fit the clamp cap (2 x M3 x 16 down through the legs). Clamp the
+   ring-gear halves on the rings (each joint: one insert lug + one through lug, M3 x 16). Motors on
+   the nose brackets (M4 x 8), pinions on their shafts (hub toward the plate), nose to the block
+   front: 4 x M4 x 40 in from the front face of the keel, straight through keel and flange into
+   the block inserts (a long hex key or a 3 mm hex bit reaches the heads under the lens).
+6. Lower the cradle between the uprights with a spacer on each side. Push each 8 mm stub in **from
+   the outside** through the bearing lip hole, bearing and spacer into the arm bore until it is 1 mm
+   below the upright's outer face; tighten the arm's M4 set screw.
+7. Slide the tilt motor in its slots until the pinion meshes the sector with light backlash, tighten.
+8. **Level.** Let the nose drop onto the stop screw. Put a level (or read the IMU) on the pad and
+   turn the M4 x 20 stop screw until the optical axis is level; one turn is ~1.3 deg. Home the tilt
+   against this stop (stall detection or the optional microswitch), home pan with an index of
+   your choice.
+9. Cables (USB, two 28BYJ ribbons, IMU) go down the 30 mm tube into the housing and out the slot.
+   Leave a loop for +/-180 deg of pan. Balance the tilt with M8 nut stacks on the rear bars if
+   the motor warms up holding the nose.
+10. **Controller tray (optional).** Screw the SKR Pico onto the four standoffs of the diagonal
+    slotted field (M2.5 self-tap): the board sits at 45 deg with its USB-C / power-terminal end
+    pointing into the middle of the housing (toward +X/-Y, beside the pan motor, so the plug and its
+    cable have the whole cavity instead of running into the wall) and the stepper connectors facing
+    the pan motor; the Orange Pi Zero 2W onto the two-slot field with its USB-C / HDMI edge facing
+    outward (-Y, away from the SKR). Plug in the camera USB, the SKR
+    USB-C and the stepper leads while the tray is still off, then offer the tray up under the
+    housing with its corner holes under the four feet, a tray_foot puck under each corner (head
+    pocket down), and run an M4 x 25 up through puck, tray and foot slot, nut on top of the foot. The
+    pucks are the feet; nothing else touches the ground, so the vent slots breathe. The boards sit either side of the pan motor, >= 3 mm clear of its body in
+    plan (they share height with the bottom of the motor, so keep them out from under it if you
+    move them in `config.scad`). To get at the microSD
+    card, undo the four M4s; if you want to bolt the head to a surface, leave the pucks off and run the four
+    M4s the other way (from the top, through foot and tray) into it.
+11. **Tripod spider (optional).** Drop a 3/8-16 nut into each of the three hex pockets. Use the
+    spider instead of the four tray_foot pucks: offer it up under the tray with its four bosses under the
+    tray corners (the ring's single nut boss toward -Y, the camera's right when panned 0) and run the
+    same four M4 x 25 up through spider, tray and foot slot, nut on top of the foot (M4 x 20 is enough here).
+    Without the tray set `tripod_with_tray = false` before printing: the bosses grow 3 mm so the housing
+    feet land on them directly. Set the head on the tripod with the alignment pin in the centre hole and the
+    three thumbscrews under the nut bosses, then tighten the thumbscrews from below; the nuts cannot turn in
+    their pockets and are pulled down onto the pocket floors. The three pads under the nut pockets sit in the
+    shallow recesses around the thumbscrews (`tripod_recess_d`, set it to the deepest one); the ring itself
+    rests on the flat centre of the head. The pin must stand no more than 12 mm above the head top (lower it
+    with a screwdriver if it does) and the thumbscrew threads at least 6.5 mm above the recess floor, all
+    `MEASURE` in `config.scad`.
+
+## IMU
+
+The pad on top of the lens clamp is ~150 mm from the tilt NEMA and ~230 mm from the pan NEMA, both
+of which move relative to the sensor, so their stray field changes little. The two 28BYJ-48 motors
+ride with the IMU, so their field is a constant hard-iron offset that calibration removes. Mount the
+breakout with M2.5 self-tappers in the 5 mm grid; the pad is parallel to the optical axis.
+
+## Known limits
+
+- Pan is not continuous (no slip ring).
+- No weather sealing; the housing only covers the pan drive. With the controller tray fitted the
+  housing is closed except for the cable slot and the tray's vent slots; the TMC2209s on the SKR
+  Pico are fine at the currents these motors need, but check the board temperature on a hot day.
+- The Orange Pi Zero 2W hole pattern (58 x 23, Pi Zero footprint) is assumed, not measured.
+- Tripod spider: the 82 mm bolt radius is measured; the alignment pin size / height and how far the
+  thumbscrew threads stand above the head are forum values. The recess around each thumbscrew is taken
+  as 2 mm deep (user estimate 1-2 mm); the rest of the head top is flat.
+- The printed race needs grease and a few hundred turns to bed in; expect it to loosen slightly.
+- There is no mechanical stop at 90 deg; the sector keeps the pinion engaged to 93 deg, so limit in
+  firmware.
+- Ring diameters, the camera height and the switch-panel extent are assumptions until measured.
+
+## License
+
+CERN-OHL-P v2, see [LICENSE](LICENSE). Copyright (c) 2026 Thomas Gallaway.

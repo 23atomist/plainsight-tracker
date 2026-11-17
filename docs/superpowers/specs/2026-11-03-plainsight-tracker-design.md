@@ -331,7 +331,7 @@ volume `./data:/data`, `restart: unless-stopped`, `stop_grace_period: 5s`,
 ### 5.7 Tests
 
 pytest. A **fake Pico**: a scripted serial transcript object that implements
-the protocol in `plainsight/docs/PROTOCOL.md` well enough to answer `VER`,
+the protocol in `firmware/docs/PROTOCOL.md` well enough to answer `VER`,
 `STATUS`, `CFG`, `MOVE`, `TRACK`, `JOG`, `STOP`, `ESTOP`, `HOME` (emits
 `*E homed` after N ticks), `SETPOS`, `STREAM` (emits `*S` lines on a
 controllable clock). A **fake IMU** with settable heading/pitch/roll/cal.

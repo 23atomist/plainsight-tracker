@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 640" width="1100" height="640" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4a5560"/>
+    </marker>
+    <style>
+      .t { font-size: 15px; font-weight: 700; fill: #1f2933; }
+      .s { font-size: 11.5px; fill: #3e4c59; }
+      .g { font-size: 12px; font-weight: 700; letter-spacing: .06em; }
+      .l { font-size: 11px; fill: #52606d; }
+      .svc { fill: #ffffff; stroke: #9aa5b1; stroke-width: 1.2; }
+      .dev { fill: #fff8eb; stroke: #c48a2c; stroke-width: 1.2; stroke-dasharray: 5 3; }
+      .ln { fill: none; stroke: #4a5560; stroke-width: 1.5; marker-end: url(#a); }
+      .bi { marker-start: url(#a); }
+    </style>
+  </defs>
+  <rect width="1100" height="640" rx="14" fill="#fbfcfd"/>
+
+  <!-- head -->
+  <rect x="20" y="40" width="340" height="440" rx="12" fill="#edf3fa" stroke="#3b6ea5" stroke-width="1.5"/>
+  <text x="36" y="63" class="g" fill="#3b6ea5">HEAD · Orange Pi Zero 2W</text>
+  <rect class="svc" x="40" y="80" width="300" height="80" rx="8"/>
+  <text x="56" y="106" class="t">head service</text>
+  <text x="56" y="126" class="s">Python · HTTP + WebSocket :8780</text>
+  <text x="56" y="143" class="s">homing, limits, IMU level, E-STOP latch</text>
+  <rect class="svc" x="40" y="220" width="190" height="70" rx="8"/>
+  <text x="56" y="246" class="t">SKR Pico (RP2040)</text>
+  <text x="56" y="266" class="s">plainsight-ptz firmware</text>
+  <text x="56" y="281" class="s">trapezoid moves, TRACK</text>
+  <rect class="svc" x="250" y="220" width="90" height="70" rx="8"/>
+  <text x="262" y="246" class="t">BNO055</text>
+  <text x="262" y="266" class="s">IMU on the</text>
+  <text x="262" y="281" class="s">lens clamp</text>
+  <rect class="svc" x="40" y="350" width="190" height="70" rx="8"/>
+  <text x="56" y="376" class="t">4 × TMC2209</text>
+  <text x="56" y="396" class="s">pan · tilt (NEMA 17)</text>
+  <text x="56" y="411" class="s">focus · zoom (28BYJ-48)</text>
+  <text x="36" y="462" class="l">printed parts: hardware/ · firmware: firmware/ · service: head/</text>
+
+  <path class="ln" d="M135,160 V218"/>
+  <text x="143" y="194" class="l">USB serial, text protocol</text>
+  <path class="ln" d="M295,220 V162"/>
+  <text x="303" y="194" class="l">I²C</text>
+  <path class="ln" d="M135,290 V348"/>
+  <text x="143" y="324" class="l">STEP/DIR + UART</text>
+
+  <!-- host -->
+  <rect x="420" y="40" width="660" height="440" rx="12" fill="#f1f6ee" stroke="#4f7a3a" stroke-width="1.5"/>
+  <text x="436" y="63" class="g" fill="#4f7a3a">APPLICATION HOST · Docker Compose (host/)</text>
+  <rect class="svc" x="440" y="80" width="440" height="70" rx="8"/>
+  <text x="456" y="106" class="t">mcp server :8770</text>
+  <text x="456" y="126" class="s">tracking, calibration, sun guard, pan/tilt limits, capture</text>
+  <text x="456" y="141" class="s">exposes everything as MCP tools</text>
+  <rect class="svc" x="920" y="80" width="140" height="70" rx="8"/>
+  <text x="934" y="106" class="t">agent</text>
+  <text x="934" y="126" class="s">LLM picks targets</text>
+  <text x="934" y="141" class="s">Ollama (local GPU)</text>
+
+  <rect class="svc" x="440" y="210" width="140" height="70" rx="8"/>
+  <text x="454" y="236" class="t">dashboard</text>
+  <text x="454" y="256" class="s">ops UI :8788</text>
+  <text x="454" y="271" class="s">ffmpeg → H.264</text>
+  <rect class="svc" x="600" y="210" width="140" height="70" rx="8"/>
+  <text x="614" y="236" class="t">MediaMTX</text>
+  <text x="614" y="256" class="s">WebRTC video</text>
+  <rect class="svc" x="760" y="210" width="140" height="70" rx="8"/>
+  <text x="774" y="236" class="t">ultrafeeder</text>
+  <text x="774" y="256" class="s">readsb + tar1090</text>
+  <text x="774" y="271" class="s">:8088</text>
+  <rect class="svc" x="920" y="210" width="140" height="70" rx="8"/>
+  <text x="934" y="236" class="t">readsb-pluto</text>
+  <text x="934" y="256" class="s">SDR → Beast</text>
+  <rect class="svc" x="760" y="340" width="140" height="70" rx="8"/>
+  <text x="774" y="366" class="t">gpsd · chrony</text>
+  <text x="774" y="386" class="s">rig position,</text>
+  <text x="774" y="401" class="s">GPS NTP for the LAN</text>
+
+  <path class="ln bi" d="M918,115 H882"/>
+  <path class="ln bi" d="M510,208 V152"/>
+  <text x="518" y="184" class="l">MCP</text>
+  <path class="ln" d="M830,208 V152"/>
+  <text x="838" y="184" class="l">aircraft.json</text>
+  <path class="ln" d="M920,245 H902"/>
+  <path class="ln" d="M580,245 H598"/>
+  <path class="ln" d="M760,375 H750 V152"/>
+
+  <!-- head <-> host -->
+  <path class="ln bi" d="M438,110 H342"/>
+  <text x="390" y="88" class="l" text-anchor="middle">telemetry</text>
+  <text x="390" y="101" class="l" text-anchor="middle">HTTP+WS</text>
+  <path class="ln" d="M440,250 H390 V140 H342"/>
+  <text x="384" y="196" class="l" text-anchor="middle" transform="rotate(-90 384 196)">E-STOP (direct)</text>
+
+  <!-- devices -->
+  <rect class="dev" x="440" y="540" width="140" height="60" rx="8"/>
+  <text x="454" y="565" class="t">USB camera</text>
+  <text x="454" y="584" class="s">16 MP + 70-300 mm</text>
+  <rect class="dev" x="600" y="540" width="140" height="60" rx="8"/>
+  <text x="614" y="565" class="t">browser</text>
+  <text x="614" y="584" class="s">dashboard + video</text>
+  <rect class="dev" x="760" y="540" width="140" height="60" rx="8"/>
+  <text x="774" y="565" class="t">u-blox GPS</text>
+  <text x="774" y="584" class="s">USB</text>
+  <rect class="dev" x="920" y="540" width="140" height="60" rx="8"/>
+  <text x="934" y="565" class="t">ADALM-Pluto</text>
+  <text x="934" y="584" class="s">1090 MHz ADS-B</text>
+
+  <path class="ln" d="M510,538 V282"/>
+  <path class="ln" d="M830,538 V412"/>
+  <path class="ln" d="M990,538 V282"/>
+  <path class="ln" d="M670,282 V538"/>
+  <text x="678" y="440" class="l">WebRTC</text>
+</svg>

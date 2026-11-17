@@ -88,7 +88,7 @@ First boot log (the `pico CFG` lines are abridged):
 
 ### Pico settings
 
-- [x] The gear ratios match the printed head (`the-pan-v4` `config.scad`):
+- [x] The gear ratios match the printed head (`hardware/config.scad`):
   pan ring 76T / pinion 12T = `gear 6.3333`, tilt sector 120T / 12T =
   `gear 10`. Set in session 2 with `save: true`, replacing 6.44 / 10.7:
 
