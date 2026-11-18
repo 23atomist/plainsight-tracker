@@ -108,14 +108,22 @@ ff_belt_z = ff_flange_t + ff_tooth_w / 2;   // belt centre plane, from the ring'
 ff_ring_w = ff_belt ? ff_flange_t + ff_tooth_w + ff_lip : 10;
 pm_body_d = 35; pm_body_l = 27; pm_ear_pitch = 42.5; pm_shaft_d = 4;
 pm_ear_w = 9; pm_flange_t = 1;          // ear tab width and flange thickness (preview only)          MEASURE
-// printed GT2 pulley (parts/pulley_tb35.scad) replaces the motor's 1.5GT one: flat flange toward the motor, D bore
+// Motor face (looking at the shaft, ears left-right): a 1 mm boss round the shaft, and the wire box on the face,
+// right of the shaft, 2.5..8.5 mm above the ear line, from 3.8 mm off the shaft centre out to the can edge, 3 mm tall.
 pm_shaft_flat = 3;                      // D shaft: flat to the opposite round side
-pm_shaft_l = 9;                         // shaft length past the mounting flange face                  MEASURE
-pm_pulley_N = 20; pm_pulley_gap = 2;    // motor flange face -> pulley's flat flange (clears the shaft boss)  MEASURE
+pm_shaft_l = 4;                         // shaft end, from the mounting face                            MEASURE
+pm_boss_h = 1;                          // lip round the shaft base
+pm_box_r0 = 3.8; pm_box_y0 = 2.5; pm_box_w = 6; pm_box_h = 3;   // wire box on the face              MEASURE
+// printed GT2 pulley (parts/pulley_tb35.scad) replaces the motor's 1.5GT one. From the motor face: a thin hub that
+// fits inside the wire box's inner edge, then the 45 deg flange (above the box), the toothed band, the flat flange.
+pm_pulley_N = 20;
 pm_lip = 1.5;                           // pulley flange radial lip (the 45 deg flange is as tall)
-pm_pulley_w = ff_flange_t + ff_tooth_w + pm_lip;   // 9.5 overall
+pm_pulley_gap = pm_boss_h + 0.2;        // hub end, off the face (sits just above the boss)
+pm_hub_d = 2 * (pm_box_r0 - 0.4);       // 6.8: turns inside the wire box
+pm_pulley_body_z = pm_box_h + 0.5;      // 45 deg flange's flat face, above the box
+pm_pulley_w = pm_pulley_body_z + pm_lip + ff_tooth_w + ff_flange_t - pm_pulley_gap;   // overall, hub end to flat flange
 pm_pulley_lip_d = 2 * (belt_pr(pm_pulley_N) - belt_pld + pm_lip);
-pm_pulley_z = pm_pulley_gap + ff_flange_t + ff_tooth_w / 2;   // belt plane in front of the motor face
+pm_pulley_z = pm_pulley_body_z + pm_lip + ff_tooth_w / 2;   // belt plane in front of the motor face
 pm_bore_fit = 0.1;                      // D bore clearance (snug; a drop of CA on the flat)
 pm_slot = 3;                            // belt tension travel each way (radial) around the nominal centre distance
 pm_nut_af = 7;                          // M4 nut across flats, on the back of the plate next to the can
@@ -222,12 +230,12 @@ sector_web_r = 30;                                 // solid plate radius inside 
 spacer_t = 2; spacer_d = 16;                       // trunnion washers (printed), one per side
 // nose (keel + focus/zoom brackets)
 keel_z1 = -52; keel_z0 = -62; keel_hw = 22;
-keel_x0 = saddle_x1; keel_x1 = max(focus_plate_x1, zoom_plate_x1);
+keel_x0 = saddle_x1; keel_x1 = max(focus_plate_x1, zoom_plate_x1) + (ff_belt ? 1.5 : 0);   // belt: +1.5 so an M4 x 65 ends inside its insert
 nose_flange_t = 6; nose_flange_z1 = -50;           // flange top stays under the swept focus-gear lugs
 nose_bolt_y = [-18, -6, 6, 18]; nose_bolt_z = [-56];
 // nose bolts run the whole keel length: head on the keel front face, shank through keel + flange into the block inserts
-nose_bolt_l = ff_belt ? 60 : 40;                   // M4 socket head; 60 for the longer belt-drive keel
-nose_bolt_seat_x = keel_x1;                        // head seats on the keel front face (95 gear, ~113 belt)
+nose_bolt_l = ff_belt ? 65 : 40;                   // M4 socket head; 65 for the longer belt-drive keel
+nose_bolt_seat_x = keel_x1;                        // head seats on the keel front face (95 gear, ~119 belt)
 nose_bolt_tip_x = nose_bolt_seat_x - nose_bolt_l;  // 55 gear: 5 mm into the 7 mm insert
 m4_shc_d = 7; m4_shc_h = 4;                        // M4 socket-head cap (preview / access check)
 ffb_lens_r = 42;                                   // bracket hole around the lens
@@ -444,7 +452,7 @@ assert(ff_belt || zoom_plate_x0 - ffm_body_l - saddle_x1 >= 1, "zoom motor body 
 assert(ff_belt || zoom_pin_x1 <= zoom_gear_x1, "zoom pinion runs into the zoom gear lugs");
 assert(ff_belt || ffb_pad_r(focus_cd) < upright_y0 + 10, "focus bracket pad reaches far into the upright plane");
 assert(nose_flange_z1 < -focus_lug_r1 - 1, "nose flange would hit the swept focus-gear lugs");
-assert(nose_bolt_tip_x <= saddle_x1 - 4 && nose_bolt_tip_x >= saddle_x1 - m4_insert_h - insert_extra + 0.5, "nose bolt length: needs >= 4 mm in the insert and must not bottom out");
+assert(nose_bolt_tip_x <= saddle_x1 - 4 && nose_bolt_tip_x >= saddle_x1 - m4_insert_h + 0.5, "nose bolt length: needs >= 4 mm in the insert and must end inside it (only a pilot hole below)");
 for (z = nose_bolt_z) assert(z - m4_shc_d / 2 >= keel_z0 && z + m4_shc_d / 2 <= keel_z1, "nose bolt head overhangs the keel front face");
 assert(-deck_t + motor_shaft_l < plat_z0 + shaft_relief[2], "pan motor shaft tip hits the platform");
 assert(ff_belt || zoom_cd - ff_pin_pr - gm > lens_d / 2 + 1, "zoom pinion rubs the lens");
@@ -462,7 +470,8 @@ assert(!ff_belt || nose_bolt_tip_x <= saddle_x1 - 4, "nose bolts too short for t
 ff_plate_web = 2.5;
 assert(!ff_belt || focus_cd - pm_slot - (pm_body_d + 1) / 2 - ffb_lens_r >= ff_plate_web, "focus plate: can slot breaks into the lens hole: longer belt_teeth_focus");
 assert(!ff_belt || zoom_cd - pm_slot - (pm_body_d + 1) / 2 - zoom_ffb_lens_r >= ff_plate_web, "zoom plate: can slot breaks into the lens hole: longer belt_teeth_zoom");
-assert(!ff_belt || pm_shaft_l - pm_pulley_gap >= 5, "pulley: under 5 mm of shaft engagement: lower pm_pulley_gap");
+assert(!ff_belt || pm_shaft_l - pm_pulley_gap >= 2.5, "pulley: under 2.5 mm of shaft in the hub");
+assert(!ff_belt || pm_hub_d - pm_shaft_d - pm_bore_fit >= 2.4, "pulley hub wall under 1.2 mm: the wire box leaves no room");
 echo(str("tilt ", tilt_ratio, ":1  pan ", pan_ratio, ":1  balls ", n_balls, "  ff ", ff_drive, "  focus ring N ", focus_gear_N, " zoom ring N ", zoom_gear_N,
     "  ratio ", ff_ratio_focus, " / ", ff_ratio_zoom, "  cd ", focus_cd, " / ", zoom_cd));
 assert(stop_boss_z0 > stop_contact_z + 2, "stop boss would sit on the sector edge");

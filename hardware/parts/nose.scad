@@ -66,7 +66,7 @@ module nose(v = "") {
                 bracket(zoom_plate_x0, ff_zoom_side, zoom_cd, ff_zoom_angle, -1);
             }
         }
-        // 4 x M4 (x 40 gear, x 60 belt) from the keel front face, straight through keel + flange into the block inserts
+        // 4 x M4 (x 40 gear, x 65 belt) from the keel front face, straight through keel + flange into the block inserts
         // (no lightening window: it would cut into the inner two bores)
         for (y = nose_bolt_y, z = nose_bolt_z) translate([0, y, z]) xcyl(m4_d, keel_x0 - 1, keel_x1 + 1);
     }

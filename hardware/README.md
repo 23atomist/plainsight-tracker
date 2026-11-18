@@ -42,7 +42,9 @@ drive. Print one set (see the table below), not both.
 
 - **`"belt"` (default), parts `*_tb35`.** Two 35 mm PM geared steppers (12 V, 60 ohm coils, 22.3:1, 4 mm D shaft centred
   on the can, M4 ears 42.5 mm apart). Their stock 1.5GT pulleys come off; each gets a printed 20T GT2
-  pulley (`pulley_tb35`, D bore, a drop of CA on the flat). The lens rings get printed GT2 pulley rings
+  pulley (`pulley_tb35`, D bore, a drop of CA on the flat). The shaft is short (4 mm past the face, with a
+  1 mm boss round it) and the wire box sits on the face beside it, so the pulley has a thin 6.8 mm hub that
+  turns inside the box's inner edge and lifts the flanges 0.5 mm above it; the hub holds ~2.8 mm of shaft. The lens rings get printed GT2 pulley rings
   (132T focus, 140T zoom) and each motor drives its ring with a stock closed GT2 belt, **2GT-350-6**
   (350 mm, 175 teeth, 6 mm wide). Both motors sit above the lens at 70 deg, cans forward, on slotted
   plates: slide a motor outward to tension its belt. Another stock length works if the asserts still
@@ -65,7 +67,7 @@ drive. Print one set (see the table below), not both.
 | `adapter_d` | 64 | adapter OD (spine top is at Z -35, clears r 32) |
 | `m3_insert_*`, `m4_insert_*` | 4.0 x 6, 5.6 x 7 | your heat-set insert hole sizes |
 | `ball_d` | 6 | ball diameter (6 mm steel or airsoft BBs) |
-| `pm_pulley_gap`, `pm_shaft_l`, `pm_flange_t` | 2, 9, 1 | belt drive: motor mounting face to where the pulley may start (clear of any boss round the shaft; sets the belt plane), shaft length past that face (needs >= 5 mm in the pulley), ear flange thickness |
+| `pm_shaft_l`, `pm_boss_h`, `pm_box_*`, `pm_flange_t` | 4, 1, see config, 1 | belt drive, motor face: shaft length and the boss round it; the wire box on the face (inner edge 3.8 mm off the shaft centre, 2.5..8.5 mm above the ear line, 3 mm tall: the pulley hub must fit inside that edge and the flanges clear its top); ear flange thickness |
 
 Then `scripts/build.sh` and `scripts/check_clearances.sh` (177 pair checks, fails on any overlap > 1 mm^3; they cover the `ff_drive` set in config.scad).
 
@@ -108,10 +110,10 @@ scripts/render.sh           render one part
 | Part | Qty | Prints | Notes |
 |---|---|---|---|
 | **TB35 belt set** (`ff_drive = "belt"`) | | | 35 mm PM geared steppers TB35-4-10.5 + GT2 2GT-350-6 belts |
-| nose_tb35 | 1 | keel down | keel + focus (left) and zoom (right) motor plates, both high, slotted for belt tension, 4 x M4 x 60 through the keel into the block |
+| nose_tb35 | 1 | keel down | keel + focus (left) and zoom (right) motor plates, both high, slotted for belt tension, 4 x M4 x 65 through the keel into the block |
 | ring_focus_tb35 | 2 | lugs up | identical halves; 132T GT2 pulley ring with flanges; each half has one insert lug and one through lug |
 | ring_zoom_tb35 | 2 | lugs up | 140T GT2, same scheme |
-| pulley_tb35 | 2 | flat flange down | 20T GT2, 6 mm belt, D bore for the 4 mm / 3 mm-flat shaft; flat flange toward the motor. 0.12 mm layers, slow outer wall |
+| pulley_tb35 | 2 | flat flange down, hub up | 20T GT2, 6 mm belt, D bore for the 4 mm / 3 mm-flat shaft; the hub goes toward the motor. 0.12 mm layers, slow outer wall |
 | **28BYJ-48 gear set** (`ff_drive = "gear"`) | | | 28BYJ-48 (5 V, bipolar mod) + printed spur gears |
 | nose_28byj | 1 | keel down | keel + 28BYJ-48 brackets beside the lens, 4 x M4 x 40 through the keel into the block |
 | ring_focus_28byj | 2 | lugs up | identical halves; 86T m1 ring gear, same lug scheme |
@@ -142,7 +144,7 @@ counterweight holes.
 | M3 x 10 countersunk | 3, retainer |
 | M3 x 5 set/grub screws | 2: NEMA pinions (+2 for the gear drive's 28BYJ pinions, self-tapped) |
 | M4 x 16 | 16: uprights to platform 8, arms to block 8 |
-| M4 x 60 socket head (gear: M4 x 40) | 4, nose to block (through the whole keel, heads on its front face) |
+| M4 x 65 socket head (gear: M4 x 40) | 4, nose to block (through the whole keel, heads on its front face) |
 | M4 x 10 | 6, deck to housing |
 | M4 x 14 + washer + nut | 4, belt motor ears through the plate slots, washer and nut on the can side (gear: M4 x 8 into inserts) |
 | M4 x 20 | 1, level stop |
@@ -172,9 +174,9 @@ counterweight holes.
    Tape the saddle, seat the lens, fit the clamp cap (2 x M3 x 16 down through the legs). Clamp the
    ring halves on the rings (each joint: one insert lug + one through lug, M3 x 16). Belt drive: slip
    each belt over the front of the lens onto its ring **before** the nose goes on, then bolt the nose
-   to the block front (4 x M4 x 60 in from the front face of the keel, straight through keel and
+   to the block front (4 x M4 x 65 in from the front face of the keel, straight through keel and
    flange into the block inserts; a long hex key or a 3 mm hex bit reaches the heads under the lens),
-   press a printed pulley onto each motor shaft (flat flange toward the motor, `pm_pulley_gap` off the face, CA on the flat), push each can forward through its plate from behind, loop the belt over the pulley, and pull the
+   press a printed pulley onto each motor shaft (hub first, down onto the boss, flat to flat, CA on the flat; it must spin clear of the wire box), push each can forward through its plate from behind, loop the belt over the pulley, and pull the
    motor outward in its slots until the belt is snug (it should twist about 90 deg mid-span, no more),
    then tighten the ear screws. Gear drive: motors on the brackets (M4 x 8), pinions on their shafts
    (hub toward the plate), nose with 4 x M4 x 40.
