@@ -98,8 +98,8 @@ ff_ring_wall = 4; ff_ring_gap = 0.6;
 // --- belt drive: 1.5GT, 1.5 mm pitch. The groove is an FDM approximation: tune ff_groove_w/_d on a test print.
 belt_p = 1.5; belt_pld = 0.19;          // pitch; pitch radius minus tooth-tip radius
 belt_w = 3; belt_land = 0.5;            // belt width; belt back above the tooth tips (preview)
-belt_teeth_focus = 212;                 // closed loops, 3 mm wide: 212 teeth = 1.5GT-318. Any stock length that keeps
-belt_teeth_zoom  = 212;                 //   the asserts happy works (zoom needs >= 212: its can must clear the zoom lugs)
+belt_teeth_focus = 216;                 // closed loops, 3 mm wide: 216 teeth = 1.5GT-324. Any stock length that keeps
+belt_teeth_zoom  = 216;                 //   the asserts happy works (zoom needs >= 216: below that its can slot breaks into the plate's lens hole)
 ff_groove_w = 0.9; ff_groove_d = 0.6;   // ring groove width at the tips, depth                  MEASURE (test print)
 ff_belt_wall = 3.5;                     // ring wall under the groove roots
 ff_flange_t = 1; ff_lip = 1.2;          // ring flanges: a flat one (print-bed side) and a 45 deg one; radial lip
@@ -452,6 +452,10 @@ assert(!ff_belt || _pm_y(focus_cd, ff_focus_angle) < upright_y0 - 1, "focus moto
 assert(!ff_belt || _pm_y(zoom_cd, ff_zoom_angle) < upright_y0 - 1, "zoom motor/bracket reaches the right upright plane: raise ff_zoom_angle");
 assert(!ff_belt || focus_plate_x0 - focus_gear_x1 >= 1, "focus plate hits its own ring");
 assert(!ff_belt || nose_bolt_tip_x <= saddle_x1 - 4, "nose bolts too short for the belt keel");
+// wall between each plate's can slot (motor slid fully inward) and its lens hole
+ff_plate_web = 2.5;
+assert(!ff_belt || focus_cd - pm_slot - (pm_body_d + 1) / 2 - ffb_lens_r >= ff_plate_web, "focus plate: can slot breaks into the lens hole: longer belt_teeth_focus");
+assert(!ff_belt || zoom_cd - pm_slot - (pm_body_d + 1) / 2 - zoom_ffb_lens_r >= ff_plate_web, "zoom plate: can slot breaks into the lens hole: longer belt_teeth_zoom");
 echo(str("tilt ", tilt_ratio, ":1  pan ", pan_ratio, ":1  balls ", n_balls, "  ff ", ff_drive, "  focus ring N ", focus_gear_N, " zoom ring N ", zoom_gear_N,
     "  ratio ", ff_ratio_focus, " / ", ff_ratio_zoom, "  cd ", focus_cd, " / ", zoom_cd));
 assert(stop_boss_z0 > stop_contact_z + 2, "stop boss would sit on the sector edge");
