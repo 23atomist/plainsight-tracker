@@ -3,3 +3,4 @@
 .env
 host/config.json
 head/data/
+.DS_Store

@@ -1,9 +1,16 @@
-// ring_gear.scad — clamp-on half ring gear for the focus or zoom ring. Two identical halves per ring:
+// ring_gear.scad — clamp-on half ring for the focus or zoom ring: an m1 spur ring gear (ff_drive "gear") or a
+// flanged 1.5GT belt pulley ring (ff_drive "belt"; flat flange on the bed, 45 deg flange on top). Two identical halves per ring:
 // each half has one insert lug and one through lug, so assembled 180 deg apart every joint has both.
 // Local frame: gear axis = Z, split plane = XZ, this half is y >= 0. Prints as modelled (lugs up).
 include <../lib/hardware.scad>
 use <../lib/gears.scad>
 variant = "focus";
+module belt_band(N) {
+    rt = belt_pr(N) - belt_pld;
+    cylinder(r = rt + ff_lip, h = ff_flange_t, $fn = 240);
+    translate([0, 0, ff_flange_t - eps]) linear_extrude(height = ff_tooth_w + 2 * eps, convexity = 10) belt_rim_2d(N);
+    translate([0, 0, ff_flange_t + ff_tooth_w]) cylinder(r1 = rt, r2 = rt + ff_lip, h = ff_lip, $fn = 240);
+}
 module ring_half(variant = variant) {
     N   = variant == "focus" ? focus_gear_N : zoom_gear_N;
     rid = variant == "focus" ? focus_rid : zoom_rid;
@@ -11,7 +18,8 @@ module ring_half(variant = variant) {
     rl1 = variant == "focus" ? focus_lug_r1 : zoom_lug_r1;
     difference() {
         union() {
-            linear_extrude(height = ff_ring_w, convexity = 10) involute_gear_2d(ff_m, N, gpa, gear_backlash);
+            if (ff_belt) belt_band(N);
+            else linear_extrude(height = ff_ring_w, convexity = 10) involute_gear_2d(ff_m, N, gpa, gear_backlash);
             translate([lrid, 0, ff_ring_w - eps]) cube([rl1 - lrid, ff_lug_t, ff_lug_l + eps]);        // insert lug at +X
             translate([-rl1, 0, ff_ring_w - eps]) cube([rl1 - lrid, ff_lug_t, ff_lug_l + eps]);        // through lug at -X
         }

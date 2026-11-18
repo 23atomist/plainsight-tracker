@@ -23,8 +23,9 @@ Everything needed to build one is in this repo:
 ## The head
 
 A fork on a turntable: pan runs on a printed 140 mm ball race (67 steel balls), tilt
-0–90° on steel trunnions in 608 bearings, focus and zoom by ring gears clamped to
-the lens. The tilt has a hard stop at exactly level, which doubles as the
+0–90° on steel trunnions in 608 bearings, focus and zoom by 1.5GT belts from two
+small geared steppers to pulley rings clamped on the lens (ring gears and 28BYJ-48s
+are the alternative). The tilt has a hard stop at exactly level, which doubles as the
 calibration reference. Gearing is 76:12 on pan and 120:12 on tilt, so one 1/16
 microstep is 0.018° and 0.011°. Details, print settings and the hardware list:
 [hardware/README.md](hardware/README.md).

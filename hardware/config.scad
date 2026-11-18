@@ -85,42 +85,89 @@ pan_motor_r = pan_pr - pin_pr - cd_extra;     // pinion axis radius: 39.85
 pan_ratio = pan_N / pin_N;             // 6.33
 pan_gear_face = 9;
 pan_skirt_r1 = pan_pr + 1.25 * gm + 4;  // skirt outer radius 53.06
-// follow focus
-ff_m = 1; ff_pin_N = 24; ff_pin_pr = ff_m * ff_pin_N / 2;   // 12
+// follow focus. ff_drive picks the motors and the transmission:
+//   "belt": two 35 mm PM geared steppers (12 V, 60 ohm, 22.3:1, centred 4 mm D shaft, M4 ears 42.5 mm apart)
+//           keep their 20T 1.5GT pulley and drive printed 1.5GT belt rings clamped on the lens. Motors sit
+//           above the lens, bodies forward; the bracket plates are slotted to tension the belts.
+//   "gear": 28BYJ-48 (5 V, bipolar-modded) with printed 24T m1 pinions on m1 ring gears, motors beside the lens.
+ff_drive = "belt";
+ff_belt = ff_drive == "belt";
+ff_m = 1; ff_pin_N = 24; ff_pin_pr = ff_m * ff_pin_N / 2;   // 12 (gear drive)
 ff_pin_face = 8; ff_pin_hub_d = 14; ff_pin_hub_l = 8;
-ff_ring_w = 10; ff_ring_wall = 4; ff_ring_gap = 0.6;
-function ring_gear_N(od) = 2 * round((od / 2 + ff_ring_gap / 2 + ff_ring_wall + 1.25 * ff_m) / ff_m);   // even: two identical halves must phase-match
-function ring_gear_pr(od) = ff_m * ring_gear_N(od) / 2;
+ff_ring_wall = 4; ff_ring_gap = 0.6;
+// --- belt drive: 1.5GT, 1.5 mm pitch. The groove is an FDM approximation: tune ff_groove_w/_d on a test print.
+belt_p = 1.5; belt_pld = 0.19;          // pitch; pitch radius minus tooth-tip radius
+belt_w = 3; belt_land = 0.5;            // belt width; belt back above the tooth tips (preview)
+belt_teeth_focus = 212;                 // closed loops, 3 mm wide: 212 teeth = 1.5GT-318. Any stock length that keeps
+belt_teeth_zoom  = 212;                 //   the asserts happy works (zoom needs >= 212: its can must clear the zoom lugs)
+ff_groove_w = 0.9; ff_groove_d = 0.6;   // ring groove width at the tips, depth                  MEASURE (test print)
+ff_belt_wall = 3.5;                     // ring wall under the groove roots
+ff_flange_t = 1; ff_lip = 1.2;          // ring flanges: a flat one (print-bed side) and a 45 deg one; radial lip
+ff_tooth_w = belt_w + 1;                // toothed band between the flanges
+ff_belt_z = ff_flange_t + ff_tooth_w / 2;   // belt centre plane, from the ring's flat face
+ff_ring_w = ff_belt ? ff_flange_t + ff_tooth_w + ff_lip : 10;
+pm_body_d = 35; pm_body_l = 27; pm_ear_pitch = 42.5; pm_shaft_d = 4;
+pm_ear_w = 9; pm_flange_t = 1;          // ear tab width and flange thickness (preview only)          MEASURE
+pm_pulley_N = 20; pm_pulley_gap = 3; pm_pulley_w = 5;   // flange front face -> near pulley lip; lip-to-lip width
+pm_pulley_lip_d = 12;                   // pulley lip diameter (preview only)                          MEASURE
+pm_pulley_z = pm_pulley_gap + pm_pulley_w / 2;   // 5.5: belt plane in front of the motor face
+pm_slot = 3;                            // belt tension travel each way (radial) around the nominal centre distance
+pm_nut_af = 7;                          // M4 nut across flats, on the back of the plate next to the can
+function belt_pr(N) = N * belt_p / (2 * PI);
+function belt_pr_min(od) = od / 2 + ff_ring_gap / 2 + ff_belt_wall + ff_groove_d + belt_pld;
+function belt_ring_N(od) = 2 * ceil(belt_pr_min(od) * 2 * PI / belt_p / 2);
+// open-belt pitch length for pitch radii R > r at centre distance C; belt_cd() inverts it by bisection
+function belt_len(C, R, r) = let(phi = asin((R - r) / C))
+    2 * C * cos(phi) + (PI + 2 * phi * PI / 180) * R + (PI - 2 * phi * PI / 180) * r;
+function belt_cd(L, R, r, lo = undef, hi = undef, i = 0) =
+    let(a = lo == undef ? R - r + 0.01 : lo, b = hi == undef ? L / 2 : hi, m = (a + b) / 2)
+    i >= 60 ? m : belt_len(m, R, r) > L ? belt_cd(L, R, r, a, m, i + 1) : belt_cd(L, R, r, m, b, i + 1);
+// --- ring (gear or belt pulley) on each lens ring
+function ring_gear_N(od) = ff_belt ? belt_ring_N(od)
+    : 2 * round((od / 2 + ff_ring_gap / 2 + ff_ring_wall + 1.25 * ff_m) / ff_m);   // even: two identical halves must phase-match
+function ring_gear_pr(od) = ff_belt ? belt_pr(ring_gear_N(od)) : ff_m * ring_gear_N(od) / 2;
+function ring_tip_r(od) = ff_belt ? ring_gear_pr(od) - belt_pld : ring_gear_pr(od) + ff_m;
+function ring_out_r(od) = ring_tip_r(od) + (ff_belt ? ff_lip : 0);   // outermost radius of the toothed ring
 focus_gear_N = ring_gear_N(focus_ring_od);  focus_gear_pr = ring_gear_pr(focus_ring_od);
 zoom_gear_N  = ring_gear_N(zoom_ring_od);   zoom_gear_pr  = ring_gear_pr(zoom_ring_od);
-focus_cd = focus_gear_pr + ff_pin_pr + cd_extra;
-zoom_cd  = zoom_gear_pr  + ff_pin_pr + cd_extra;
+pm_pulley_pr = belt_pr(pm_pulley_N);
+focus_cd = ff_belt ? belt_cd(belt_teeth_focus * belt_p, focus_gear_pr, pm_pulley_pr) : focus_gear_pr + ff_pin_pr + cd_extra;
+zoom_cd  = ff_belt ? belt_cd(belt_teeth_zoom * belt_p, zoom_gear_pr,  pm_pulley_pr) : zoom_gear_pr  + ff_pin_pr + cd_extra;
+ff_ratio_focus = ff_belt ? focus_gear_N / pm_pulley_N : focus_gear_N / ff_pin_N;
+ff_ratio_zoom  = ff_belt ? zoom_gear_N  / pm_pulley_N : zoom_gear_N  / ff_pin_N;
 ff_lug_l = 6; ff_lug_t = 9;            // ring-gear clamp lugs: axial length, tangential width
-focus_body_rin = focus_cd + ffm_shaft_off - ffm_body_d / 2;   // inner radius of the motor bodies, from the optical axis
-zoom_body_rin  = zoom_cd  + ffm_shaft_off - ffm_body_d / 2;
-focus_lug_r1 = min(focus_cd - ff_pin_hub_d / 2, zoom_body_rin) - 1.5;    // lugs sweep under the pinion hub and the other motor's body
-zoom_lug_r1  = min(zoom_cd  - ff_pin_hub_d / 2, focus_body_rin) - 1.5;
+focus_body_rin = ff_belt ? focus_cd - pm_slot - pm_body_d / 2 : focus_cd + ffm_shaft_off - ffm_body_d / 2;   // inner radius of the motor bodies, from the optical axis
+zoom_body_rin  = ff_belt ? zoom_cd  - pm_slot - pm_body_d / 2 : zoom_cd  + ffm_shaft_off - ffm_body_d / 2;
 focus_rid = focus_ring_od / 2 + ff_ring_gap / 2;
 zoom_rid  = zoom_ring_od  / 2 + ff_ring_gap / 2;
 focus_lug_rid = max(focus_rid, lens_rear_barrel_d / 2 + ff_ring_gap / 2);   // focus lugs sit over the rear barrel
 zoom_lug_rid  = zoom_rid;
+// gear: lugs sweep under the pinion hub and the other motor's body. belt: just past the flange, >= 7.5 mm deep
+focus_lug_r1 = ff_belt ? max(ring_out_r(focus_ring_od) + 2, focus_lug_rid + 7.5) : min(focus_cd - ff_pin_hub_d / 2, zoom_body_rin) - 1.5;
+zoom_lug_r1  = ff_belt ? max(ring_out_r(zoom_ring_od)  + 2, zoom_lug_rid  + 7.5) : min(zoom_cd  - ff_pin_hub_d / 2, focus_body_rin) - 1.5;
 assert(focus_lug_r1 - focus_lug_rid >= 7, "focus ring-gear lugs too thin");
 assert(zoom_lug_r1 - zoom_rid >= 7, "zoom ring-gear lugs too thin");
 ff_focus_side = +1;                    // focus motor on +Y (left), zoom on -Y (right)
 ff_zoom_side  = -1;
-ff_focus_angle = -30;                  // pinion axis angle in the YZ plane, from outward-horizontal toward +Z
-ff_zoom_angle  = 30;                   //   focus low-left (body forward), zoom high-right (body rearward)
+// motor axis angle in the YZ plane, from outward-horizontal toward +Z.
+//   gear: focus low-left (body forward), zoom high-right (body rearward). belt: both high, bodies forward.
+ff_focus_angle = ff_belt ? 65 : -30;
+ff_zoom_angle  = ff_belt ? 65 : 30;
 focus_pin_yz = [ff_focus_side * focus_cd * cos(ff_focus_angle), focus_cd * sin(ff_focus_angle)];
 zoom_pin_yz  = [ff_zoom_side  * zoom_cd  * cos(ff_zoom_angle),  zoom_cd  * sin(ff_zoom_angle)];
 focus_gear_x0 = focus_ring_x - ff_ring_w / 2;  focus_gear_x1 = focus_ring_x + ff_ring_w / 2;
 zoom_gear_x0  = zoom_ring_x  - ff_ring_w / 2;  zoom_gear_x1  = zoom_ring_x  + ff_ring_w / 2;
 focus_pin_x0 = focus_ring_x - ff_pin_face / 2; focus_pin_x1 = focus_pin_x0 + ff_pin_face;
 zoom_pin_x0  = zoom_ring_x  - ff_pin_face / 2 + 1; zoom_pin_x1 = zoom_pin_x0 + ff_pin_face;   // shifted 1 fwd: plate clears the focus gear, pinion stops at the lug face
-ffb_t = 8;                                        // bracket plate thickness (holds M4 inserts)
-focus_plate_x0 = focus_pin_x1 + ff_pin_hub_l;     // 87: focus hub forward, body forward of the plate
-focus_plate_x1 = focus_plate_x0 + ffb_t;          // 95
-zoom_plate_x1  = zoom_pin_x0 - ff_pin_hub_l;      // 90: zoom hub rearward, body behind the plate
-zoom_plate_x0  = zoom_plate_x1 - ffb_t;           // 82
+focus_belt_x = focus_gear_x1 - ff_belt_z;      // the focus ring's flat face points forward, the zoom ring's rearward
+zoom_belt_x  = zoom_gear_x0 + ff_belt_z;
+ffb_t = 8;                                        // bracket plate thickness (holds M4 inserts / nuts)
+// gear: focus hub forward, body forward of the plate (87..95); zoom hub rearward, body behind the plate (81..89)
+// belt: the back of the motor flange sits on the plate's rear face, the can goes through it forward
+focus_plate_x0 = ff_belt ? focus_belt_x + pm_pulley_z + pm_flange_t : focus_pin_x1 + ff_pin_hub_l;
+focus_plate_x1 = focus_plate_x0 + ffb_t;
+zoom_plate_x0  = ff_belt ? zoom_belt_x + pm_pulley_z + pm_flange_t : zoom_pin_x0 - ff_pin_hub_l - ffb_t;
+zoom_plate_x1  = zoom_plate_x0 + ffb_t;
 ffm_body_y_off = ffm_shaft_off;                   // body centre further from the lens than the shaft
 // Tooth phasing: a ring tooth faces the pinion and a pinion space faces the ring at the nominal angles.
 // Local gear angle phi vs global YZ direction psi (from +Y toward +Z): parts placed with rotate([0,-90,0])
@@ -173,11 +220,12 @@ keel_x0 = saddle_x1; keel_x1 = max(focus_plate_x1, zoom_plate_x1);
 nose_flange_t = 6; nose_flange_z1 = -50;           // flange top stays under the swept focus-gear lugs
 nose_bolt_y = [-18, -6, 6, 18]; nose_bolt_z = [-56];
 // nose bolts run the whole keel length: head on the keel front face, shank through keel + flange into the block inserts
-nose_bolt_l = 40;                                  // M4 x 40 socket head
-nose_bolt_seat_x = keel_x1;                        // head seats on the keel front face (95)
-nose_bolt_tip_x = nose_bolt_seat_x - nose_bolt_l;  // 55: 5 mm into the 7 mm insert
+nose_bolt_l = ff_belt ? 60 : 40;                   // M4 socket head; 60 for the longer belt-drive keel
+nose_bolt_seat_x = keel_x1;                        // head seats on the keel front face (95 gear, ~113 belt)
+nose_bolt_tip_x = nose_bolt_seat_x - nose_bolt_l;  // 55 gear: 5 mm into the 7 mm insert
 m4_shc_d = 7; m4_shc_h = 4;                        // M4 socket-head cap (preview / access check)
 ffb_lens_r = 42;                                   // bracket hole around the lens
+zoom_ffb_lens_r = ff_belt ? max(ffb_lens_r, zoom_lug_r1 + 2) : ffb_lens_r;   // belt: the zoom plate is over the swept zoom lugs
 ffb_pad_half_angle = 26;                           // bracket pad sector around the motor, deg
 ffb_stem_z1 = -40;                                 // stem from the keel up to the lens arc
 function ffb_pad_r(cd) = sqrt(pow(cd + ffm_shaft_off, 2) + pow(ffm_ear_pitch / 2, 2)) + 6;   // covers the ears + insert margin
@@ -382,17 +430,28 @@ assert(pan_skirt_r1 < ridge_r0 - 1, "gear skirt hits the race ridge");
 assert(sqrt(pow(foot_bolt_dx, 2) + pow(foot_bolt_y[1], 2)) < plat_r - 5, "foot insert too close to the platform edge");
 _rear_drop = sqrt(pow(shelf_x0 - 20 - pivot_x, 2) + pow(shelf_z1 - shelf_t, 2));   // incl. 20 mm connector
 assert(_rear_drop + 5 < pivot_h, str("camera + cable would hit the platform at 90 deg; need pivot_h > ", _rear_drop + 5));
-assert(focus_cd - ff_pin_pr - gm > lens_d / 2 + 1, "focus pinion rubs the lens");
-assert(abs(focus_pin_yz[0]) + ff_pin_pr + ff_m + 1 < upright_y0, "focus pinion would hit the left upright: lower ff_focus_angle");
-assert(abs(zoom_pin_yz[0]) + ff_pin_pr + ff_m + 1 < upright_y0, "zoom pinion would hit the right upright");
-assert(zoom_plate_x0 - focus_gear_x1 >= 1, "zoom bracket plate hits the focus ring gear");
-assert(zoom_plate_x0 - ffm_body_l - saddle_x1 >= 1, "zoom motor body hits the saddle block");
-assert(zoom_pin_x1 <= zoom_gear_x1, "zoom pinion runs into the zoom gear lugs");
-assert(ffb_pad_r(focus_cd) < upright_y0 + 10, "focus bracket pad reaches far into the upright plane");
+assert(ff_belt || focus_cd - ff_pin_pr - gm > lens_d / 2 + 1, "focus pinion rubs the lens");
+assert(ff_belt || abs(focus_pin_yz[0]) + ff_pin_pr + ff_m + 1 < upright_y0, "focus pinion would hit the left upright: lower ff_focus_angle");
+assert(ff_belt || abs(zoom_pin_yz[0]) + ff_pin_pr + ff_m + 1 < upright_y0, "zoom pinion would hit the right upright");
+assert(ff_belt || zoom_plate_x0 - focus_gear_x1 >= 1, "zoom bracket plate hits the focus ring gear");
+assert(ff_belt || zoom_plate_x0 - ffm_body_l - saddle_x1 >= 1, "zoom motor body hits the saddle block");
+assert(ff_belt || zoom_pin_x1 <= zoom_gear_x1, "zoom pinion runs into the zoom gear lugs");
+assert(ff_belt || ffb_pad_r(focus_cd) < upright_y0 + 10, "focus bracket pad reaches far into the upright plane");
 assert(nose_flange_z1 < -focus_lug_r1 - 1, "nose flange would hit the swept focus-gear lugs");
 assert(nose_bolt_tip_x <= saddle_x1 - 4 && nose_bolt_tip_x >= saddle_x1 - m4_insert_h - insert_extra + 0.5, "nose bolt length: needs >= 4 mm in the insert and must not bottom out");
 for (z = nose_bolt_z) assert(z - m4_shc_d / 2 >= keel_z0 && z + m4_shc_d / 2 <= keel_z1, "nose bolt head overhangs the keel front face");
 assert(-deck_t + motor_shaft_l < plat_z0 + shaft_relief[2], "pan motor shaft tip hits the platform");
-assert(zoom_cd - ff_pin_pr - gm > lens_d / 2 + 1, "zoom pinion rubs the lens");
-echo(str("tilt ", tilt_ratio, ":1  pan ", pan_ratio, ":1  balls ", n_balls, "  focus ring N ", focus_gear_N, " zoom ring N ", zoom_gear_N));
+assert(ff_belt || zoom_cd - ff_pin_pr - gm > lens_d / 2 + 1, "zoom pinion rubs the lens");
+// belt drive
+_pm_y = function(cd, a) abs(cd * cos(a)) + pm_slot + max(pm_body_d / 2, pm_ear_pitch / 2 * sin(a) + 6);
+assert(!ff_belt || focus_body_rin >= zoom_lug_r1 + 1, "focus motor can hits the swept zoom ring lugs: raise belt_teeth_focus/_zoom");
+assert(!ff_belt || zoom_body_rin >= zoom_lug_r1 + 1, "zoom motor can hits the swept zoom ring lugs: raise belt_teeth_focus/_zoom");
+assert(!ff_belt || focus_cd - pm_slot - pm_pulley_lip_d / 2 > ring_out_r(focus_ring_od) + 2, "focus pulley too close to its ring");
+assert(!ff_belt || zoom_cd - pm_slot - pm_pulley_lip_d / 2 > ring_out_r(zoom_ring_od) + 2, "zoom pulley too close to its ring");
+assert(!ff_belt || _pm_y(focus_cd, ff_focus_angle) < upright_y0 - 1, "focus motor/bracket reaches the left upright plane: raise ff_focus_angle");
+assert(!ff_belt || _pm_y(zoom_cd, ff_zoom_angle) < upright_y0 - 1, "zoom motor/bracket reaches the right upright plane: raise ff_zoom_angle");
+assert(!ff_belt || focus_plate_x0 - focus_gear_x1 >= 1, "focus plate hits its own ring");
+assert(!ff_belt || nose_bolt_tip_x <= saddle_x1 - 4, "nose bolts too short for the belt keel");
+echo(str("tilt ", tilt_ratio, ":1  pan ", pan_ratio, ":1  balls ", n_balls, "  ff ", ff_drive, "  focus ring N ", focus_gear_N, " zoom ring N ", zoom_gear_N,
+    "  ratio ", ff_ratio_focus, " / ", ff_ratio_zoom, "  cd ", focus_cd, " / ", zoom_cd));
 assert(stop_boss_z0 > stop_contact_z + 2, "stop boss would sit on the sector edge");

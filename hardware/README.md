@@ -2,7 +2,8 @@
 
 3D-printable head for an IFWATER IF-USB16MP01-MFV 16 MP USB camera carrying a Nikon AF-S 70-300 mm
 f/4.5-5.6G VR (800 g) through a 30 mm adapter. Pan on a printed 140 mm ball race, tilt 0..90 deg on
-short steel trunnions in a low fork, focus and zoom on 28BYJ-48 steppers, hard level stop at 0 deg
+short steel trunnions in a low fork, focus and zoom by belt from two small geared steppers (or by gears
+from 28BYJ-48s), hard level stop at 0 deg
 for calibration, IMU pad on top of the lens clamp.
 
 Design reasoning: `docs/design.md`.
@@ -25,13 +26,32 @@ multiplied by a 100 mm lever. v4 has no column:
 
 | | Pan | Tilt | Focus / zoom |
 |---|---|---|---|
-| Ratio | 76:12 = 6.33 | 120:12 = 10 | 86:24 / 90:24 on a 64:1 geared 28BYJ-48 |
-| Per 1/16 microstep | 0.018 deg | 0.011 deg | ~0.025 deg of ring per half step |
+| Ratio | 76:12 = 6.33 | 120:12 = 10 | belt: 176:20 / 186:20 (8.8 / 9.3) on a 22.3:1 geared motor; gear: 86:24 / 90:24 on a 64:1 28BYJ-48 |
+| Per 1/16 microstep | 0.018 deg | 0.011 deg | well under 0.01 deg of ring either way |
 | Travel | +/-180 (cable limited) | 0..90 deg (stop at 0, software limit at 90) | ring throw |
 | Holding, 0.4 N m motor | 2.5 N m | 4 N m (payload is ~0.35 N m nose-heavy) | |
 
 Optical axis is 220 mm above the housing feet. The deck, housing and platform are 200 / 200 / 184 mm
 in diameter: you need a bed of at least 200 x 200 mm for those three.
+
+## Focus / zoom drive: belt or gear
+
+`ff_drive` in `config.scad` picks one for the assembly; `scripts/build.sh` writes both sets of drive
+parts, and the file suffix names the motor they are for: **`_tb35`** = belt drive, **`_28byj`** = gear
+drive. Print one set (see the table below), not both.
+
+- **`"belt"` (default), parts `*_tb35`.** Two 35 mm PM geared steppers (12 V, 60 ohm coils, 22.3:1, 4 mm D shaft centred
+  on the can, M4 ears 42.5 mm apart), each keeping its 20T 1.5GT pulley. The lens rings get printed
+  1.5GT pulley rings (176T focus, 186T zoom) and each motor drives its ring with a closed 1.5GT belt,
+  3 mm wide, 212 teeth (1.5GT-318). Both motors sit above the lens, cans forward, on slotted plates:
+  slide a motor outward to tension its belt. Another stock length works if the asserts still pass
+  (`belt_teeth_focus` / `belt_teeth_zoom`; the zoom belt needs >= 212 teeth so its can clears the zoom
+  ring lugs, each step of 2 teeth moves a motor ~0.9 mm). The ring grooves are an FDM approximation of
+  the 1.5GT profile: print one ring half first and check a belt seats in it; adjust `ff_groove_w` /
+  `ff_groove_d` if not (or switch to 2 mm GT2 rings and pulleys by changing `belt_p` / `belt_pld`).
+  Motor current: these coils are rated 0.2 A, so `run_current` ~0.14 A RMS on the TMC2209.
+- **`"gear"`, parts `*_28byj`.** 28BYJ-48 (5 V version, converted to bipolar: cut the centre-tap trace under the blue
+  cover, red wire unused) with printed 24T m1 pinions on m1 ring gears; motors beside the lens.
 
 ## Before printing: measure these
 
@@ -44,15 +64,16 @@ in diameter: you need a bed of at least 200 x 200 mm for those three.
 | `adapter_d` | 64 | adapter OD (spine top is at Z -35, clears r 32) |
 | `m3_insert_*`, `m4_insert_*` | 4.0 x 6, 5.6 x 7 | your heat-set insert hole sizes |
 | `ball_d` | 6 | ball diameter (6 mm steel or airsoft BBs) |
+| `pm_pulley_gap`, `pm_flange_t`, `pm_pulley_lip_d` | 3, 1, 12 | belt drive: motor face to the near pulley lip (sets the belt plane), flange and lip sizes |
 
-Then `scripts/build.sh` and `scripts/check_clearances.sh` (171 pair checks, fails on any overlap > 1 mm^3).
+Then `scripts/build.sh` and `scripts/check_clearances.sh` (177 pair checks, fails on any overlap > 1 mm^3; they cover the `ff_drive` set in config.scad).
 
 ## Files
 
 ```
 config.scad                 all dimensions, derived values, asserts
 lib/gears.scad              involute spur, internal and sector gears
-lib/hardware.scad           inserts, 608 pocket, NEMA 17 / 28BYJ-48 patterns, race groove, helpers
+lib/hardware.scad           inserts, 608 pocket, NEMA 17 / 28BYJ-48 / 35 mm PM patterns, 1.5GT rim + belt loop, race groove, helpers
 parts/*.scad                one printable part per file, each rendered in its print orientation
 assembly.scad               whole head: -D tilt_angle=.. -D pan_angle=.. -D show_base=false
 tests/clearance.scad        intersection of two named items (see item() in assembly.scad)
@@ -61,7 +82,7 @@ scripts/check_clearances.sh interference sweep over tilt -3..93 deg and ring-gea
 scripts/render.sh           render one part
 ```
 
-## Printed parts (16 STLs + 3 optional)
+## Printed parts (12 STLs + one focus/zoom drive set + 3 optional)
 
 | Part | Qty | Prints | Notes |
 |---|---|---|---|
@@ -76,14 +97,24 @@ scripts/render.sh           render one part
 | lens_clamp | 1 | IMU pad down | cap over the top of the barrel, two M3 x 16 through the legs, 5 mm grid of M2.5 holes for the IMU |
 | arm_left | 1 | inner face down | 120T sector gear + hub, 4 x M4 to the block, M4 set screw for the stub |
 | arm_right | 1 | inner face down | plain arm, same bolts |
-| nose | 1 | keel down | keel + focus (left-low) and zoom (right-high) 28BYJ-48 brackets, 4 x M4 x 40 through the keel into the block |
 | spacer | 2 | flat | 2 mm washer between arm and upright |
-| ring_gear_focus | 2 | lugs up | identical halves, 86T m1; each half has one insert lug and one through lug |
-| ring_gear_zoom | 2 | lugs up | 90T m1, same scheme |
-| pinion_28byj | 2 | hub down | 24T m1, double-D bore, M3 grub (self-tap) |
 | controller_tray | 1 (optional) | flat, standoffs up | add-on plate under the housing: BTT SKR Pico V1.0 (turned 45 deg, USB-C pointing into the cavity) + Orange Pi Zero 2W on printed standoffs, vent slots, bolts to the four housing feet. 166 x 175 x 3 mm plate, no supports |
 | tray_foot | 4 (optional) | flat | 16 x 8 mm puck under each tray corner, M4 head pocket on the bed side |
 | tripod_spider | 1 (optional) | flat, bosses up | puts the head on a Celestron NexStar SE / Evolution tripod: 180 x 184 x 5 mm ring with four foot bosses (replaces the tray_foot pucks) and three hex pockets for 3/8-16 nuts on an 82 mm radius, the tripod's captive thumbscrews thread up into them; a 2 mm pad under each nut pocket fills the shallow recess around the thumbscrew. No supports |
+
+### Focus / zoom drive parts: print the set for your motors
+
+| Part | Qty | Prints | Notes |
+|---|---|---|---|
+| **TB35 belt set** (`ff_drive = "belt"`) | | | 35 mm PM geared steppers TB35-4-10.5 + 1.5GT belts |
+| nose_tb35 | 1 | keel down | keel + focus (left) and zoom (right) motor plates, both high, slotted for belt tension, 4 x M4 x 60 through the keel into the block |
+| ring_focus_tb35 | 2 | lugs up | identical halves; 176T 1.5GT pulley ring with flanges; each half has one insert lug and one through lug |
+| ring_zoom_tb35 | 2 | lugs up | 186T 1.5GT, same scheme |
+| **28BYJ-48 gear set** (`ff_drive = "gear"`) | | | 28BYJ-48 (5 V, bipolar mod) + printed spur gears |
+| nose_28byj | 1 | keel down | keel + 28BYJ-48 brackets beside the lens, 4 x M4 x 40 through the keel into the block |
+| ring_focus_28byj | 2 | lugs up | identical halves; 86T m1 ring gear, same lug scheme |
+| ring_zoom_28byj | 2 | lugs up | 90T m1 ring gear, same scheme |
+| pinion_28byj | 2 | hub down | 24T m1, double-D bore, M3 grub (self-tap) |
 
 Print settings: PETG (or PLA+) 4 walls, 30 % gyroid for the big parts; gears and the race parts
 (deck, platform) 5+ walls and 0.12-0.16 mm layers so the V grooves and teeth are smooth. Grease the
@@ -95,21 +126,23 @@ counterweight holes.
 | Item | Qty |
 |---|---|
 | NEMA 17, body <= 40 mm, 5 mm D shaft >= 22 mm | 2 (pan, tilt) |
-| 28BYJ-48 + ULN2003 | 2 (focus, zoom) |
+| Focus/zoom motors, belt: 35 mm PM geared stepper, 12 V 60 ohm, 22.3:1, with 20T 1.5GT pulley | 2 |
+| 1.5GT closed-loop belt, 3 mm wide, 318 mm (212T) | 2 (belt) |
+| (gear instead: 28BYJ-48, 5 V, converted to bipolar; no ULN2003, the TMC2209s drive them) | 2 |
 | 608ZZ bearing | 2 |
 | 8 mm steel rod, 2 x 22 mm, ends deburred | 2 stubs |
 | 6 mm steel balls (or airsoft BBs) | 67 + spares |
 | M3 heat-set inserts | 11: clamp 2, retainer/tube 3, ring-gear lugs 4, pinion set screws 2 |
-| M4 heat-set inserts | 33: platform feet 8, housing tabs 6, arm bolts 8, nose 4, motor ears 4, stub set screws 2, level stop 1 |
+| M4 heat-set inserts | 29 (+4 for the gear drive's motor ears): platform feet 8, housing tabs 6, arm bolts 8, nose 4, stub set screws 2, level stop 1 |
 | M3 x 12 | 4, pan motor through the deck |
 | M3 x 14 | 4, tilt motor through the upright (heads in the counterbores on the inner face) |
 | M3 x 16 | 6: lens clamp 2, ring-gear clamps 4 |
 | M3 x 10 countersunk | 3, retainer |
-| M3 x 5 set/grub screws | 4: NEMA pinions 2, 28BYJ pinions 2 (self-tapped) |
+| M3 x 5 set/grub screws | 2: NEMA pinions (+2 for the gear drive's 28BYJ pinions, self-tapped) |
 | M4 x 16 | 16: uprights to platform 8, arms to block 8 |
-| M4 x 40 socket head | 4, nose to block (through the whole keel, heads on its front face) |
+| M4 x 60 socket head (gear: M4 x 40) | 4, nose to block (through the whole keel, heads on its front face) |
 | M4 x 10 | 6, deck to housing |
-| M4 x 8 | 4, 28BYJ-48 ears |
+| M4 x 14 + washer + nut | 4, belt motor ears through the plate slots, washer and nut on the can side (gear: M4 x 8 into inserts) |
 | M4 x 20 | 1, level stop |
 | M4 x 6 set screws | 2, stubs |
 | M8 bolts + nuts (optional counterweight) | 2 stacks |
@@ -135,10 +168,14 @@ counterweight holes.
 5. **Cradle.** Camera on the shelf between the rails, two M3 screws up through the access channel from
    below into its 9 mm-pitch holes; slide it fore/aft in the slots to balance before tightening. Bolt the arms to the block sides (8 x M4 x 16; the sector arm goes on the +Y side).
    Tape the saddle, seat the lens, fit the clamp cap (2 x M3 x 16 down through the legs). Clamp the
-   ring-gear halves on the rings (each joint: one insert lug + one through lug, M3 x 16). Motors on
-   the nose brackets (M4 x 8), pinions on their shafts (hub toward the plate), nose to the block
-   front: 4 x M4 x 40 in from the front face of the keel, straight through keel and flange into
-   the block inserts (a long hex key or a 3 mm hex bit reaches the heads under the lens).
+   ring halves on the rings (each joint: one insert lug + one through lug, M3 x 16). Belt drive: slip
+   each belt over the front of the lens onto its ring **before** the nose goes on, then bolt the nose
+   to the block front (4 x M4 x 60 in from the front face of the keel, straight through keel and
+   flange into the block inserts; a long hex key or a 3 mm hex bit reaches the heads under the lens),
+   push each can forward through its plate from behind, loop the belt over the pulley, and pull the
+   motor outward in its slots until the belt is snug (it should twist about 90 deg mid-span, no more),
+   then tighten the ear screws. Gear drive: motors on the brackets (M4 x 8), pinions on their shafts
+   (hub toward the plate), nose with 4 x M4 x 40.
 6. Lower the cradle between the uprights with a spacer on each side. Push each 8 mm stub in **from
    the outside** through the bearing lip hole, bearing and spacer into the arm bore until it is 1 mm
    below the upright's outer face; tighten the arm's M4 set screw.
@@ -147,7 +184,7 @@ counterweight holes.
    turn the M4 x 20 stop screw until the optical axis is level; one turn is ~1.3 deg. Home the tilt
    against this stop (stall detection or the optional microswitch), home pan with an index of
    your choice.
-9. Cables (USB, two 28BYJ ribbons, IMU) go down the 30 mm tube into the housing and out the slot.
+9. Cables (USB, the two focus/zoom motor leads, IMU) go down the 30 mm tube into the housing and out the slot.
    Leave a loop for +/-180 deg of pan. Balance the tilt with M8 nut stacks on the rear bars if
    the motor warms up holding the nose.
 10. **Controller tray (optional).** Screw the SKR Pico onto the four standoffs of the diagonal
@@ -180,7 +217,7 @@ counterweight holes.
 ## IMU
 
 The pad on top of the lens clamp is ~150 mm from the tilt NEMA and ~230 mm from the pan NEMA, both
-of which move relative to the sensor, so their stray field changes little. The two 28BYJ-48 motors
+of which move relative to the sensor, so their stray field changes little. The focus and zoom motors
 ride with the IMU, so their field is a constant hard-iron offset that calibration removes. Mount the
 breakout with M2.5 self-tappers in the 5 mm grid; the pad is parallel to the optical axis.
 

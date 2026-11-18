@@ -76,6 +76,39 @@ module ffm_body() {
 }
 module ffm_d_bore(depth) { d_bore(depth, d = ffm_shaft_d + 0.25, flat = ffm_shaft_flat + 0.15); }
 
+// 35 mm PM geared stepper (belt drive). Preview: flange face at z=0, shaft +Z (centred), can below.
+module pm_body() {
+    color("steelblue") translate([0, 0, -pm_body_l]) cylinder(d = pm_body_d, h = pm_body_l);
+    color("steelblue") translate([0, 0, -pm_flange_t]) hull() for (s = [-1, 1]) translate([s * pm_ear_pitch / 2, 0, 0]) cylinder(d = pm_ear_w, h = pm_flange_t);
+    color("gray") cylinder(d = pm_shaft_d, h = pm_pulley_gap);
+}
+// Its 20T 1.5GT pulley (preview): lips pm_pulley_lip_d, tooth tips at the belt-ring tip radius rule.
+module pm_pulley() {
+    tip_d = 2 * (pm_pulley_pr - belt_pld);
+    color("silver") translate([0, 0, pm_pulley_gap]) {
+        cylinder(d = tip_d, h = pm_pulley_w);
+        for (z = [0, pm_pulley_w - 0.5]) translate([0, 0, z]) cylinder(d = pm_pulley_lip_d, h = 0.5);
+    }
+}
+// 2D toothed rim of a printed 1.5GT pulley ring: N grooves, round-bottomed, width ff_groove_w, depth ff_groove_d.
+module belt_rim_2d(N) {
+    rt = belt_pr(N) - belt_pld;
+    difference() {
+        circle(r = rt, $fn = N * 2);
+        for (i = [0 : N - 1]) rotate(i * 360 / N) translate([rt, 0]) hull() {
+            translate([-(ff_groove_d - ff_groove_w / 2), 0]) circle(d = ff_groove_w, $fn = 16);
+            translate([0.5, 0]) square([1, ff_groove_w], center = true);
+        }
+    }
+}
+// Open belt loop (preview / clearance): land only, belt_land thick just outside the tooth tips, around a ring of
+// pitch radius R at the origin and a pulley of pitch radius r at distance C along +X.
+// The 0.2 mm gap keeps faceted circles from registering as overlap with the ring and pulley previews.
+module belt_loop_2d(R, r, C) difference() {
+    hull() { circle(r = R - belt_pld + 0.2 + belt_land, $fn = 360); translate([C, 0]) circle(r = r - belt_pld + 0.2 + belt_land, $fn = 48); }
+    hull() { circle(r = R - belt_pld + 0.2, $fn = 360); translate([C, 0]) circle(r = r - belt_pld + 0.2, $fn = 48); }
+}
+
 // 90-degree V race groove cutting tool, axis Z, in a face at z=face_z, apex below it by `depth`.
 module race_groove(r, depth = groove_d, face_z = 0, clearance = 0.1) {
     w = depth + clearance;

@@ -20,14 +20,21 @@ wait
 $R lens_clamp       parts/lens_clamp.scad &
 $R arm_left         parts/trunnion_arm.scad -D 'variant="left"' &
 $R arm_right        parts/trunnion_arm.scad -D 'variant="right"' &
-$R nose             parts/nose.scad &
 $R spacer           parts/spacer.scad &
-$R ring_gear_focus  parts/ring_gear.scad -D 'variant="focus"' &
-$R ring_gear_zoom   parts/ring_gear.scad -D 'variant="zoom"' &
-$R pinion_28byj     parts/pinion_28byj.scad &
 $R controller_tray  parts/controller_tray.scad &
 $R tray_foot        parts/tray_foot.scad &
 $R tripod_spider    parts/tripod_spider.scad &
+wait
+# focus / zoom drive parts, one set per motor type -- the suffix names the motor:
+#   _tb35  = 35 mm PM geared stepper (TB35-4-10.5) + 1.5GT belt  (ff_drive = "belt")
+#   _28byj = 28BYJ-48 + m1 spur gears                            (ff_drive = "gear")
+$R nose_tb35         parts/nose.scad         -D 'ff_drive="belt"' &
+$R ring_focus_tb35   parts/ring_gear.scad    -D 'variant="focus"' -D 'ff_drive="belt"' &
+$R ring_zoom_tb35    parts/ring_gear.scad    -D 'variant="zoom"'  -D 'ff_drive="belt"' &
+$R nose_28byj        parts/nose.scad         -D 'ff_drive="gear"' &
+$R ring_focus_28byj  parts/ring_gear.scad    -D 'variant="focus"' -D 'ff_drive="gear"' &
+$R ring_zoom_28byj   parts/ring_gear.scad    -D 'variant="zoom"'  -D 'ff_drive="gear"' &
+$R pinion_28byj      parts/pinion_28byj.scad -D 'ff_drive="gear"' &
 wait
 for t in 0 45 90; do
     "$OS" -o "build/png/assembly_tilt$t.png" --render --viewall --autocenter --imgsize=1200,900 --colorscheme=Tomorrow -D "tilt_angle=$t" assembly.scad > "build/png/assembly_tilt$t.log" 2>&1 &
