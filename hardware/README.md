@@ -43,10 +43,11 @@ drive. Print one set (see the table below), not both.
 - **`"belt"` (default), parts `*_tb35`.** Two 35 mm PM geared steppers (12 V, 60 ohm coils, 22.3:1, 4 mm D shaft centred
   on the can, M4 ears 42.5 mm apart), each keeping its 20T 1.5GT pulley. The lens rings get printed
   1.5GT pulley rings (176T focus, 186T zoom) and each motor drives its ring with a closed 1.5GT belt,
-  3 mm wide, 216 teeth (1.5GT-324). Both motors sit above the lens, cans forward, on slotted plates:
-  slide a motor outward to tension its belt. Another stock length works if the asserts still pass
-  (`belt_teeth_focus` / `belt_teeth_zoom`; the zoom belt needs >= 216 teeth so its can slot stays clear of the lens hole and the zoom
-  ring lugs, each step of 2 teeth moves a motor ~0.9 mm). The ring grooves are an FDM approximation of
+  3 mm wide, 340 mm (227 teeth; a 226T / 339 mm belt sold as "340" also fits, the slots take it up).
+  Both motors sit above the lens at 70 deg, cans forward, on slotted plates: slide a motor outward to
+  tension its belt. Another stock length works if the asserts still pass (`belt_teeth_focus` /
+  `belt_teeth_zoom`, traded against `ff_focus_angle` / `ff_zoom_angle`): too short and the zoom can slot
+  breaks into its plate's lens hole, too long and a motor reaches an upright; each 2 teeth moves a motor ~0.9 mm. The ring grooves are an FDM approximation of
   the 1.5GT profile: print one ring half first and check a belt seats in it; adjust `ff_groove_w` /
   `ff_groove_d` if not (or switch to 2 mm GT2 rings and pulleys by changing `belt_p` / `belt_pld`).
   Motor current: these coils are rated 0.2 A, so `run_current` ~0.14 A RMS on the TMC2209.
@@ -127,7 +128,7 @@ counterweight holes.
 |---|---|
 | NEMA 17, body <= 40 mm, 5 mm D shaft >= 22 mm | 2 (pan, tilt) |
 | Focus/zoom motors, belt: 35 mm PM geared stepper, 12 V 60 ohm, 22.3:1, with 20T 1.5GT pulley | 2 |
-| 1.5GT closed-loop belt, 3 mm wide, 324 mm (216T) | 2 (belt) |
+| 1.5GT closed-loop belt, 3 mm wide, 340 mm (226-227T) | 2 (belt) |
 | (gear instead: 28BYJ-48, 5 V, converted to bipolar; no ULN2003, the TMC2209s drive them) | 2 |
 | 608ZZ bearing | 2 |
 | 8 mm steel rod, 2 x 22 mm, ends deburred | 2 stubs |

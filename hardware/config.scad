@@ -98,8 +98,8 @@ ff_ring_wall = 4; ff_ring_gap = 0.6;
 // --- belt drive: 1.5GT, 1.5 mm pitch. The groove is an FDM approximation: tune ff_groove_w/_d on a test print.
 belt_p = 1.5; belt_pld = 0.19;          // pitch; pitch radius minus tooth-tip radius
 belt_w = 3; belt_land = 0.5;            // belt width; belt back above the tooth tips (preview)
-belt_teeth_focus = 216;                 // closed loops, 3 mm wide: 216 teeth = 1.5GT-324. Any stock length that keeps
-belt_teeth_zoom  = 216;                 //   the asserts happy works (zoom needs >= 216: below that its can slot breaks into the plate's lens hole)
+belt_teeth_focus = 227;                 // closed loops, 3 mm wide: 1.5GT "340 mm" (227T = 340.5; a 226T = 339 belt takes up in the slots).
+belt_teeth_zoom  = 227;                 //   Other lengths: the asserts say what fits (too short opens the zoom plate, too long hits an upright; ff_*_angle trades with it)
 ff_groove_w = 0.9; ff_groove_d = 0.6;   // ring groove width at the tips, depth                  MEASURE (test print)
 ff_belt_wall = 3.5;                     // ring wall under the groove roots
 ff_flange_t = 1; ff_lip = 1.2;          // ring flanges: a flat one (print-bed side) and a 45 deg one; radial lip
@@ -151,8 +151,8 @@ ff_focus_side = +1;                    // focus motor on +Y (left), zoom on -Y (
 ff_zoom_side  = -1;
 // motor axis angle in the YZ plane, from outward-horizontal toward +Z.
 //   gear: focus low-left (body forward), zoom high-right (body rearward). belt: both high, bodies forward.
-ff_focus_angle = ff_belt ? 65 : -30;
-ff_zoom_angle  = ff_belt ? 65 : 30;
+ff_focus_angle = ff_belt ? 70 : -30;
+ff_zoom_angle  = ff_belt ? 70 : 30;
 focus_pin_yz = [ff_focus_side * focus_cd * cos(ff_focus_angle), focus_cd * sin(ff_focus_angle)];
 zoom_pin_yz  = [ff_zoom_side  * zoom_cd  * cos(ff_zoom_angle),  zoom_cd  * sin(ff_zoom_angle)];
 focus_gear_x0 = focus_ring_x - ff_ring_w / 2;  focus_gear_x1 = focus_ring_x + ff_ring_w / 2;
