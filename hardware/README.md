@@ -26,7 +26,7 @@ multiplied by a 100 mm lever. v4 has no column:
 
 | | Pan | Tilt | Focus / zoom |
 |---|---|---|---|
-| Ratio | 76:12 = 6.33 | 120:12 = 10 | belt: 176:20 / 186:20 (8.8 / 9.3) on a 22.3:1 geared motor; gear: 86:24 / 90:24 on a 64:1 28BYJ-48 |
+| Ratio | 76:12 = 6.33 | 120:12 = 10 | belt: 132:20 / 140:20 (6.6 / 7.0) on a 22.3:1 geared motor; gear: 86:24 / 90:24 on a 64:1 28BYJ-48 |
 | Per 1/16 microstep | 0.018 deg | 0.011 deg | well under 0.01 deg of ring either way |
 | Travel | +/-180 (cable limited) | 0..90 deg (stop at 0, software limit at 90) | ring throw |
 | Holding, 0.4 N m motor | 2.5 N m | 4 N m (payload is ~0.35 N m nose-heavy) | |
@@ -41,15 +41,15 @@ parts, and the file suffix names the motor they are for: **`_tb35`** = belt driv
 drive. Print one set (see the table below), not both.
 
 - **`"belt"` (default), parts `*_tb35`.** Two 35 mm PM geared steppers (12 V, 60 ohm coils, 22.3:1, 4 mm D shaft centred
-  on the can, M4 ears 42.5 mm apart), each keeping its 20T 1.5GT pulley. The lens rings get printed
-  1.5GT pulley rings (176T focus, 186T zoom) and each motor drives its ring with a closed 1.5GT belt,
-  3 mm wide, 340 mm (227 teeth; a 226T / 339 mm belt sold as "340" also fits, the slots take it up).
-  Both motors sit above the lens at 70 deg, cans forward, on slotted plates: slide a motor outward to
-  tension its belt. Another stock length works if the asserts still pass (`belt_teeth_focus` /
-  `belt_teeth_zoom`, traded against `ff_focus_angle` / `ff_zoom_angle`): too short and the zoom can slot
-  breaks into its plate's lens hole, too long and a motor reaches an upright; each 2 teeth moves a motor ~0.9 mm. The ring grooves are an FDM approximation of
-  the 1.5GT profile: print one ring half first and check a belt seats in it; adjust `ff_groove_w` /
-  `ff_groove_d` if not (or switch to 2 mm GT2 rings and pulleys by changing `belt_p` / `belt_pld`).
+  on the can, M4 ears 42.5 mm apart). Their stock 1.5GT pulleys come off; each gets a printed 20T GT2
+  pulley (`pulley_tb35`, D bore, a drop of CA on the flat). The lens rings get printed GT2 pulley rings
+  (132T focus, 140T zoom) and each motor drives its ring with a stock closed GT2 belt, **2GT-350-6**
+  (350 mm, 175 teeth, 6 mm wide). Both motors sit above the lens at 70 deg, cans forward, on slotted
+  plates: slide a motor outward to tension its belt. Another stock length works if the asserts still
+  pass (`belt_teeth_focus` / `belt_teeth_zoom`, traded against `ff_focus_angle` / `ff_zoom_angle`): too
+  short and the zoom can slot breaks into its plate's lens hole, too long and a motor reaches an upright.
+  The grooves on the rings and pulleys are an FDM approximation of the GT2 profile: print one pulley and
+  one ring half first and check the belt seats in both; adjust `ff_groove_w` / `ff_groove_d` if not.
   Motor current: these coils are rated 0.2 A, so `run_current` ~0.14 A RMS on the TMC2209.
 - **`"gear"`, parts `*_28byj`.** 28BYJ-48 (5 V version, converted to bipolar: cut the centre-tap trace under the blue
   cover, red wire unused) with printed 24T m1 pinions on m1 ring gears; motors beside the lens.
@@ -65,7 +65,7 @@ drive. Print one set (see the table below), not both.
 | `adapter_d` | 64 | adapter OD (spine top is at Z -35, clears r 32) |
 | `m3_insert_*`, `m4_insert_*` | 4.0 x 6, 5.6 x 7 | your heat-set insert hole sizes |
 | `ball_d` | 6 | ball diameter (6 mm steel or airsoft BBs) |
-| `pm_pulley_gap`, `pm_flange_t`, `pm_pulley_lip_d` | 3, 1, 12 | belt drive: motor face to the near pulley lip (sets the belt plane), flange and lip sizes |
+| `pm_pulley_gap`, `pm_shaft_l`, `pm_flange_t` | 2, 9, 1 | belt drive: motor mounting face to where the pulley may start (clear of any boss round the shaft; sets the belt plane), shaft length past that face (needs >= 5 mm in the pulley), ear flange thickness |
 
 Then `scripts/build.sh` and `scripts/check_clearances.sh` (177 pair checks, fails on any overlap > 1 mm^3; they cover the `ff_drive` set in config.scad).
 
@@ -74,7 +74,7 @@ Then `scripts/build.sh` and `scripts/check_clearances.sh` (177 pair checks, fail
 ```
 config.scad                 all dimensions, derived values, asserts
 lib/gears.scad              involute spur, internal and sector gears
-lib/hardware.scad           inserts, 608 pocket, NEMA 17 / 28BYJ-48 / 35 mm PM patterns, 1.5GT rim + belt loop, race groove, helpers
+lib/hardware.scad           inserts, 608 pocket, NEMA 17 / 28BYJ-48 / 35 mm PM patterns, GT2 belt band + belt loop, race groove, helpers
 parts/*.scad                one printable part per file, each rendered in its print orientation
 assembly.scad               whole head: -D tilt_angle=.. -D pan_angle=.. -D show_base=false
 tests/clearance.scad        intersection of two named items (see item() in assembly.scad)
@@ -107,10 +107,11 @@ scripts/render.sh           render one part
 
 | Part | Qty | Prints | Notes |
 |---|---|---|---|
-| **TB35 belt set** (`ff_drive = "belt"`) | | | 35 mm PM geared steppers TB35-4-10.5 + 1.5GT belts |
+| **TB35 belt set** (`ff_drive = "belt"`) | | | 35 mm PM geared steppers TB35-4-10.5 + GT2 2GT-350-6 belts |
 | nose_tb35 | 1 | keel down | keel + focus (left) and zoom (right) motor plates, both high, slotted for belt tension, 4 x M4 x 60 through the keel into the block |
-| ring_focus_tb35 | 2 | lugs up | identical halves; 176T 1.5GT pulley ring with flanges; each half has one insert lug and one through lug |
-| ring_zoom_tb35 | 2 | lugs up | 186T 1.5GT, same scheme |
+| ring_focus_tb35 | 2 | lugs up | identical halves; 132T GT2 pulley ring with flanges; each half has one insert lug and one through lug |
+| ring_zoom_tb35 | 2 | lugs up | 140T GT2, same scheme |
+| pulley_tb35 | 2 | flat flange down | 20T GT2, 6 mm belt, D bore for the 4 mm / 3 mm-flat shaft; flat flange toward the motor. 0.12 mm layers, slow outer wall |
 | **28BYJ-48 gear set** (`ff_drive = "gear"`) | | | 28BYJ-48 (5 V, bipolar mod) + printed spur gears |
 | nose_28byj | 1 | keel down | keel + 28BYJ-48 brackets beside the lens, 4 x M4 x 40 through the keel into the block |
 | ring_focus_28byj | 2 | lugs up | identical halves; 86T m1 ring gear, same lug scheme |
@@ -127,8 +128,8 @@ counterweight holes.
 | Item | Qty |
 |---|---|
 | NEMA 17, body <= 40 mm, 5 mm D shaft >= 22 mm | 2 (pan, tilt) |
-| Focus/zoom motors, belt: 35 mm PM geared stepper, 12 V 60 ohm, 22.3:1, with 20T 1.5GT pulley | 2 |
-| 1.5GT closed-loop belt, 3 mm wide, 340 mm (226-227T) | 2 (belt) |
+| Focus/zoom motors, belt: 35 mm PM geared stepper TB35-4-10.5, 12 V 60 ohm, 22.3:1 (stock pulley removed) | 2 |
+| GT2 closed-loop belt 2GT-350-6 (350 mm, 175T, 6 mm wide) | 2 (belt) |
 | (gear instead: 28BYJ-48, 5 V, converted to bipolar; no ULN2003, the TMC2209s drive them) | 2 |
 | 608ZZ bearing | 2 |
 | 8 mm steel rod, 2 x 22 mm, ends deburred | 2 stubs |
@@ -173,7 +174,7 @@ counterweight holes.
    each belt over the front of the lens onto its ring **before** the nose goes on, then bolt the nose
    to the block front (4 x M4 x 60 in from the front face of the keel, straight through keel and
    flange into the block inserts; a long hex key or a 3 mm hex bit reaches the heads under the lens),
-   push each can forward through its plate from behind, loop the belt over the pulley, and pull the
+   press a printed pulley onto each motor shaft (flat flange toward the motor, `pm_pulley_gap` off the face, CA on the flat), push each can forward through its plate from behind, loop the belt over the pulley, and pull the
    motor outward in its slots until the belt is snug (it should twist about 90 deg mid-span, no more),
    then tighten the ear screws. Gear drive: motors on the brackets (M4 x 8), pinions on their shafts
    (hub toward the plate), nose with 4 x M4 x 40.

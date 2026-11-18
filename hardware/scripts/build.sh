@@ -26,11 +26,12 @@ $R tray_foot        parts/tray_foot.scad &
 $R tripod_spider    parts/tripod_spider.scad &
 wait
 # focus / zoom drive parts, one set per motor type -- the suffix names the motor:
-#   _tb35  = 35 mm PM geared stepper (TB35-4-10.5) + 1.5GT belt  (ff_drive = "belt")
+#   _tb35  = 35 mm PM geared stepper (TB35-4-10.5) + GT2 belt    (ff_drive = "belt")
 #   _28byj = 28BYJ-48 + m1 spur gears                            (ff_drive = "gear")
 $R nose_tb35         parts/nose.scad         -D 'ff_drive="belt"' &
 $R ring_focus_tb35   parts/ring_gear.scad    -D 'variant="focus"' -D 'ff_drive="belt"' &
 $R ring_zoom_tb35    parts/ring_gear.scad    -D 'variant="zoom"'  -D 'ff_drive="belt"' &
+$R pulley_tb35       parts/pulley_tb35.scad  -D 'ff_drive="belt"' &
 $R nose_28byj        parts/nose.scad         -D 'ff_drive="gear"' &
 $R ring_focus_28byj  parts/ring_gear.scad    -D 'variant="focus"' -D 'ff_drive="gear"' &
 $R ring_zoom_28byj   parts/ring_gear.scad    -D 'variant="zoom"'  -D 'ff_drive="gear"' &

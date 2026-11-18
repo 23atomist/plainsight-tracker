@@ -87,30 +87,36 @@ pan_gear_face = 9;
 pan_skirt_r1 = pan_pr + 1.25 * gm + 4;  // skirt outer radius 53.06
 // follow focus. ff_drive picks the motors and the transmission:
 //   "belt": two 35 mm PM geared steppers (12 V, 60 ohm, 22.3:1, centred 4 mm D shaft, M4 ears 42.5 mm apart)
-//           keep their 20T 1.5GT pulley and drive printed 1.5GT belt rings clamped on the lens. Motors sit
-//           above the lens, bodies forward; the bracket plates are slotted to tension the belts.
+//           with printed 20T GT2 pulleys drive printed GT2 belt rings clamped on the lens through stock
+//           2GT-350-6 belts. Motors sit above the lens, bodies forward; the bracket plates are slotted to tension the belts.
 //   "gear": 28BYJ-48 (5 V, bipolar-modded) with printed 24T m1 pinions on m1 ring gears, motors beside the lens.
 ff_drive = "belt";
 ff_belt = ff_drive == "belt";
 ff_m = 1; ff_pin_N = 24; ff_pin_pr = ff_m * ff_pin_N / 2;   // 12 (gear drive)
 ff_pin_face = 8; ff_pin_hub_d = 14; ff_pin_hub_l = 8;
 ff_ring_wall = 4; ff_ring_gap = 0.6;
-// --- belt drive: 1.5GT, 1.5 mm pitch. The groove is an FDM approximation: tune ff_groove_w/_d on a test print.
-belt_p = 1.5; belt_pld = 0.19;          // pitch; pitch radius minus tooth-tip radius
-belt_w = 3; belt_land = 0.5;            // belt width; belt back above the tooth tips (preview)
-belt_teeth_focus = 227;                 // closed loops, 3 mm wide: 1.5GT "340 mm" (227T = 340.5; a 226T = 339 belt takes up in the slots).
-belt_teeth_zoom  = 227;                 //   Other lengths: the asserts say what fits (too short opens the zoom plate, too long hits an upright; ff_*_angle trades with it)
-ff_groove_w = 0.9; ff_groove_d = 0.6;   // ring groove width at the tips, depth                  MEASURE (test print)
+// --- belt drive: GT2 (2GT), 2 mm pitch. The groove is an FDM approximation: tune ff_groove_w/_d on a test print.
+belt_p = 2; belt_pld = 0.254;           // pitch; pitch radius minus tooth-tip radius
+belt_w = 6; belt_land = 0.63;           // belt width; belt back above the tooth tips (preview)
+belt_teeth_focus = 175;                 // closed loops 2GT-350-6 (350 mm, 175 T, 6 mm wide). Other lengths: the asserts say
+belt_teeth_zoom  = 175;                 //   what fits (too short opens the zoom plate, too long hits an upright; ff_*_angle trades with it)
+ff_groove_w = 1.3; ff_groove_d = 0.8;   // groove width at the tips, depth (rings and pulleys)    MEASURE (test print)
 ff_belt_wall = 3.5;                     // ring wall under the groove roots
-ff_flange_t = 1; ff_lip = 1.2;          // ring flanges: a flat one (print-bed side) and a 45 deg one; radial lip
+ff_flange_t = 1; ff_lip = 1.5;          // ring flanges: a flat one (print-bed side) and a 45 deg one; radial lip
 ff_tooth_w = belt_w + 1;                // toothed band between the flanges
 ff_belt_z = ff_flange_t + ff_tooth_w / 2;   // belt centre plane, from the ring's flat face
 ff_ring_w = ff_belt ? ff_flange_t + ff_tooth_w + ff_lip : 10;
 pm_body_d = 35; pm_body_l = 27; pm_ear_pitch = 42.5; pm_shaft_d = 4;
 pm_ear_w = 9; pm_flange_t = 1;          // ear tab width and flange thickness (preview only)          MEASURE
-pm_pulley_N = 20; pm_pulley_gap = 3; pm_pulley_w = 5;   // flange front face -> near pulley lip; lip-to-lip width
-pm_pulley_lip_d = 12;                   // pulley lip diameter (preview only)                          MEASURE
-pm_pulley_z = pm_pulley_gap + pm_pulley_w / 2;   // 5.5: belt plane in front of the motor face
+// printed GT2 pulley (parts/pulley_tb35.scad) replaces the motor's 1.5GT one: flat flange toward the motor, D bore
+pm_shaft_flat = 3;                      // D shaft: flat to the opposite round side
+pm_shaft_l = 9;                         // shaft length past the mounting flange face                  MEASURE
+pm_pulley_N = 20; pm_pulley_gap = 2;    // motor flange face -> pulley's flat flange (clears the shaft boss)  MEASURE
+pm_lip = 1.5;                           // pulley flange radial lip (the 45 deg flange is as tall)
+pm_pulley_w = ff_flange_t + ff_tooth_w + pm_lip;   // 9.5 overall
+pm_pulley_lip_d = 2 * (belt_pr(pm_pulley_N) - belt_pld + pm_lip);
+pm_pulley_z = pm_pulley_gap + ff_flange_t + ff_tooth_w / 2;   // belt plane in front of the motor face
+pm_bore_fit = 0.1;                      // D bore clearance (snug; a drop of CA on the flat)
 pm_slot = 3;                            // belt tension travel each way (radial) around the nominal centre distance
 pm_nut_af = 7;                          // M4 nut across flats, on the back of the plate next to the can
 function belt_pr(N) = N * belt_p / (2 * PI);
@@ -456,6 +462,7 @@ assert(!ff_belt || nose_bolt_tip_x <= saddle_x1 - 4, "nose bolts too short for t
 ff_plate_web = 2.5;
 assert(!ff_belt || focus_cd - pm_slot - (pm_body_d + 1) / 2 - ffb_lens_r >= ff_plate_web, "focus plate: can slot breaks into the lens hole: longer belt_teeth_focus");
 assert(!ff_belt || zoom_cd - pm_slot - (pm_body_d + 1) / 2 - zoom_ffb_lens_r >= ff_plate_web, "zoom plate: can slot breaks into the lens hole: longer belt_teeth_zoom");
+assert(!ff_belt || pm_shaft_l - pm_pulley_gap >= 5, "pulley: under 5 mm of shaft engagement: lower pm_pulley_gap");
 echo(str("tilt ", tilt_ratio, ":1  pan ", pan_ratio, ":1  balls ", n_balls, "  ff ", ff_drive, "  focus ring N ", focus_gear_N, " zoom ring N ", zoom_gear_N,
     "  ratio ", ff_ratio_focus, " / ", ff_ratio_zoom, "  cd ", focus_cd, " / ", zoom_cd));
 assert(stop_boss_z0 > stop_contact_z + 2, "stop boss would sit on the sector edge");

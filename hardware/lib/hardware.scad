@@ -82,15 +82,16 @@ module pm_body() {
     color("steelblue") translate([0, 0, -pm_flange_t]) hull() for (s = [-1, 1]) translate([s * pm_ear_pitch / 2, 0, 0]) cylinder(d = pm_ear_w, h = pm_flange_t);
     color("gray") cylinder(d = pm_shaft_d, h = pm_pulley_gap);
 }
-// Its 20T 1.5GT pulley (preview): lips pm_pulley_lip_d, tooth tips at the belt-ring tip radius rule.
-module pm_pulley() {
-    tip_d = 2 * (pm_pulley_pr - belt_pld);
-    color("silver") translate([0, 0, pm_pulley_gap]) {
-        cylinder(d = tip_d, h = pm_pulley_w);
-        for (z = [0, pm_pulley_w - 0.5]) translate([0, 0, z]) cylinder(d = pm_pulley_lip_d, h = 0.5);
-    }
+// Printed GT2 pulley envelope (preview), from the motor flange face.
+module pm_pulley() color("silver") translate([0, 0, pm_pulley_gap]) cylinder(d = pm_pulley_lip_d, h = pm_pulley_w);
+// Toothed belt band, axis Z from z=0: flat flange (print-bed side), N-groove rim, 45 deg flange of radial lip `lip`.
+module belt_band(N, lip = ff_lip) {
+    rt = belt_pr(N) - belt_pld;
+    cylinder(r = rt + lip, h = ff_flange_t, $fn = max(60, 2 * N));
+    translate([0, 0, ff_flange_t - eps]) linear_extrude(height = ff_tooth_w + 2 * eps, convexity = 10) belt_rim_2d(N);
+    translate([0, 0, ff_flange_t + ff_tooth_w]) cylinder(r1 = rt, r2 = rt + lip, h = lip, $fn = max(60, 2 * N));
 }
-// 2D toothed rim of a printed 1.5GT pulley ring: N grooves, round-bottomed, width ff_groove_w, depth ff_groove_d.
+// 2D toothed rim of a printed belt pulley or ring: N grooves, round-bottomed, width ff_groove_w, depth ff_groove_d.
 module belt_rim_2d(N) {
     rt = belt_pr(N) - belt_pld;
     difference() {
