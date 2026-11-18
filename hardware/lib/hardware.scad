@@ -77,24 +77,23 @@ module ffm_body() {
 module ffm_d_bore(depth) { d_bore(depth, d = ffm_shaft_d + 0.25, flat = ffm_shaft_flat + 0.15); }
 
 // 35 mm PM geared stepper (belt drive). Preview: flange face at z=0, shaft +Z (centred), can below, ears on X,
-// wire box on the face at +X / +Y (box_flip mirrors it through the shaft: the motor turned 180 deg on its ears).
-module pm_body(box_flip = false) {
+// wire box on the can side next to the +X ear, toward +Y.
+module pm_body() {
     color("steelblue") translate([0, 0, -pm_body_l]) cylinder(d = pm_body_d, h = pm_body_l);
     color("steelblue") translate([0, 0, -pm_flange_t]) hull() for (s = [-1, 1]) translate([s * pm_ear_pitch / 2, 0, 0]) cylinder(d = pm_ear_w, h = pm_flange_t);
     color("gray") cylinder(d = pm_shaft_d, h = pm_shaft_l);
-    color("steelblue") cylinder(d = pm_shaft_d + 3, h = pm_boss_h);
-    color("dimgray") rotate([0, 0, box_flip ? 180 : 0]) intersection() {
-        translate([pm_box_r0, pm_box_y0, 0]) cube([pm_body_d, pm_box_w, pm_box_h]);
-        cylinder(d = pm_body_d, h = pm_box_h);
-    }
+    color("dimgray") cylinder(d = pm_boss_d, h = pm_boss_h);
+    color("whitesmoke") translate([0, 0, -pm_flange_t - pm_box_l]) linear_extrude(height = pm_box_l) pm_box_2d();
 }
-// Printed GT2 pulley envelope (preview), from the motor flange face: hub, then flanges and band.
+// Wire box footprint in the motor's XY (grown by `grow`): between the can and pm_box_h off it, pm_box_w wide.
+module pm_box_2d(grow = 0, out = 0) intersection() {
+    circle(r = pm_body_d / 2 + pm_box_h + grow + out, $fn = 96);
+    translate([0, pm_box_y0 - grow]) square([pm_body_d, pm_box_w + 2 * grow]);
+}
+// Printed GT2 pulley envelope (preview), from the motor flange face.
 module pm_pulley() color("silver") difference() {
-    union() {
-        translate([0, 0, pm_pulley_gap]) cylinder(d = pm_hub_d, h = pm_pulley_body_z - pm_pulley_gap + eps);
-        translate([0, 0, pm_pulley_body_z]) cylinder(d = pm_pulley_lip_d, h = pm_lip + ff_tooth_w + ff_flange_t);
-    }
-    translate([0, 0, -1]) cylinder(d = pm_shaft_d + 0.2, h = pm_pulley_body_z + pm_lip + ff_tooth_w + ff_flange_t + 2);
+    translate([0, 0, pm_pulley_gap]) cylinder(d = pm_pulley_lip_d, h = pm_pulley_w);
+    translate([0, 0, -1]) cylinder(d = pm_shaft_d + 0.2, h = pm_pulley_gap + pm_pulley_w + 2);
 }
 // Toothed belt band, axis Z from z=0: flat flange (print-bed side), N-groove rim, 45 deg flange of radial lip `lip`.
 module belt_band(N, lip = ff_lip) {

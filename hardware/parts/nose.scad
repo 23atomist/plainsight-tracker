@@ -27,6 +27,7 @@ module bracket(x0, s, cd, a, body_dir) {   // s = side, a = pinion angle from ou
 }
 // Belt drive: the motor flange sits on the plate's rear face (x0) and the can goes forward through a slot;
 // the ear screws run in slots too, so the motor slides +-pm_slot along the radius to tension the belt.
+// The wire box on the can side (next to one ear) passes through a notch that joins the can slot.
 // Holes get a truncated 45 deg roof toward +Z (the print direction: the nose prints keel down), flat at r.
 module teardrop_2d(r) hull() { circle(r = r); translate([0, r - 0.005]) square([2 * r * (sqrt(2) - 1), 0.01], center = true); }
 module belt_bracket_profile_2d(s, cd, a, lens_r) {   // (Y, Z), one side
@@ -49,6 +50,9 @@ module belt_bracket_profile_2d(s, cd, a, lens_r) {   // (Y, Z), one side
         circle(r = lens_r, $fn = 240);
         hull() for (k = [-1, 1]) translate(m + k * pm_slot * dir) teardrop_2d((pm_body_d + 1) / 2);
         for (e = [-1, 1]) hull() for (k = [-1, 1]) translate(m + k * pm_slot * dir + e * pm_ear_pitch / 2 * tg) teardrop_2d(m4_d / 2);
+        // wire box beside the +X ear (motor X = tg, motor Y = dir: box away from the lens), over the slot travel
+        hull() for (k = [-1, 1]) translate(m + k * pm_slot * dir)
+            multmatrix([[tg[0], dir[0], 0, 0], [tg[1], dir[1], 0, 0], [0, 0, 1, 0]]) pm_box_2d(pm_box_clr, pm_wire_room);
     }
 }
 module belt_bracket(x0, s, cd, a, lens_r)
@@ -66,7 +70,7 @@ module nose(v = "") {
                 bracket(zoom_plate_x0, ff_zoom_side, zoom_cd, ff_zoom_angle, -1);
             }
         }
-        // 4 x M4 (x 40 gear, x 65 belt) from the keel front face, straight through keel + flange into the block inserts
+        // 4 x M4 (x 40 gear, x 60 belt) from the keel front face, straight through keel + flange into the block inserts
         // (no lightening window: it would cut into the inner two bores)
         for (y = nose_bolt_y, z = nose_bolt_z) translate([0, y, z]) xcyl(m4_d, keel_x0 - 1, keel_x1 + 1);
     }
