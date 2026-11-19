@@ -40,7 +40,7 @@ in diameter: you need a bed of at least 200 x 200 mm for those three.
 parts, and the file suffix names the motor they are for: **`_tb35`** = belt drive, **`_28byj`** = gear
 drive. Print one set (see the table below), not both.
 
-- **`"belt"` (default), parts `*_tb35`.** Two 35 mm PM geared steppers (12 V, 60 ohm coils, 22.3:1, 4 mm D shaft centred
+- **`"belt"` (default), parts `*_tb35`.** Two 35 mm PM geared steppers (12 V, 60 ohm coils, 22.3:1, 5 mm D shaft centred
   on the can, M4 ears 42.5 mm apart). Their stock 1.5GT pulleys come off; each gets a printed 20T GT2
   pulley (`pulley_tb35`, D bore, a drop of CA on the flat). The shaft is short (4 mm past the face, with a
   14 mm boss 1 mm tall round it), so the pulley sits just above the boss and holds ~2.8 mm of shaft. The wire
@@ -115,7 +115,7 @@ scripts/render.sh           render one part
 | nose_tb35 | 1 | keel down | keel + focus (left) and zoom (right) motor plates, both high, slotted for belt tension, 4 x M4 x 60 through the keel into the block |
 | ring_focus_tb35 | 2 | lugs up | identical halves; 132T GT2 pulley ring with flanges; each half has one insert lug and one through lug |
 | ring_zoom_tb35 | 2 | lugs up | 140T GT2, same scheme |
-| pulley_tb35 | 2 | flat flange down | 20T GT2, 6 mm belt, D bore for the 4 mm / 3 mm-flat shaft; the 45 deg flange goes toward the motor. 0.12 mm layers, slow outer wall |
+| pulley_tb35 | 2 | flat flange down | 20T GT2, 6 mm belt, D bore for the 5 mm shaft, 4 mm across the flat; the 45 deg flange goes toward the motor. 0.12 mm layers, slow outer wall |
 | **28BYJ-48 gear set** (`ff_drive = "gear"`) | | | 28BYJ-48 (5 V, bipolar mod) + printed spur gears |
 | nose_28byj | 1 | keel down | keel + 28BYJ-48 brackets beside the lens, 4 x M4 x 40 through the keel into the block |
 | ring_focus_28byj | 2 | lugs up | identical halves; 86T m1 ring gear, same lug scheme |

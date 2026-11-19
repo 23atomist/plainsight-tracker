@@ -86,7 +86,7 @@ pan_ratio = pan_N / pin_N;             // 6.33
 pan_gear_face = 9;
 pan_skirt_r1 = pan_pr + 1.25 * gm + 4;  // skirt outer radius 53.06
 // follow focus. ff_drive picks the motors and the transmission:
-//   "belt": two 35 mm PM geared steppers (12 V, 60 ohm, 22.3:1, centred 4 mm D shaft, M4 ears 42.5 mm apart)
+//   "belt": two 35 mm PM geared steppers (12 V, 60 ohm, 22.3:1, centred 5 mm D shaft, M4 ears 42.5 mm apart)
 //           with printed 20T GT2 pulleys drive printed GT2 belt rings clamped on the lens through stock
 //           2GT-350-6 belts. Motors sit above the lens, bodies forward; the bracket plates are slotted to tension the belts.
 //   "gear": 28BYJ-48 (5 V, bipolar-modded) with printed 24T m1 pinions on m1 ring gears, motors beside the lens.
@@ -106,13 +106,13 @@ ff_flange_t = 1; ff_lip = 1.5;          // ring flanges: a flat one (print-bed s
 ff_tooth_w = belt_w + 1;                // toothed band between the flanges
 ff_belt_z = ff_flange_t + ff_tooth_w / 2;   // belt centre plane, from the ring's flat face
 ff_ring_w = ff_belt ? ff_flange_t + ff_tooth_w + ff_lip : 10;
-pm_body_d = 35; pm_body_l = 27; pm_ear_pitch = 42.5; pm_shaft_d = 4;
+pm_body_d = 35; pm_body_l = 27; pm_ear_pitch = 42.5; pm_shaft_d = 5;
 pm_ear_w = 9; pm_flange_t = 1;          // ear tab width and flange thickness (preview only)          MEASURE
 // Motor (looking at the shaft, ears left-right): a 14 mm boss 1 mm tall round the shaft, a flat face otherwise.
 // The wire box is on the SIDE of the can, right next to the right ear: from 2.5 mm above the ear line, 6 mm wide,
 // standing 2-3 mm off the can, from the ear plane back along the can. It sits inside the bracket plate, which gets
 // a notch for it (swept over the tension slot) with room for the wires to bend forward through the plate.
-pm_shaft_flat = 3;                      // D shaft: flat to the opposite round side
+pm_shaft_flat = 4;                      // D shaft: flat to the opposite round side (measured; the flat is 4 mm wide too)
 pm_shaft_l = 4;                         // shaft end, from the mounting face                            MEASURE
 pm_boss_d = 14; pm_boss_h = 1;          // boss round the shaft base
 pm_box_y0 = 2.5; pm_box_w = 6;          // wire box: from the ear line, width                          MEASURE

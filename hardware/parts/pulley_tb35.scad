@@ -1,5 +1,5 @@
-// pulley_tb35.scad — 20T GT2 pulley (6 mm belt) for the 35 mm PM geared stepper (TB35-4-10.5): 4 mm shaft with a
-// flat (3 mm across the flat). Prints as modelled: flat flange on the bed, 45 deg flange up; the 45 deg flange's
+// pulley_tb35.scad — 20T GT2 pulley (6 mm belt) for the 35 mm PM geared stepper (TB35-4-10.5): 5 mm shaft with a
+// flat (4 mm across the flat). Prints as modelled: flat flange on the bed, 45 deg flange up; the 45 deg flange's
 // face goes toward the motor. D bore through: push it on flat to flat with two layers of paper between it and the
 // boss round the shaft (so it can't rub), pull the paper, a drop of CA on the flat.
 include <../lib/hardware.scad>
