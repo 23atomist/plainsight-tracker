@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Interference checks: renders intersection() of item pairs and fails if any has real volume (> 1 mm^3).
+# FF_DRIVE=belt|gear|nema checks that focus/zoom drive instead of config.scad's default.
 set -u
 cd "$(dirname "$0")/.."
 OS=${OPENSCAD:-/Applications/OpenSCAD.app/Contents/MacOS/OpenSCAD}
@@ -7,7 +8,7 @@ mkdir -p build/clearance; rm -f build/clearance/*
 check() {   # a b tilt [ring_rot]
     local a=$1 b=$2 t=$3 rr=${4:-0}
     local out="build/clearance/${a}__${b}_t${t}_r${rr}.stl"
-    "$OS" -o "$out" --export-format asciistl -D "a=\"$a\"" -D "b=\"$b\"" -D "tilt=$t" -D "ring_rot=$rr" tests/clearance.scad > "${out%.stl}.log" 2>&1
+    "$OS" -o "$out" --export-format asciistl ${FF_DRIVE:+-D "ff_drive=\"$FF_DRIVE\""} -D "a=\"$a\"" -D "b=\"$b\"" -D "tilt=$t" -D "ring_rot=$rr" tests/clearance.scad > "${out%.stl}.log" 2>&1
     if grep -q "ERROR" "${out%.stl}.log"; then echo "99999 OPENSCAD-ERROR see ${out%.stl}.log" > "${out%.stl}.result";
     else python3 scripts/stl_volume.py "$out" > "${out%.stl}.result"; fi
 }

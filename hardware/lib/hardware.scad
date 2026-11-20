@@ -48,10 +48,20 @@ module nema17_cut(t, slot_l = 0, slot_dir = [0, 1], boss_d = motor_boss_d + fit_
     translate([0, 0, -eps]) cylinder(d = boss_d, h = t + 2 * eps);
 }
 // Preview NEMA 17: face at z=0, shaft +Z, body below.
-module nema17_body() {
-    color("silver") translate([-motor_w / 2, -motor_w / 2, -motor_l]) cube([motor_w, motor_w, motor_l]);
+module nema17_body(l = motor_l, shaft_l = motor_shaft_l) {
+    color("silver") translate([-motor_w / 2, -motor_w / 2, -l]) cube([motor_w, motor_w, l]);
     color("gray") cylinder(d = motor_boss_d - 0.3, h = motor_boss_h);
-    color("gray") cylinder(d = motor_shaft_d, h = motor_shaft_l);
+    color("gray") cylinder(d = motor_shaft_d, h = shaft_l);
+}
+// Preview stock 20T GT2 pulley (6 mm belt, 5 mm bore): hub end at z=0, along +Z.
+module gt2m_pulley() color("silver") difference() {
+    union() {
+        cylinder(d = gt2m_hub_d, h = gt2m_hub_l);
+        translate([0, 0, gt2m_hub_l]) cylinder(d = gt2m_flange_d, h = gt2m_flange_t);
+        translate([0, 0, gt2m_hub_l]) cylinder(r = belt_pr(20) - belt_pld, h = gt2m_l - gt2m_hub_l);
+        translate([0, 0, gt2m_l - gt2m_flange_t]) cylinder(d = gt2m_flange_d, h = gt2m_flange_t);
+    }
+    translate([0, 0, -1]) cylinder(d = motor_shaft_d + 0.2, h = gt2m_l + 2);
 }
 // D-shaft bore along +Z from z=0 to depth.
 module d_bore(depth, d = motor_shaft_d + 0.25, flat = motor_shaft_flat + 0.15) {

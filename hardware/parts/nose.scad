@@ -1,5 +1,6 @@
 // nose.scad — keel under the lens with the focus (left) and zoom (right) motor bracket plates:
-// 28BYJ-48 plates beside the lens (ff_drive "gear") or slotted 35 mm PM motor plates above it ("belt").
+// 28BYJ-48 plates beside the lens (ff_drive "gear"), slotted 35 mm PM motor plates above it ("belt"), or one slotted
+// NEMA 17 pancake plate for focus only ("nema").
 // Bolts to the saddle block front face. Axis frame; prints keel down.
 include <../lib/hardware.scad>
 use <../lib/gears.scad>
@@ -55,6 +56,27 @@ module belt_bracket_profile_2d(s, cd, a, lens_r) {   // (Y, Z), one side
             multmatrix([[tg[0], dir[0], 0, 0], [tg[1], dir[1], 0, 0], [0, 0, 1, 0]]) pm_box_2d(pm_box_clr, pm_wire_room);
     }
 }
+// NEMA pancake (focus only): the motor face sits on the plate's front face, the boss in a slot, 4 x M3 from behind
+// through slots; the whole motor slides +-pm_slot along the radius to tension the belt. Sides along radius/tangent.
+module nema_bracket_profile_2d(s, cd, a, lens_r) {   // (Y, Z), one side
+    a_m = s > 0 ? a : 180 - a;
+    a0 = s > 0 ? -90 : a_m;  a1 = s > 0 ? a_m : 270;
+    dir = [cos(a_m), sin(a_m)];  tg = [-sin(a_m), cos(a_m)];
+    m = cd * dir;  h = motor_bolt_pitch / 2;
+    difference() {
+        union() {
+            polygon([[0, keel_z0], [s * keel_hw, keel_z0], [s * keel_hw, ffb_stem_z1], [0, ffb_stem_z1]]);
+            pie_2d(lens_r + 10, a0, a1);
+            hull() {                                  // pad: the four screw bosses over the slot travel, webbed to the arc
+                for (k = [-1, 1], u = [-1, 1], v = [-1, 1]) translate(m + k * pm_slot * dir + u * h * tg + v * h * dir) circle(r = 5.5);
+                translate((lens_r + 5) * dir) circle(r = 8);
+            }
+        }
+        circle(r = lens_r, $fn = 240);
+        hull() for (k = [-1, 1]) translate(m + k * pm_slot * dir) teardrop_2d((motor_boss_d + 1) / 2);
+        for (u = [-1, 1], v = [-1, 1]) hull() for (k = [-1, 1]) translate(m + k * pm_slot * dir + u * h * tg + v * h * dir) teardrop_2d(motor_bolt_d / 2);
+    }
+}
 module belt_bracket(x0, s, cd, a, lens_r)
     translate([x0, 0, 0]) rotate([90, 0, 90]) linear_extrude(height = ffb_t, convexity = 8) belt_bracket_profile_2d(s, cd, a, lens_r);
 module nose(v = "") {
@@ -62,7 +84,10 @@ module nose(v = "") {
         union() {
             translate([keel_x0, -keel_hw, keel_z0]) cube([keel_x1 - keel_x0, 2 * keel_hw, keel_z1 - keel_z0]);
             translate([keel_x0, -keel_hw, keel_z0]) cube([nose_flange_t, 2 * keel_hw, nose_flange_z1 - keel_z0]);
-            if (ff_belt) {
+            if (ff_nema) {
+                translate([focus_plate_x0, 0, 0]) rotate([90, 0, 90]) linear_extrude(height = ffb_t, convexity = 8)
+                    nema_bracket_profile_2d(ff_focus_side, focus_cd, ff_focus_angle, ffb_lens_r);
+            } else if (ff_belt) {
                 belt_bracket(focus_plate_x0, ff_focus_side, focus_cd, ff_focus_angle, ffb_lens_r);
                 belt_bracket(zoom_plate_x0, ff_zoom_side, zoom_cd, ff_zoom_angle, zoom_ffb_lens_r);
             } else {
@@ -70,7 +95,7 @@ module nose(v = "") {
                 bracket(zoom_plate_x0, ff_zoom_side, zoom_cd, ff_zoom_angle, -1);
             }
         }
-        // 4 x M4 (x 40 gear, x 60 belt) from the keel front face, straight through keel + flange into the block inserts
+        // 4 x M4 (x 40 gear / nema, x 60 belt) from the keel front face, straight through keel + flange into the block inserts
         // (no lightening window: it would cut into the inner two bores)
         for (y = nose_bolt_y, z = nose_bolt_z) translate([0, y, z]) xcyl(m4_d, keel_x0 - 1, keel_x1 + 1);
     }

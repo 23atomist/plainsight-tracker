@@ -28,6 +28,7 @@ wait
 # focus / zoom drive parts, one set per motor type -- the suffix names the motor:
 #   _tb35  = 35 mm PM geared stepper (TB35-4-10.5) + GT2 belt    (ff_drive = "belt")
 #   _28byj = 28BYJ-48 + m1 spur gears                            (ff_drive = "gear")
+#   _nema17 = NEMA 17 pancake + stock GT2 pulley, FOCUS ONLY      (ff_drive = "nema")
 $R nose_tb35         parts/nose.scad         -D 'ff_drive="belt"' &
 $R ring_focus_tb35   parts/ring_gear.scad    -D 'variant="focus"' -D 'ff_drive="belt"' &
 $R ring_zoom_tb35    parts/ring_gear.scad    -D 'variant="zoom"'  -D 'ff_drive="belt"' &
@@ -36,6 +37,9 @@ $R nose_28byj        parts/nose.scad         -D 'ff_drive="gear"' &
 $R ring_focus_28byj  parts/ring_gear.scad    -D 'variant="focus"' -D 'ff_drive="gear"' &
 $R ring_zoom_28byj   parts/ring_gear.scad    -D 'variant="zoom"'  -D 'ff_drive="gear"' &
 $R pinion_28byj      parts/pinion_28byj.scad -D 'ff_drive="gear"' &
+wait
+$R nose_nema17       parts/nose.scad         -D 'ff_drive="nema"' &
+$R ring_focus_nema17 parts/ring_gear.scad    -D 'variant="focus"' -D 'ff_drive="nema"' &
 wait
 for t in 0 45 90; do
     "$OS" -o "build/png/assembly_tilt$t.png" --render --viewall --autocenter --imgsize=1200,900 --colorscheme=Tomorrow -D "tilt_angle=$t" assembly.scad > "build/png/assembly_tilt$t.log" 2>&1 &

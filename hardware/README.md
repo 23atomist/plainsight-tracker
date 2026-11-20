@@ -2,8 +2,8 @@
 
 3D-printable head for an IFWATER IF-USB16MP01-MFV 16 MP USB camera carrying a Nikon AF-S 70-300 mm
 f/4.5-5.6G VR (800 g) through a 30 mm adapter. Pan on a printed 140 mm ball race, tilt 0..90 deg on
-short steel trunnions in a low fork, focus and zoom by belt from two small geared steppers (or by gears
-from 28BYJ-48s), hard level stop at 0 deg
+short steel trunnions in a low fork, focus by belt from a NEMA 17 pancake stepper (zoom manual; two-motor
+TB35 belt and 28BYJ-48 gear sets are the alternatives), hard level stop at 0 deg
 for calibration, IMU pad on top of the lens clamp.
 
 Design reasoning: `docs/design.md`.
@@ -26,7 +26,7 @@ multiplied by a 100 mm lever. v4 has no column:
 
 | | Pan | Tilt | Focus / zoom |
 |---|---|---|---|
-| Ratio | 76:12 = 6.33 | 120:12 = 10 | belt: 132:20 / 140:20 (6.6 / 7.0) on a 22.3:1 geared motor; gear: 86:24 / 90:24 on a 64:1 28BYJ-48 |
+| Ratio | 76:12 = 6.33 | 120:12 = 10 | NEMA (focus only): 132:20 = 6.6 on a 1.8 deg motor, 0.017 deg of ring per 1/16 microstep; TB35 belt: 132:20 / 140:20 (6.6 / 7.0) on a 22.3:1 geared motor; gear: 86:24 / 90:24 on a 64:1 28BYJ-48 |
 | Per 1/16 microstep | 0.018 deg | 0.011 deg | well under 0.01 deg of ring either way |
 | Travel | +/-180 (cable limited) | 0..90 deg (stop at 0, software limit at 90) | ring throw |
 | Holding, 0.4 N m motor | 2.5 N m | 4 N m (payload is ~0.35 N m nose-heavy) | |
@@ -34,13 +34,22 @@ multiplied by a 100 mm lever. v4 has no column:
 Optical axis is 220 mm above the housing feet. The deck, housing and platform are 200 / 200 / 184 mm
 in diameter: you need a bed of at least 200 x 200 mm for those three.
 
-## Focus / zoom drive: belt or gear
+## Focus / zoom drive: NEMA pancake, TB35 belt or gear
 
-`ff_drive` in `config.scad` picks one for the assembly; `scripts/build.sh` writes both sets of drive
-parts, and the file suffix names the motor they are for: **`_tb35`** = belt drive, **`_28byj`** = gear
-drive. Print one set (see the table below), not both.
+`ff_drive` in `config.scad` picks one for the assembly; `scripts/build.sh` writes every set of drive
+parts, and the file suffix names the motor they are for: **`_nema17`** = NEMA 17 pancake, focus only,
+**`_tb35`** = TB35 belt drive, **`_28byj`** = gear drive. Print one set (see the table below).
 
-- **`"belt"` (default), parts `*_tb35`.** Two 35 mm PM geared steppers (12 V, 60 ohm coils, 22.3:1, 5 mm D shaft centred
+- **`"nema"` (default), parts `*_nema17`. Focus only; zoom stays manual.** One NEMA 17 pancake stepper
+  (42.3 mm square, ~20-25 mm long, 1.8 deg, 5 mm D shaft >= 20 mm) with a stock metal **20T GT2 pulley for
+  6 mm belt, 5 mm bore** (two grub screws) drives the same 132T focus ring with the same 2GT-350-6 belt.
+  The motor sits above the lens at 70 deg, body forward: its face bolts to the front of a single slotted
+  plate with 4 x M3 x 12 + washers from behind, the 22 mm boss in a slot, so the whole motor slides
+  +-3 mm along the radius to tension the belt. The pulley goes on hub first, 1 mm off the plate; the grub
+  screws are reachable from outside in the gap between the plate and the pulley flange. The focus ring is
+  `ring_focus_nema17` (the same part as `ring_focus_tb35`). Motor current: pancakes are usually rated
+  ~0.6-1.0 A; start with `run_current` 0.4 A RMS, more only if it skips.
+- **`"belt"`, parts `*_tb35`.** Two 35 mm PM geared steppers (12 V, 60 ohm coils, 22.3:1, 5 mm D shaft centred
   on the can, M4 ears 42.5 mm apart). Their stock 1.5GT pulleys come off; each gets a printed 20T GT2
   pulley (`pulley_tb35`, D bore, a drop of CA on the flat). The shaft is short (4 mm past the face, with a
   14 mm boss 1 mm tall round it), so the pulley sits just above the boss and holds ~2.8 mm of shaft. The wire
@@ -69,9 +78,10 @@ drive. Print one set (see the table below), not both.
 | `adapter_d` | 64 | adapter OD (spine top is at Z -35, clears r 32) |
 | `m3_insert_*`, `m4_insert_*` | 4.0 x 6, 5.6 x 7 | your heat-set insert hole sizes |
 | `ball_d` | 6 | ball diameter (6 mm steel or airsoft BBs) |
+| `ffn_shaft_l`, `ffn_l`, `gt2m_*` | 20, 23, see config | NEMA pancake: shaft length from the face (must reach through the 8 mm plate, the 1 mm gap and the 7 mm pulley hub: >= 16) and body length; the stock pulley's hub and flange sizes |
 | `pm_shaft_l`, `pm_boss_d/_h`, `pm_box_*`, `pm_flange_t` | 4, 14/1, see config, 1 | belt drive motor: shaft length and the boss round it (the pulley sits 0.2 mm above it); the wire box on the can side next to the +X ear (`pm_box_y0`/`_w` along the ear line's normal, `pm_box_h` proud of the can: sets the plate notch); ear flange thickness |
 
-Then `scripts/build.sh` and `scripts/check_clearances.sh` (177 pair checks, fails on any overlap > 1 mm^3; they cover the `ff_drive` set in config.scad).
+Then `scripts/build.sh` and `scripts/check_clearances.sh` (177 pair checks, fails on any overlap > 1 mm^3; they cover the `ff_drive` set in config.scad; `FF_DRIVE=belt scripts/check_clearances.sh` checks another).
 
 ## Files
 
@@ -111,6 +121,9 @@ scripts/render.sh           render one part
 
 | Part | Qty | Prints | Notes |
 |---|---|---|---|
+| **NEMA 17 pancake set, focus only** (`ff_drive = "nema"`) | | | one NEMA 17 pancake + stock 20T GT2 pulley + one GT2 2GT-350-6 belt |
+| nose_nema17 | 1 | keel down | keel + one motor plate (left, high), boss and M3 holes slotted for belt tension, 4 x M4 x 40 through the keel into the block |
+| ring_focus_nema17 | 2 | lugs up | identical halves; 132T GT2 pulley ring with flanges (same part as ring_focus_tb35) |
 | **TB35 belt set** (`ff_drive = "belt"`) | | | 35 mm PM geared steppers TB35-4-10.5 + GT2 2GT-350-6 belts |
 | nose_tb35 | 1 | keel down | keel + focus (left) and zoom (right) motor plates, both high, slotted for belt tension, 4 x M4 x 60 through the keel into the block |
 | ring_focus_tb35 | 2 | lugs up | identical halves; 132T GT2 pulley ring with flanges; each half has one insert lug and one through lug |
@@ -132,8 +145,11 @@ counterweight holes.
 | Item | Qty |
 |---|---|
 | NEMA 17, body <= 40 mm, 5 mm D shaft >= 22 mm | 2 (pan, tilt) |
+| Focus motor, NEMA set: NEMA 17 pancake (42.3 mm square, 20-25 mm long), 5 mm D shaft >= 20 mm | 1 |
+| Stock GT2 pulley, 20 teeth, 5 mm bore, for 6 mm belt (NEMA set) | 1 |
+| M3 x 12 + washer (NEMA set) | 4, motor face to the plate, from behind through the slots |
 | Focus/zoom motors, belt: 35 mm PM geared stepper TB35-4-10.5, 12 V 60 ohm, 22.3:1 (stock pulley removed) | 2 |
-| GT2 closed-loop belt 2GT-350-6 (350 mm, 175T, 6 mm wide) | 2 (belt) |
+| GT2 closed-loop belt 2GT-350-6 (350 mm, 175T, 6 mm wide) | 1 (NEMA) / 2 (TB35) |
 | (gear instead: 28BYJ-48, 5 V, converted to bipolar; no ULN2003, the TMC2209s drive them) | 2 |
 | 608ZZ bearing | 2 |
 | 8 mm steel rod, 2 x 22 mm, ends deburred | 2 stubs |
@@ -146,7 +162,7 @@ counterweight holes.
 | M3 x 10 countersunk | 3, retainer |
 | M3 x 5 set/grub screws | 2: NEMA pinions (+2 for the gear drive's 28BYJ pinions, self-tapped) |
 | M4 x 16 | 16: uprights to platform 8, arms to block 8 |
-| M4 x 60 socket head (gear: M4 x 40) | 4, nose to block (through the whole keel, heads on its front face) |
+| M4 x 60 socket head (NEMA and gear: M4 x 40) | 4, nose to block (through the whole keel, heads on its front face) |
 | M4 x 10 | 6, deck to housing |
 | M4 x 14 + washer + nut | 4, belt motor ears through the plate slots, washer and nut on the can side (gear: M4 x 8 into inserts) |
 | M4 x 20 | 1, level stop |
@@ -180,7 +196,12 @@ counterweight holes.
    flange into the block inserts; a long hex key or a 3 mm hex bit reaches the heads under the lens),
    press a printed pulley onto each motor shaft (45 deg flange first, flat to flat, two layers of paper between it and the boss so it can't rub, then pull the paper and put a drop of CA on the flat), push each can forward through its plate from behind with the wire box in the plate's notch (it only fits one way: box away from the lens; bend the wires forward through the notch), loop the belt over the pulley, and pull the
    motor outward in its slots until the belt is snug (it should twist about 90 deg mid-span, no more),
-   then tighten the ear screws. Gear drive: motors on the brackets (M4 x 8), pinions on their shafts
+   then tighten the ear screws. NEMA (focus only): belt over the front of the lens onto the focus ring, nose
+   on with 4 x M4 x 40, pulley on the shaft hub first (hub toward the motor) but leave the grub screws loose;
+   hold the motor face against the front of the plate (boss in its slot, wires pointing away from the lens),
+   4 x M3 x 12 + washers from behind, loose; push the pulley back until its hub is 1 mm off the plate and the
+   belt lines up with the ring, grub screws on the flat; pull the motor outward until the belt is snug and
+   tighten the M3s. Gear drive: motors on the brackets (M4 x 8), pinions on their shafts
    (hub toward the plate), nose with 4 x M4 x 40.
 6. Lower the cradle between the uprights with a spacer on each side. Push each 8 mm stub in **from
    the outside** through the bearing lip hole, bearing and spacer into the arm bore until it is 1 mm

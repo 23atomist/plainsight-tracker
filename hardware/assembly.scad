@@ -42,7 +42,9 @@ module switch_panel() { color("black") translate([switch_panel_x0, 0, 0]) rotate
 }
 module stubs() { color("silver") for (s = [-1, 1]) translate([pivot_x, 0, pivot_z]) ycyl(stub_d + stub_fit, s > 0 ? arm_y0 - 2 : -(arm_y0 - 2 + stub_l), s > 0 ? arm_y0 - 2 + stub_l : -(arm_y0 - 2)); }
 module ff_motors() {
-    if (ff_belt) {   // flange on the plate's rear face, can forward, shaft rearward to the belt plane; ears tangential
+    if (ff_nema) {   // face on the plate's front face, body forward, shaft rearward through the plate; sides along radius/tangent
+        translate([focus_plate_x1, focus_pin_yz[0], focus_pin_yz[1]]) rotate([ff_focus_angle, 0, 0]) rotate([0, -90, 0]) nema17_body(ffn_l, ffn_shaft_l);
+    } else if (ff_belt) {   // flange on the plate's rear face, can forward, shaft rearward to the belt plane; ears tangential
         translate([focus_plate_x0 - pm_flange_t, focus_pin_yz[0], focus_pin_yz[1]]) rotate([ff_focus_angle, 0, 0]) rotate([0, -90, 0]) pm_body();
         translate([zoom_plate_x0 - pm_flange_t,  zoom_pin_yz[0],  zoom_pin_yz[1]])  rotate([180 - ff_zoom_angle, 0, 0]) rotate([0, -90, 0]) pm_body();
     } else {
@@ -57,16 +59,18 @@ module ff_pinions(rr = ring_rot) if (ff_belt) ff_belts(); else {
 }
 // belt drive: motor pulleys + belt loops (land only) in the belt planes
 module ff_belts() {
-    for (f = [[focus_belt_x, focus_pin_yz, focus_gear_pr, focus_cd, ff_focus_angle],
-              [zoom_belt_x,  zoom_pin_yz,  zoom_gear_pr,  zoom_cd,  180 - ff_zoom_angle]]) {
-        translate([f[0] + pm_pulley_z, f[1][0], f[1][1]]) rotate([0, -90, 0]) pm_pulley();
+    fz = [[focus_belt_x, focus_pin_yz, focus_gear_pr, focus_cd, ff_focus_angle],
+          [zoom_belt_x,  zoom_pin_yz,  zoom_gear_pr,  zoom_cd,  180 - ff_zoom_angle]];
+    for (f = ff_zoom ? fz : [fz[0]]) {
+        if (ff_nema) translate([focus_plate_x0 - gt2m_gap, f[1][0], f[1][1]]) rotate([0, -90, 0]) gt2m_pulley();
+        else translate([f[0] + pm_pulley_z, f[1][0], f[1][1]]) rotate([0, -90, 0]) pm_pulley();
         color("dimgray") translate([f[0] - belt_w / 2, 0, 0]) rotate([90, 0, 90]) linear_extrude(height = belt_w)
             rotate(f[4]) belt_loop_2d(f[2], pm_pulley_pr, f[3]);
     }
 }
 module ring_gears(rr = ring_rot) {
     translate([focus_gear_x1, 0, 0]) rotate([0, -90, 0]) rotate([0, 0, rr + focus_ring_phase]) { ring_half("focus"); rotate(180) ring_half("focus"); }
-    translate([zoom_gear_x0, 0, 0])  rotate([0,  90, 0]) rotate([0, 0, rr + zoom_ring_phase])  { ring_half("zoom");  rotate(180) ring_half("zoom"); }
+    if (ff_zoom) translate([zoom_gear_x0, 0, 0])  rotate([0,  90, 0]) rotate([0, 0, rr + zoom_ring_phase])  { ring_half("zoom");  rotate(180) ring_half("zoom"); }
 }
 module spacers() { for (s = [-1, 1]) translate([pivot_x, s > 0 ? arm_y1 : -arm_y1 - spacer_t, pivot_z]) rotate([-90, 0, 0]) spacer(); }
 module tilt_motor() { translate([tilt_motor_xz[0], upright_y1, tilt_motor_xz[1]]) rotate([90, 0, 0]) nema17_body(); }
