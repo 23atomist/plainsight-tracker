@@ -170,7 +170,7 @@ counterweight holes.
 | M4 heat-set inserts | 29 (+4 for the gear drive's motor ears): platform feet 8, housing tabs 6, arm bolts 8, nose 4, stub set screws 2, level stop 1 |
 | M3 x 12 | 4, pan motor through the deck |
 | M3 x 14 | 4, tilt motor through the upright (heads in the counterbores on the inner face) |
-| M3 x 16 | 6: lens clamp 2, ring-gear clamps 4 |
+| M3 x 16 | 6: lens clamp 2, ring-gear clamps 4 (TB35 / gear rings; the NEMA rings take M3 x 12) |
 | M3 x 10 countersunk | 3, retainer |
 | M3 x 5 set/grub screws | 2: NEMA pinions (+2 for the gear drive's 28BYJ pinions, self-tapped) |
 | M4 x 16 | 16: uprights to platform 8, arms to block 8 |
@@ -209,7 +209,7 @@ counterweight holes.
    press a printed pulley onto each motor shaft (45 deg flange first, flat to flat, two layers of paper between it and the boss so it can't rub, then pull the paper and put a drop of CA on the flat), push each can forward through its plate from behind with the wire box in the plate's notch (it only fits one way: box away from the lens; bend the wires forward through the notch), loop the belt over the pulley, and pull the
    motor outward in its slots until the belt is snug (it should twist about 90 deg mid-span, no more),
    then tighten the ear screws. NEMA: line each ring half's bore with 1 mm rubber/foam tape, clamp the
-   halves on (M3 x 16; they must close face to face, lugs toward the front of the lens), belts over the front of
+   halves on (M3 x 12, head down the open slot beside the through lug; they must close face to face, lugs toward the front of the lens), belts over the front of
    the lens onto the rings, nose on with 4 x M4 x 65; per motor: pulley on the shaft hub first (hub toward the motor) but leave the grub screws loose;
    hold the motor face against the front of the plate (boss in its slot, wires pointing away from the lens),
    4 x M3 x 12 + washers from behind, loose; push the pulley back until its hub is 1 mm off the plate and the

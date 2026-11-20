@@ -114,9 +114,9 @@ ff_flange_t = 1; ff_lip = 1.5;          // ring flanges: a flat one (print-bed s
 ff_tooth_w = belt_w + 1;                // toothed band between the flanges
 ff_belt_z = ff_flange_t + ff_tooth_w / 2;   // belt centre plane, from the ring's flat face
 ff_band_w = ff_flange_t + ff_tooth_w + ff_lip;   // flat flange + toothed band + 45 deg flange: 9.5
-// nema: a 4.5 mm collar continues the ring forward past the 45 deg flange; the clamp lugs sit on it (z 8..14) so the
+// nema: a 6 mm collar continues the ring forward past the 45 deg flange; the clamp lugs sit on it (z 8..15.5) so the
 // screw pulls in line with the bore that grips, and nothing sticks out rearward over the barrel / AF-VR switches.
-ff_collar_l = 4.5;
+ff_collar_l = 6;
 ff_ring_w = ff_nema ? ff_band_w + ff_collar_l : ff_belt ? ff_band_w : 10;
 ff_ring_edge = 0.5;                     // nema: ring's rear face in from the lens ring's rear edge
 pm_body_d = 35; pm_body_l = 27; pm_ear_pitch = 42.5; pm_shaft_d = 5;

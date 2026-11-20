@@ -46,8 +46,12 @@ module collar_ring_half(variant, N, rid, r1) {
         translate([0, 0, -1]) cylinder(r = rid, h = ff_ring_w + 2, $fn = 240);
         translate([0, 0, lens_x1 - x0]) cylinder(r = max(rid, lens_rear_barrel_d / 2 + 1), h = ff_ring_w + 1, $fn = 240);
         translate([-200, -200, -1]) cube([400, 200, ff_ring_w + 2]);                                       // keep y >= 0
-        translate([rh, 0, zh]) rotate([90, 0, 0]) insert_hole("m3");
-        translate([-rh, ff_lug_t, zh]) rotate([-90, 0, 0]) cbore(m3_d, m3_head_d, m3_head_h, through = ff_lug_t + 2);
+        translate([rh, 0, zh]) rotate([90, 0, 0]) insert_hole("m3");   // M3 x 12: head seat 5.8 above the split, tip 6.2 into the insert
+        translate([-rh, -1, zh]) rotate([-90, 0, 0]) cylinder(d = m3_d, h = ff_lug_t + 2);
+        // head pocket: the screw axis runs inside the collar, so the head and the driver come in through a slot open to
+        // the top and the outside (no bridge to print, no thin fin left beside it)
+        hull() for (x = [-rh, -r1 - 5], z = [zh, ff_ring_w + 5])
+            translate([x, ff_lug_t - m3_head_h, z]) rotate([-90, 0, 0]) cylinder(d = m3_head_d + 0.6, h = 40);
     }
 }
 ring_half(variant);
