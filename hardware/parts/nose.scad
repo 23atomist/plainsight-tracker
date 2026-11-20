@@ -1,6 +1,6 @@
 // nose.scad — keel under the lens with the focus (left) and zoom (right) motor bracket plates:
-// 28BYJ-48 plates beside the lens (ff_drive "gear"), slotted 35 mm PM motor plates above it ("belt"), or one slotted
-// NEMA 17 pancake plate for focus only ("nema").
+// 28BYJ-48 plates beside the lens (ff_drive "gear"), slotted 35 mm PM motor plates above it ("belt"), or slotted
+// NEMA 17 pancake plates above it ("nema").
 // Bolts to the saddle block front face. Axis frame; prints keel down.
 include <../lib/hardware.scad>
 use <../lib/gears.scad>
@@ -56,7 +56,7 @@ module belt_bracket_profile_2d(s, cd, a, lens_r) {   // (Y, Z), one side
             multmatrix([[tg[0], dir[0], 0, 0], [tg[1], dir[1], 0, 0], [0, 0, 1, 0]]) pm_box_2d(pm_box_clr, pm_wire_room);
     }
 }
-// NEMA pancake (focus only): the motor face sits on the plate's front face, the boss in a slot, 4 x M3 from behind
+// NEMA pancake: the motor face sits on the plate's front face, the boss in a slot, 4 x M3 from behind
 // through slots; the whole motor slides +-pm_slot along the radius to tension the belt. Sides along radius/tangent.
 module nema_bracket_profile_2d(s, cd, a, lens_r) {   // (Y, Z), one side
     a_m = s > 0 ? a : 180 - a;
@@ -87,6 +87,8 @@ module nose(v = "") {
             if (ff_nema) {
                 translate([focus_plate_x0, 0, 0]) rotate([90, 0, 90]) linear_extrude(height = ffb_t, convexity = 8)
                     nema_bracket_profile_2d(ff_focus_side, focus_cd, ff_focus_angle, ffb_lens_r);
+                translate([zoom_plate_x0, 0, 0]) rotate([90, 0, 90]) linear_extrude(height = ffb_t, convexity = 8)
+                    nema_bracket_profile_2d(ff_zoom_side, zoom_cd, ff_zoom_angle, ffb_lens_r);
             } else if (ff_belt) {
                 belt_bracket(focus_plate_x0, ff_focus_side, focus_cd, ff_focus_angle, ffb_lens_r);
                 belt_bracket(zoom_plate_x0, ff_zoom_side, zoom_cd, ff_zoom_angle, zoom_ffb_lens_r);
@@ -95,7 +97,7 @@ module nose(v = "") {
                 bracket(zoom_plate_x0, ff_zoom_side, zoom_cd, ff_zoom_angle, -1);
             }
         }
-        // 4 x M4 (x 40 gear / nema, x 60 belt) from the keel front face, straight through keel + flange into the block inserts
+        // 4 x M4 (x 40 gear, x 60 belt, x 65 nema) from the keel front face, straight through keel + flange into the block inserts
         // (no lightening window: it would cut into the inner two bores)
         for (y = nose_bolt_y, z = nose_bolt_z) translate([0, y, z]) xcyl(m4_d, keel_x0 - 1, keel_x1 + 1);
     }

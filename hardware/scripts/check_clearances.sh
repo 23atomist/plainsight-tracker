@@ -28,6 +28,7 @@ for p in "cradle clamp" "cradle arm_left" "cradle arm_right" "cradle nose" "crad
          "nose_bolt_access lens" "nose_bolt_access cradle"; do run $p 0; done
 for rr in -70 0 70; do for a in nose_bolts nose_bolt_access; do run ring_gears $a 0 $rr; done; done
 for rr in -70 -35 0 35 70; do for b in cradle nose clamp ff_pinions lens ff_motors arm_left arm_right; do run ring_gears $b 0 $rr; done; done
+for rr in -150 -120 -90 -60 -30 0 30 60 90 120 150 180; do run ring_gears panel 0 $rr; done   # lugs vs the AF/VR switches, full turn
 # fork and base
 for p in "upright_left platform" "upright_right platform" "tilt_motor upright_left" "tilt_motor platform" "tilt_pinion upright_left" "tilt_motor deck" \
          "platform deck" "platform retainer" "platform balls" "deck balls" "platform pan_pinion" "pan_pinion deck" "pan_motor deck" "pan_motor housing" \

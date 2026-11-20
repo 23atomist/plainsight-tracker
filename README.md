@@ -23,9 +23,9 @@ Everything needed to build one is in this repo:
 ## The head
 
 A fork on a turntable: pan runs on a printed 140 mm ball race (67 steel balls), tilt
-0–90° on steel trunnions in 608 bearings, focus by a GT2 belt from a NEMA 17 pancake
-stepper to a pulley ring clamped on the lens (zoom manual for now; a two-motor TB35
-belt set and a 28BYJ-48 gear set are the alternatives). The tilt has a hard stop at exactly level, which doubles as the
+0–90° on steel trunnions in 608 bearings, focus and zoom by GT2 belts from NEMA 17 pancake
+steppers to pulley rings clamped on the lens (the zoom motor is optional; a TB35 belt set
+and a 28BYJ-48 gear set are the alternatives). The tilt has a hard stop at exactly level, which doubles as the
 calibration reference. Gearing is 76:12 on pan and 120:12 on tilt, so one 1/16
 microstep is 0.018° and 0.011°. Details, print settings and the hardware list:
 [hardware/README.md](hardware/README.md).

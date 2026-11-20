@@ -39,7 +39,8 @@ lens_len           = 143.5; // flange -> front, retracted
 lens_rear_barrel_d = 76;    // under the saddle                             MEASURE
 lens_flange_x      = adapter_l;
 lens_front_x       = adapter_l + lens_len;
-focus_ring_x  = 75;  focus_ring_w = 12;  focus_ring_od = 74;   // MEASURE (names as given)
+focus_ring_x  = 75;  focus_ring_w = 12;  focus_ring_od = 75.5; // MEASURE (names as given). OD = circumference / pi
+                                    // (paper strip); 75.5 is estimated from a 74.6 mm bore that closed 2-4 mm short
 zoom_ring_x   = 100; zoom_ring_w  = 28;  zoom_ring_od  = 79;   // MEASURE
 switch_panel_x0 = 35; switch_panel_x1 = 69;   // AF/VR switch panel, left side 8..10 o'clock  MEASURE
 switch_panel_protrude = 4;
@@ -90,17 +91,18 @@ pan_skirt_r1 = pan_pr + 1.25 * gm + 4;  // skirt outer radius 53.06
 //           with printed 20T GT2 pulleys drive printed GT2 belt rings clamped on the lens through stock
 //           2GT-350-6 belts. Motors sit above the lens, bodies forward; the bracket plates are slotted to tension the belts.
 //   "gear": 28BYJ-48 (5 V, bipolar-modded) with printed 24T m1 pinions on m1 ring gears, motors beside the lens.
-//   "nema": FOCUS ONLY (zoom stays manual): one NEMA 17 pancake stepper (~20-25 mm body) with a stock metal 20T GT2
-//           pulley (5 mm bore, 6 mm belt) drives the same GT2 focus ring through the same 2GT-350-6 belt. The motor
-//           face bolts to the front of a slotted plate (4 x M3), body forward, shaft back through the plate.
+//   "nema": NEMA 17 pancake steppers (~20-25 mm body) with stock metal 20T GT2 pulleys (5 mm bore, 6 mm belt) drive
+//           GT2 rings on the lens through 2GT-350-6 belts; the zoom motor is optional (its plate is there either way).
+//           Each motor face bolts to the front of a slotted plate (4 x M3), body forward, shaft back through the plate.
+//           The rings are collared: band + collar + clamp lugs all on the front side, a rubber liner in the bore.
 ff_drive = "nema";
 ff_belt = ff_drive != "gear";           // GT2 belt transmission (TB35 or NEMA)
 ff_pm   = ff_drive == "belt";           // TB35 35 mm PM geared steppers
-ff_nema = ff_drive == "nema";           // NEMA 17 pancake, focus only
-ff_zoom = !ff_nema;                     // a zoom motor is fitted
+ff_nema = ff_drive == "nema";           // NEMA 17 pancakes
 ff_m = 1; ff_pin_N = 24; ff_pin_pr = ff_m * ff_pin_N / 2;   // 12 (gear drive)
 ff_pin_face = 8; ff_pin_hub_d = 14; ff_pin_hub_l = 8;
-ff_ring_wall = 4; ff_ring_gap = 0.6;
+ff_ring_liner = 0.6;                    // nema rings: liner per side, compressed (1 mm rubber / foam tape in the bore)
+ff_ring_wall = 4; ff_ring_gap = ff_nema ? 2 * ff_ring_liner : 0.6;   // bore minus lens ring diameter
 // --- belt drive: GT2 (2GT), 2 mm pitch. The groove is an FDM approximation: tune ff_groove_w/_d on a test print.
 belt_p = 2; belt_pld = 0.254;           // pitch; pitch radius minus tooth-tip radius
 belt_w = 6; belt_land = 0.63;           // belt width; belt back above the tooth tips (preview)
@@ -111,7 +113,12 @@ ff_belt_wall = 3.5;                     // ring wall under the groove roots
 ff_flange_t = 1; ff_lip = 1.5;          // ring flanges: a flat one (print-bed side) and a 45 deg one; radial lip
 ff_tooth_w = belt_w + 1;                // toothed band between the flanges
 ff_belt_z = ff_flange_t + ff_tooth_w / 2;   // belt centre plane, from the ring's flat face
-ff_ring_w = ff_belt ? ff_flange_t + ff_tooth_w + ff_lip : 10;
+ff_band_w = ff_flange_t + ff_tooth_w + ff_lip;   // flat flange + toothed band + 45 deg flange: 9.5
+// nema: a 4.5 mm collar continues the ring forward past the 45 deg flange; the clamp lugs sit on it (z 8..14) so the
+// screw pulls in line with the bore that grips, and nothing sticks out rearward over the barrel / AF-VR switches.
+ff_collar_l = 4.5;
+ff_ring_w = ff_nema ? ff_band_w + ff_collar_l : ff_belt ? ff_band_w : 10;
+ff_ring_edge = 0.5;                     // nema: ring's rear face in from the lens ring's rear edge
 pm_body_d = 35; pm_body_l = 27; pm_ear_pitch = 42.5; pm_shaft_d = 5;
 pm_ear_w = 9; pm_flange_t = 1;          // ear tab width and flange thickness (preview only)          MEASURE
 // Motor (looking at the shaft, ears left-right): a 14 mm boss 1 mm tall round the shaft, a flat face otherwise.
@@ -168,14 +175,15 @@ ff_ratio_focus = ff_belt ? focus_gear_N / pm_pulley_N : focus_gear_N / ff_pin_N;
 ff_ratio_zoom  = ff_belt ? zoom_gear_N  / pm_pulley_N : zoom_gear_N  / ff_pin_N;
 ff_lug_l = 6; ff_lug_t = 9;            // ring-gear clamp lugs: axial length, tangential width
 focus_body_rin = ff_nema ? focus_cd - pm_slot - motor_w / 2 : ff_belt ? focus_cd - pm_slot - pm_body_d / 2 : focus_cd + ffm_shaft_off - ffm_body_d / 2;   // inner radius of the motor bodies, from the optical axis
-zoom_body_rin  = ff_belt ? zoom_cd  - pm_slot - pm_body_d / 2 : zoom_cd  + ffm_shaft_off - ffm_body_d / 2;
+zoom_body_rin  = ff_nema ? zoom_cd - pm_slot - motor_w / 2 : ff_belt ? zoom_cd  - pm_slot - pm_body_d / 2 : zoom_cd  + ffm_shaft_off - ffm_body_d / 2;
 focus_rid = focus_ring_od / 2 + ff_ring_gap / 2;
 zoom_rid  = zoom_ring_od  / 2 + ff_ring_gap / 2;
-focus_lug_rid = max(focus_rid, lens_rear_barrel_d / 2 + ff_ring_gap / 2);   // focus lugs sit over the rear barrel
+focus_lug_rid = ff_nema ? focus_rid : max(focus_rid, lens_rear_barrel_d / 2 + ff_ring_gap / 2);   // focus lugs sit over the rear barrel
 zoom_lug_rid  = zoom_rid;
-// gear: lugs sweep under the pinion hub and the other motor's body. belt: just past the flange, >= 7.5 mm deep
-focus_lug_r1 = ff_belt ? max(ring_out_r(focus_ring_od) + 2, focus_lug_rid + 7.5) : min(focus_cd - ff_pin_hub_d / 2, zoom_body_rin) - 1.5;
-zoom_lug_r1  = ff_belt ? max(ring_out_r(zoom_ring_od)  + 2, zoom_lug_rid  + 7.5) : min(zoom_cd  - ff_pin_hub_d / 2, focus_body_rin) - 1.5;
+// gear: lugs sweep under the pinion hub and the other motor's body. belt: just past the flange, >= 7.5 mm deep.
+// nema: 2.5 mm past the flange, on the collar
+focus_lug_r1 = ff_nema ? ring_out_r(focus_ring_od) + 2.5 : ff_belt ? max(ring_out_r(focus_ring_od) + 2, focus_lug_rid + 7.5) : min(focus_cd - ff_pin_hub_d / 2, zoom_body_rin) - 1.5;
+zoom_lug_r1  = ff_nema ? ring_out_r(zoom_ring_od) + 2.5 : ff_belt ? max(ring_out_r(zoom_ring_od)  + 2, zoom_lug_rid  + 7.5) : min(zoom_cd  - ff_pin_hub_d / 2, focus_body_rin) - 1.5;
 assert(focus_lug_r1 - focus_lug_rid >= 7, "focus ring-gear lugs too thin");
 assert(zoom_lug_r1 - zoom_rid >= 7, "zoom ring-gear lugs too thin");
 ff_focus_side = +1;                    // focus motor on +Y (left), zoom on -Y (right)
@@ -186,20 +194,24 @@ ff_focus_angle = ff_belt ? 70 : -30;
 ff_zoom_angle  = ff_belt ? 70 : 30;
 focus_pin_yz = [ff_focus_side * focus_cd * cos(ff_focus_angle), focus_cd * sin(ff_focus_angle)];
 zoom_pin_yz  = [ff_zoom_side  * zoom_cd  * cos(ff_zoom_angle),  zoom_cd  * sin(ff_zoom_angle)];
-focus_gear_x0 = focus_ring_x - ff_ring_w / 2;  focus_gear_x1 = focus_ring_x + ff_ring_w / 2;
-zoom_gear_x0  = zoom_ring_x  - ff_ring_w / 2;  zoom_gear_x1  = zoom_ring_x  + ff_ring_w / 2;
+ffb_t = 8;                                        // bracket plate thickness (holds M4 inserts / nuts)
+// nema: both rings flat face rearward, at the rear edge of their lens rings; the zoom ring sits in front of the focus plate
+focus_gear_x0 = ff_nema ? focus_ring_x - focus_ring_w / 2 + ff_ring_edge : focus_ring_x - ff_ring_w / 2;
+focus_gear_x1 = focus_gear_x0 + ff_ring_w;
+_nema_focus_plate_x1 = focus_gear_x0 + ff_belt_z + gt2m_belt_off + gt2m_gap + ffb_t;
+zoom_gear_x0  = ff_nema ? max(zoom_ring_x - zoom_ring_w / 2 + ff_ring_edge, _nema_focus_plate_x1 + 1) : zoom_ring_x - ff_ring_w / 2;
+zoom_gear_x1  = zoom_gear_x0 + ff_ring_w;
 focus_pin_x0 = focus_ring_x - ff_pin_face / 2; focus_pin_x1 = focus_pin_x0 + ff_pin_face;
 zoom_pin_x0  = zoom_ring_x  - ff_pin_face / 2 + 1; zoom_pin_x1 = zoom_pin_x0 + ff_pin_face;   // shifted 1 fwd: plate clears the focus gear, pinion stops at the lug face
-focus_belt_x = focus_gear_x1 - ff_belt_z;      // the focus ring's flat face points forward, the zoom ring's rearward
-zoom_belt_x  = zoom_gear_x0 + ff_belt_z;
-ffb_t = 8;                                        // bracket plate thickness (holds M4 inserts / nuts)
+focus_belt_x = ff_nema ? focus_gear_x0 + ff_belt_z : focus_gear_x1 - ff_belt_z;   // TB35: the focus ring's flat face points forward
+zoom_belt_x  = zoom_gear_x0 + ff_belt_z;          // flat face rearward
 // gear: focus hub forward, body forward of the plate (87..95); zoom hub rearward, body behind the plate (81..89)
 // belt: the back of the motor flange sits on the plate's rear face, the can goes through it forward
 // nema: the pulley hub sits gt2m_gap behind the plate, the motor face on the plate's front face
 focus_plate_x0 = ff_nema ? focus_belt_x + gt2m_belt_off + gt2m_gap
                : ff_belt ? focus_belt_x + pm_pulley_z + pm_flange_t : focus_pin_x1 + ff_pin_hub_l;
 focus_plate_x1 = focus_plate_x0 + ffb_t;
-zoom_plate_x0  = ff_belt ? zoom_belt_x + pm_pulley_z + pm_flange_t : zoom_pin_x0 - ff_pin_hub_l - ffb_t;
+zoom_plate_x0  = ff_nema ? zoom_belt_x + gt2m_belt_off + gt2m_gap : ff_belt ? zoom_belt_x + pm_pulley_z + pm_flange_t : zoom_pin_x0 - ff_pin_hub_l - ffb_t;
 zoom_plate_x1  = zoom_plate_x0 + ffb_t;
 ffm_body_y_off = ffm_shaft_off;                   // body centre further from the lens than the shaft
 // Tooth phasing: a ring tooth faces the pinion and a pinion space faces the ring at the nominal angles.
@@ -208,7 +220,7 @@ ffm_body_y_off = ffm_shaft_off;                   // body centre further from th
 function snap_tooth(a, N) = a - round(a / (360 / N)) * (360 / N);                                  // tooth at local a
 function snap_space(a, N) = a - (round((a - 180 / N) / (360 / N)) * (360 / N) + 180 / N);          // space at local a
 focus_psi = ff_focus_angle;  zoom_psi = 180 - ff_zoom_angle;
-focus_ring_phase = snap_tooth(90 - focus_psi, ring_gear_N(focus_ring_od));
+focus_ring_phase = ff_nema ? snap_tooth(focus_psi + 90, ring_gear_N(focus_ring_od)) : snap_tooth(90 - focus_psi, ring_gear_N(focus_ring_od));
 zoom_ring_phase  = snap_tooth(zoom_psi + 90, ring_gear_N(zoom_ring_od));
 focus_pin_phase  = snap_space(90 - (focus_psi + 180), ff_pin_N);
 zoom_pin_phase   = snap_space((zoom_psi + 180) + 90, ff_pin_N);
@@ -249,11 +261,11 @@ sector_web_r = 30;                                 // solid plate radius inside 
 spacer_t = 2; spacer_d = 16;                       // trunnion washers (printed), one per side
 // nose (keel + focus/zoom brackets)
 keel_z1 = -52; keel_z0 = -62; keel_hw = 22;
-keel_x0 = saddle_x1; keel_x1 = ff_zoom ? max(focus_plate_x1, zoom_plate_x1) : focus_plate_x1;
+keel_x0 = saddle_x1; keel_x1 = max(focus_plate_x1, zoom_plate_x1);
 nose_flange_t = 6; nose_flange_z1 = -50;           // flange top stays under the swept focus-gear lugs
 nose_bolt_y = [-18, -6, 6, 18]; nose_bolt_z = [-56];
 // nose bolts run the whole keel length: head on the keel front face, shank through keel + flange into the block inserts
-nose_bolt_l = ff_pm ? 60 : 40;                     // M4 socket head; 60 for the longer TB35 keel
+nose_bolt_l = ff_pm ? 60 : ff_nema ? 65 : 40;      // M4 socket head; longer for the belt keels
 nose_bolt_seat_x = keel_x1;                        // head seats on the keel front face (95 gear, ~115 belt)
 nose_bolt_tip_x = nose_bolt_seat_x - nose_bolt_l;  // 55 gear: 5 mm into the 7 mm insert
 m4_shc_d = 7; m4_shc_h = 4;                        // M4 socket-head cap (preview / access check)
@@ -491,10 +503,18 @@ assert(!ff_pm || focus_cd - pm_slot - (pm_body_d + 1) / 2 - ffb_lens_r >= ff_pla
 assert(!ff_pm || zoom_cd - pm_slot - (pm_body_d + 1) / 2 - zoom_ffb_lens_r >= ff_plate_web, "zoom plate: can slot breaks into the lens hole: longer belt_teeth_zoom");
 assert(!ff_pm || pm_shaft_l - pm_pulley_gap >= 2.5, "pulley: under 2.5 mm of shaft in the hub");
 // NEMA pancake (focus only): square body with its sides along the radius / tangent
-_nema_y = abs(focus_cd * cos(ff_focus_angle)) + pm_slot * cos(ff_focus_angle) + motor_w / 2 * (cos(ff_focus_angle) + sin(ff_focus_angle));
-assert(!ff_nema || _nema_y < upright_y0 - 1, "NEMA focus motor reaches the left upright plane: raise ff_focus_angle");
+_nema_y = function(cd, a) abs(cd * cos(a)) + pm_slot * cos(a) + motor_w / 2 * (cos(a) + sin(a));
+assert(!ff_nema || _nema_y(focus_cd, ff_focus_angle) < upright_y0 - 1, "NEMA focus motor reaches the left upright plane: raise ff_focus_angle");
+assert(!ff_nema || _nema_y(zoom_cd, ff_zoom_angle) < upright_y0 - 1, "NEMA zoom motor reaches the right upright plane: raise ff_zoom_angle");
 assert(!ff_nema || focus_cd - pm_slot - gt2m_flange_d / 2 > ring_out_r(focus_ring_od) + 2, "NEMA focus pulley too close to its ring");
+assert(!ff_nema || zoom_cd - pm_slot - gt2m_flange_d / 2 > ring_out_r(zoom_ring_od) + 2, "NEMA zoom pulley too close to its ring");
 assert(!ff_nema || focus_cd - pm_slot - (motor_boss_d + 1) / 2 - ffb_lens_r >= ff_plate_web, "NEMA focus plate: boss slot breaks into the lens hole");
+assert(!ff_nema || zoom_cd - pm_slot - (motor_boss_d + 1) / 2 - ffb_lens_r >= ff_plate_web, "NEMA zoom plate: boss slot breaks into the lens hole");
+assert(!ff_nema || zoom_plate_x0 - zoom_gear_x1 >= 1, "NEMA zoom plate hits its own ring");
+assert(!ff_nema || zoom_gear_x1 <= zoom_ring_x + zoom_ring_w / 2, "NEMA zoom ring runs off the front of the lens zoom ring");
+assert(!ff_nema || zoom_gear_x0 - focus_plate_x1 >= 1, "NEMA zoom ring hits the focus plate");
+assert(!ff_nema || zoom_ring_x - zoom_ring_w / 2 - focus_gear_x1 >= 1, "NEMA focus ring collar reaches the zoom ring");
+assert(!ff_nema || focus_gear_x0 >= switch_panel_x1, "NEMA focus ring overlaps the AF/VR switch panel");
 assert(!ff_nema || ffn_shaft_l >= ffb_t + gt2m_gap + gt2m_hub_l, "NEMA shaft does not reach through the pulley hub: thinner plate or longer shaft");
 echo(str("tilt ", tilt_ratio, ":1  pan ", pan_ratio, ":1  balls ", n_balls, "  ff ", ff_drive, "  focus ring N ", focus_gear_N, " zoom ring N ", zoom_gear_N,
     "  ratio ", ff_ratio_focus, " / ", ff_ratio_zoom, "  cd ", focus_cd, " / ", zoom_cd));
