@@ -20,6 +20,7 @@ import {
 } from "./tool-helpers.js";
 import { AdsbSource } from "../shared/adsb/source.js";
 import { extrapolateSightingPosition } from "../shared/adsb/extrapolate.js";
+import { sightPosture } from "./sight-posture.js";
 import { LimitsStore, effectiveLimits, hostCeiling, CeilingLimits } from "../shared/limits-store.js";
 
 // Sane band for WGS84 heights: comfortably covers below-sea-level basins
@@ -229,10 +230,11 @@ export function registerGeoTools(
           `limit ${cfg.trackStaleTelemetryMs}ms) — the recorded pan/tilt would not be where the camera is now; re-sight once telemetry is live`,
         );
       }
-      const { panDeg, tiltDeg, moving } = currentUserPanTilt(device, cfg);
-      if (moving) {
-        return errText("the rig is still moving — hold the aim until it settles, then re-sight");
-      }
+      // Moving is allowed (sighting during tracking) when the read is fresh and
+      // the rig turns slowly; the posture is carried to the video instant.
+      const posture = sightPosture(devState, cfg, cfg.calibVideoLatencyMs, Date.now());
+      if ("error" in posture) return errText(posture.error);
+      const { panDeg, tiltDeg } = posture;
       const label = ac.callsign ?? ac.hex;
       // 1σ angular error for this sighting: the operator's centring error,
       // plus the residual position uncertainty after extrapolation converted
@@ -247,6 +249,7 @@ export function registerGeoTools(
       const sigmaDeg = Math.hypot(
         OPERATOR_AIM_SIGMA_DEG,
         rangeMeters > 1 ? rad2deg(posSigmaM / rangeMeters) : OPERATOR_AIM_SIGMA_DEG,
+        posture.timingSigmaDeg,
       );
       const slot = store.addSighting({
         lat: extrap.geodetic.lat, lon: extrap.geodetic.lon, height: extrap.geodetic.height,
@@ -263,6 +266,7 @@ export function registerGeoTools(
         moved_m: Math.round(extrap.movedM),
         position_age_sec: Number(extrap.positionAgeSec.toFixed(1)),
         sigma_deg: Number(sigmaDeg.toFixed(2)),
+        ...(posture.moving ? { while_moving: true, rate_dps: Number(posture.rateDps.toFixed(2)) } : {}),
         note: `${slot} sighting(s) recorded.`,
       }));
     },

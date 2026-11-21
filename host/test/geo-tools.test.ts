@@ -828,15 +828,39 @@ describe("geo tools — sight_aircraft", () => {
   // read"); sighting only appended a warning string to a JSON note, and none of
   // it fired when the read was stale rather than moving -- a stale `moving`
   // flag reads false.
-  it("refuses to record a sighting while the rig is still moving", async () => {
+  // Moving is allowed for sighting DURING tracking, but only slowly and with a
+  // fresh read (sight-posture.ts); a fast slew is still refused.
+  it("refuses to record a sighting while the rig is turning fast", async () => {
     const { client } = await harness({}, [rawAircraft({ seen_pos: 2 })]);
     await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
     const real = dev!.getState.bind(dev!);
-    dev!.getState = () => ({ ...real(), moving: true });
+    dev!.getState = () => {
+      const st = real();
+      return { ...st, moving: true, lastUpdateMs: Date.now(),
+        axes: { ...st.axes!, pan: { ...st.axes!.pan, vel: 10 } } };
+    };
 
     const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
     expect(res.isError).toBe(true);
-    expect(textOf(res)).toMatch(/moving|settle/i);
+    expect(textOf(res)).toMatch(/turning/i);
+  });
+
+  it("records a sighting while tracking-slow movement, flagged while_moving", async () => {
+    const { client, store } = await harness({}, [rawAircraft({ seen_pos: 2 })]);
+    await client.callTool({ name: "set_rig_location", arguments: { lat: 45, lon: 10, height_m: 100 } });
+    const real = dev!.getState.bind(dev!);
+    dev!.getState = () => {
+      const st = real();
+      return { ...st, moving: true, lastUpdateMs: Date.now(),
+        axes: { ...st.axes!, pan: { ...st.axes!.pan, vel: 0.5 } } };
+    };
+
+    const res: any = await client.callTool({ name: "sight_aircraft", arguments: { hex: "a1b2c3" } });
+    expect(res.isError ?? false).toBe(false);
+    const body = JSON.parse(textOf(res));
+    expect(body.while_moving).toBe(true);
+    expect(body.rate_dps).toBeCloseTo(0.5, 2);
+    expect(store.get().sightings).toHaveLength(1);
   });
 
   it("refuses to record a sighting when the posture telemetry is stale", async () => {
