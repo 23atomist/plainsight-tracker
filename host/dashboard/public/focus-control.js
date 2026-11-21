@@ -2,19 +2,22 @@
 //
 // Each press sends `focus/nudge` (the server adds the delta to the focus
 // axis's TARGET on the head, so taps add up). Held past HOLD_DELAY_MS, it
-// keeps sending HOLD_STEP_DEG every HOLD_INTERVAL_MS -- that pace is the
+// keeps sending HOLD_STEP_DEG every HOLD_INTERVAL_MS -- at or under the
 // Pico's default focus vmax (30 deg/s), so the target stays just ahead of the
 // motor -- and on release sends `focus/stop`, so the motor halts where the
 // operator let go instead of running out the queued steps. A plain tap sends
 // no stop: its one step is meant to complete.
 //
-// Angles are output-shaft (motor) degrees; with the 136:20 belt, 10 deg at
-// the motor is about 1.5 deg on the lens ring.
+// Angles are output-shaft (motor) degrees; with the 136:20 belt, 2 deg at
+// the motor is about 0.3 deg on the lens ring. Fine by default (focus is
+// found by small moves); Shift for coarse: COARSE x the step and the hold
+// speed, which at the hold pace below is the Pico's focus vmax (30 deg/s).
 
-export const TAP_STEP_DEG = 10;
+export const TAP_STEP_DEG = 2;
 export const HOLD_DELAY_MS = 350;
 export const HOLD_INTERVAL_MS = 200;
-export const HOLD_STEP_DEG = 6;
+export const HOLD_STEP_DEG = 1.2;   // 6 deg/s
+export const COARSE = 5;
 
 /**
  * One press-and-hold controller per direction.
@@ -34,13 +37,15 @@ export function createFocusHold(deps, sign) {
   let repeat = null;
   let pressed = false;
 
-  function press() {
+  /** @param {boolean} [coarse] Shift held: COARSE x the step and the hold speed. */
+  function press(coarse = false) {
     if (pressed) return;
     pressed = true;
-    deps.post("focus/nudge", { delta_deg: sign * TAP_STEP_DEG }, { quiet: true });
+    const k = coarse ? COARSE : 1;
+    deps.post("focus/nudge", { delta_deg: sign * TAP_STEP_DEG * k }, { quiet: true });
     delay = st(() => {
       delay = null;
-      repeat = si(() => deps.post("focus/nudge", { delta_deg: sign * HOLD_STEP_DEG }, { quiet: true }), HOLD_INTERVAL_MS);
+      repeat = si(() => deps.post("focus/nudge", { delta_deg: sign * HOLD_STEP_DEG * k }, { quiet: true }), HOLD_INTERVAL_MS);
     }, HOLD_DELAY_MS);
   }
 
@@ -76,19 +81,20 @@ export function mountFocusControl(opts) {
       if (btn.disabled) return;
       e.preventDefault();
       btn.setPointerCapture?.(e.pointerId);
-      hold.press();
+      hold.press(e.shiftKey);
     });
     for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) btn.addEventListener(ev, () => hold.release());
     // Keyboard activation (Enter/Space on a focused button) is one tap.
-    btn.addEventListener("click", (e) => { if (e.detail === 0 && !btn.disabled) { hold.press(); hold.release(); } });
+    btn.addEventListener("click", (e) => { if (e.detail === 0 && !btn.disabled) { hold.press(e.shiftKey); hold.release(); } });
   }
-  const keyHold = { "[": holds.get(opts.minus), "]": holds.get(opts.plus) };
-  const keyBtn = { "[": opts.minus, "]": opts.plus };
+  // "{" / "}" are Shift+[ / Shift+] on US layouts: coarse.
+  const keyHold = { "[": holds.get(opts.minus), "]": holds.get(opts.plus), "{": holds.get(opts.minus), "}": holds.get(opts.plus) };
+  const keyBtn = { "[": opts.minus, "]": opts.plus, "{": opts.minus, "}": opts.plus };
   document.addEventListener("keydown", (e) => {
     const hold = keyHold[e.key];
     if (!hold || e.repeat || opts.isTextEntryFocused() || keyBtn[e.key].disabled) return;
     e.preventDefault();
-    hold.press();
+    hold.press(e.shiftKey);
   });
   document.addEventListener("keyup", (e) => { keyHold[e.key]?.release(); });
   // A focus hold must never outlive the page's attention.

@@ -3,7 +3,7 @@ import { HeadDirectClient } from "../src/dashboard/head.js";
 import { parseHeadState } from "../src/dashboard/parse.js";
 import { runAction, FOCUS_MAX_NUDGE_DEG, type ControlDeps } from "../src/dashboard/controls.js";
 // @ts-expect-error -- plain browser JS module, no declaration file
-import { createFocusHold, formatFocus, TAP_STEP_DEG, HOLD_STEP_DEG, HOLD_DELAY_MS, HOLD_INTERVAL_MS } from "../dashboard/public/focus-control.js";
+import { createFocusHold, formatFocus, TAP_STEP_DEG, HOLD_STEP_DEG, HOLD_DELAY_MS, HOLD_INTERVAL_MS, COARSE } from "../dashboard/public/focus-control.js";
 
 const axis = (pos: number, tgt: number) => ({ pos, vel: 0, tgt, mode: "I", homed: false, endstop: false, driver: true });
 function tick(focusPos: number, focusTgt: number) {
@@ -116,6 +116,18 @@ describe("focus hold (browser)", () => {
       ["focus/nudge", { delta_deg: -HOLD_STEP_DEG }],
       ["focus/nudge", { delta_deg: -HOLD_STEP_DEG }],
       ["focus/nudge", { delta_deg: -HOLD_STEP_DEG }],
+      ["focus/stop", {}],
+    ]);
+  });
+
+  it("Shift (coarse) scales the tap and the hold step", () => {
+    const { hold, posts } = setup(1);
+    hold.press(true);
+    vi.advanceTimersByTime(HOLD_DELAY_MS + HOLD_INTERVAL_MS);
+    hold.release();
+    expect(posts).toEqual([
+      ["focus/nudge", { delta_deg: TAP_STEP_DEG * COARSE }],
+      ["focus/nudge", { delta_deg: HOLD_STEP_DEG * COARSE }],
       ["focus/stop", {}],
     ]);
   });
