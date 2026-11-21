@@ -40,6 +40,10 @@ export interface ControlDeps {
   // daemon: the dashboard E-STOP must latch the head with the daemon down.
   headEstop(): Promise<EstopOutcome>;
   headClearEstop(): Promise<void>;
+  // Lens focus, also DIRECT to the head (the daemon never drives focus).
+  // focusNudge resolves with the new target, output-shaft degrees.
+  focusNudge(deltaDeg: number): Promise<number>;
+  focusStop(): Promise<void>;
   // The daemon's own clear_estop, best-effort alongside headClearEstop.
   mcpClearEstop(): Promise<void>;
   // Head reference procedures (MCP tools home / set_position /
@@ -155,6 +159,10 @@ export async function clearEstop(d: ControlDeps): Promise<ActionResult> {
   };
 }
 
+// One focus nudge is at most a full motor turn: a bad client value must not
+// send the lens ring end to end.
+export const FOCUS_MAX_NUDGE_DEG = 360;
+
 function num(v: unknown, dflt = 0): number { return typeof v === "number" && Number.isFinite(v) ? v : dflt; }
 function str(v: unknown): string | undefined { return typeof v === "string" ? v : undefined; }
 // Distinct from num(): an omitted axis must stay omitted (set_position then
@@ -185,6 +193,15 @@ export async function runAction(d: ControlDeps, action: string, body: Record<str
         return { ok: true, message: await d.setPosition(pan, tilt) };
       }
       case "head/reference-pan": return { ok: true, message: await d.referencePan() };
+      case "focus/nudge": {
+        const delta = finiteOrUndefined(body.delta_deg);
+        if (delta === undefined || delta === 0 || Math.abs(delta) > FOCUS_MAX_NUDGE_DEG) {
+          return { ok: false, message: `delta_deg must be a non-zero number within +/-${FOCUS_MAX_NUDGE_DEG}` };
+        }
+        const target = await d.focusNudge(delta);
+        return { ok: true, message: `focus -> ${target.toFixed(1)} deg` };
+      }
+      case "focus/stop": await d.focusStop(); return { ok: true, message: "focus stopped" };
       case "jog":
         await d.jog(num(body.pan_dps), num(body.tilt_dps), num(body.duration_ms, 300));
         return { ok: true, message: "jogged" };

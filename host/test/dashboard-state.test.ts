@@ -10,7 +10,7 @@ const DEVICE_STATUS = {
   tilt_disagree_deg: 0.2, link: { pico: true, imu: true }, stale: false, last_update_age_ms: 100,
 };
 const HEAD_DIRECT = {
-  connected: true, panDeg: 10, tiltDeg: 20, moving: false, estop: false,
+  connected: true, panDeg: 10, tiltDeg: 20, focusDeg: 42, focusTgtDeg: 50, moving: false, estop: false,
   ref: { pan: "host" as const, persisted: false, ageS: 5, frameId: "00000000000000a1" },
   imu: { ok: true, heading: 90, pitch: 1, roll: 2, cal: { sys: 3, gyr: 3, acc: 3, mag: 3 }, tempC: 25 },
   tiltDisagreeDeg: 0.4, link: { pico: true, imu: false },
@@ -94,7 +94,7 @@ describe("mergeState rig: the head's state", () => {
     expect(s.rig).toEqual({
       connected: true, panDeg: 10, tiltDeg: 20, moving: false, telemetryAgeMs: 100,
       estop: false, panRef: "imu", tiltDisagreeDeg: 0.2, link: { pico: true, imu: true },
-      imu: HEAD_DIRECT.imu,
+      imu: HEAD_DIRECT.imu, focusDeg: 42,
     });
   });
   it("falls back to the direct read when the daemon is down", () => {

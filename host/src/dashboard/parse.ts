@@ -11,6 +11,11 @@ export interface HeadDirect {
   connected: boolean;
   panDeg: number | null;
   tiltDeg: number | null;
+  // Focus: output-shaft degrees as the Pico counts them (no frame), and where
+  // it is heading. The dashboard's focus nudges step from the target, so quick
+  // taps add up instead of each restarting from a lagging position.
+  focusDeg: number | null;
+  focusTgtDeg: number | null;
   moving: boolean | null;
   estop: boolean;
   ref: HeadRef | null;
@@ -20,7 +25,7 @@ export interface HeadDirect {
 }
 
 const DISCONNECTED: HeadDirect = {
-  connected: false, panDeg: null, tiltDeg: null, moving: null, estop: false,
+  connected: false, panDeg: null, tiltDeg: null, focusDeg: null, focusTgtDeg: null, moving: null, estop: false,
   ref: null, imu: null, tiltDisagreeDeg: null, link: null,
 };
 
@@ -33,6 +38,8 @@ export function parseHeadState(raw: unknown): HeadDirect {
     connected: true,
     panDeg: t.axes ? t.axes.pan.pos : null,
     tiltDeg: t.axes ? t.axes.tilt.pos : null,
+    focusDeg: t.axes ? t.axes.focus.pos : null,
+    focusTgtDeg: t.axes ? t.axes.focus.tgt : null,
     moving: t.axes ? (t.moving ?? null) : null,
     estop: t.estop,
     ref: { ...t.ref },

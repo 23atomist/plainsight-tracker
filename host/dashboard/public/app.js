@@ -28,6 +28,7 @@ import { Cockpit } from "./cockpit.js";
 import { Drawer } from "./drawer.js";
 import { aimMode } from "./ui-mode.js";
 import { renderCaptureLabel } from "./capture-label.js";
+import { mountFocusControl } from "./focus-control.js";
 import { StickHold, DEFAULT_TRIM_SENSITIVITY } from "./stick-hold.js";
 import { createVirtualStick } from "./virtual-stick.js";
 import { initProcedureActions } from "./procedure-actions.js";
@@ -94,6 +95,9 @@ const el = {
   // Joystick entry instead of toggling a floating overlay -- see this
   // file's wiring below.
   joystickToggle: document.getElementById("joystick-toggle"),
+  focusMinus: document.getElementById("focus-minus"),
+  focusPlus: document.getElementById("focus-plus"),
+  focusPos: document.getElementById("focus-pos"),
 
   rigConnected: document.getElementById("rig-connected"),
   rigPanTilt: document.getElementById("rig-pantilt"),
@@ -226,6 +230,13 @@ if (el.drawerBody) {
 // inside applyMotionGate below. Auto (autonomous mode) is the one remaining
 // control here.
 const motionControls = [el.autoToggle];
+
+// Lens focus buttons (focus-control.js). Mounted here, before anything can
+// call render(); postControl and isTextEntryFocused are hoisted declarations.
+const focusControl = mountFocusControl({
+  minus: el.focusMinus, plus: el.focusPlus, readout: el.focusPos,
+  post: postControl, isTextEntryFocused,
+});
 
 // -- auth bootstrap -----------------------------------------------------
 
@@ -440,6 +451,9 @@ function render(state) {
   renderMiniMap(el, state);
   overlay.render(state);
   renderCamera(state.camera);
+  // Focus is gated by the E-STOP latch only: it never points the camera, so
+  // the sun lock has no say over it.
+  focusControl.render(state.rig, estop.isLatched());
   renderCapture(state.capture);
   renderErrors(state.errors);
   applyJogConfig(state.jog);

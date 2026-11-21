@@ -70,10 +70,34 @@ export class HeadDirectClient {
     await this.post("/api/stop", "the head did not confirm the stop");
   }
 
-  private async post(path: string, failure: string): Promise<void> {
+  /**
+   * Move focus by `deltaDeg` output-shaft degrees from where it is heading
+   * (its target, not its position), and return the new target. Direct to the
+   * head like the E-STOP: the MCP daemon never drives focus, so there is
+   * nothing to coordinate with, and the head's own latch (423) refuses it
+   * during an E-STOP.
+   */
+  async focusNudge(deltaDeg: number): Promise<number> {
+    const st = await this.state();
+    if (!st.connected || st.focusTgtDeg === null) throw new Error(`no focus telemetry from the head at ${this.base}`);
+    const target = st.focusTgtDeg + deltaDeg;
+    await this.post("/api/goto", "the head refused the focus move", { focus: target });
+    return target;
+  }
+
+  /** Stop the focus axis only. */
+  async focusStop(): Promise<void> {
+    await this.post("/api/stop", "the head did not confirm the focus stop", { axes: ["focus"] });
+  }
+
+  private async post(path: string, failure: string, body?: Record<string, unknown>): Promise<void> {
     let r: Response;
     try {
-      r = await this.fetchFn(`${this.base}${path}`, { method: "POST", signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS) });
+      r = await this.fetchFn(`${this.base}${path}`, {
+        method: "POST",
+        signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS),
+        ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+      });
     } catch (e) {
       throw new Error(`head unreachable at ${this.base}: ${e instanceof Error ? e.message : String(e)}`);
     }

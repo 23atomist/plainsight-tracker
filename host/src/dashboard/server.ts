@@ -303,6 +303,8 @@ export function buildControlDeps(s: Sources): ControlDeps {
     // the MCP server down.
     headEstop: () => s.head.estop(),
     headClearEstop: () => s.head.clearEstop(),
+    focusNudge: (deltaDeg: number) => s.head.focusNudge(deltaDeg),
+    focusStop: () => s.head.focusStop(),
     mcpClearEstop: () => s.client.clearEstop(),
     home: s.client.home.bind(s.client),
     setPosition: s.client.setPosition.bind(s.client),

@@ -24,6 +24,8 @@ function deps(over: Partial<ControlDeps> = {}): { d: ControlDeps; calls: string[
     setAgentArmed: rec("setAgentArmed"),
     headEstop: async () => { calls.push("headEstop:[]"); return { picoConfirmed: true }; },
     headClearEstop: rec("headClearEstop"), mcpClearEstop: rec("mcpClearEstop"),
+    focusNudge: async (delta: number) => { calls.push(`focusNudge:${JSON.stringify([delta])}`); return 100 + delta; },
+    focusStop: rec("focusStop"),
     home: async () => { calls.push("home:[]"); return "homing tilt"; },
     setPosition: async (p?: number, t?: number) => { calls.push(`setPosition:${JSON.stringify([p ?? null, t ?? null])}`); return "position declared"; },
     referencePan: async () => { calls.push("referencePan:[]"); return "re-referencing pan"; },

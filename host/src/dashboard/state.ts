@@ -193,6 +193,8 @@ export interface DashboardState {
     estop: boolean; panRef: HeadRef["pan"] | null;
     tiltDisagreeDeg: number | null; link: HeadLink | null;
     imu: HeadImu | null;
+    // Lens focus, output-shaft degrees (direct head read; null when unknown).
+    focusDeg: number | null;
   };
   mode: Mode;
   tracking: {
@@ -380,6 +382,7 @@ export function mergeState(s: SourceInputs, nowMs: number): DashboardState {
       tiltDisagreeDeg: dev?.tilt_disagree_deg ?? rd?.tiltDisagreeDeg ?? null,
       link: dev?.link ?? rd?.link ?? null,
       imu: rd?.imu ?? null,
+      focusDeg: rd?.focusDeg ?? null,
     },
     mode,
     tracking: {
